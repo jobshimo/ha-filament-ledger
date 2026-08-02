@@ -1,0 +1,99 @@
+register_spool:
+  fields:
+    material:
+      required: true
+      selector:
+        select:
+          options: [PLA, PETG, ABS, ASA, TPU, PC, PA, PVA, SUPPORT, OTHER]
+    material_other:
+      required: false
+      selector: { text: }
+    colour:
+      required: true
+      example: "FF8800"
+      selector: { text: }
+    opening_weight:
+      required: true
+      selector:
+        number: { min: 1, max: 10000, unit_of_measurement: g, mode: box }
+    core_weight:
+      required: false
+      selector:
+        number: { min: 0, max: 2000, unit_of_measurement: g, mode: box }
+    vendor:
+      required: false
+      selector: { text: }
+    label:
+      required: false
+      selector: { text: }
+    tag_uid:
+      required: false
+      selector: { text: }
+    confirm_duplicate_tag:
+      required: false
+      default: false
+      selector: { boolean: }
+
+reconcile_spool:
+  fields:
+    spool_id:
+      required: true
+      selector: { text: }
+    measured_g:
+      required: true
+      selector:
+        number: { min: 0, max: 10000, unit_of_measurement: g, mode: box }
+    includes_core:
+      required: false
+      default: true
+      selector: { boolean: }
+    note:
+      required: false
+      selector: { text: }
+
+discard_filament:
+  fields:
+    spool_id:
+      required: true
+      selector: { text: }
+    mode:
+      required: true
+      selector:
+        select:
+          options: [whole_spool, partial]
+    amount_g:
+      required: false
+      selector:
+        number: { min: 0, max: 10000, unit_of_measurement: g, mode: box }
+    reason:
+      required: true
+      selector: { text: }
+
+adjust_spool:
+  fields:
+    spool_id:
+      required: true
+      selector: { text: }
+    amount_g:
+      required: true
+      selector:
+        number: { min: -10000, max: 10000, unit_of_measurement: g, mode: box }
+    reason:
+      required: true
+      selector: { text: }
+
+mount_spool:
+  fields:
+    spool_id:
+      required: true
+      selector: { text: }
+    slot:
+      required: true
+      selector:
+        number: { min: 1, max: 4, mode: box }
+
+unmount_spool:
+  fields:
+    spool_id:
+      required: true
+      selector: { text: }

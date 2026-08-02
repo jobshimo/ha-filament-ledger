@@ -15,8 +15,18 @@ class DomainError(Exception):
     """Base for every rule violation the domain refuses."""
 
 
-class InvalidValueError(DomainError):
-    """A value object was constructed with something that cannot exist."""
+class InvalidValueError(DomainError, ValueError):
+    """A value object was constructed with something that cannot exist.
+
+    Also a `ValueError`, deliberately. Every value object raises this rather than a bare
+    `ValueError`, which means an adapter that catches `DomainError` catches **all** of them
+    — a malformed colour, an out-of-range slot, a blank tag — without having to enumerate
+    the fields.
+
+    An earlier version had the value objects raising plain `ValueError`, so each adapter had
+    to re-validate every field it forwarded. That is a list somebody forgets to extend, and
+    a forgotten entry surfaces as a stack trace instead of a message.
+    """
 
 
 class SpoolDiscardedError(DomainError):

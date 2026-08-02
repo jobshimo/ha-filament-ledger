@@ -12,6 +12,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Self
 
+from ..error import InvalidValueError
+
 
 class MaterialKind(StrEnum):
     PLA = "PLA"
@@ -53,10 +55,10 @@ class Material:
         if self.kind is MaterialKind.OTHER:
             if not (self.other_name or "").strip():
                 msg = "Material.OTHER requires a name"
-                raise ValueError(msg)
+                raise InvalidValueError(msg)
         elif self.other_name is not None:
             msg = f"other_name is only valid for OTHER, not {self.kind}"
-            raise ValueError(msg)
+            raise InvalidValueError(msg)
 
     @classmethod
     def of(cls, kind: MaterialKind) -> Self:

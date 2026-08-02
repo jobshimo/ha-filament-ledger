@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Self
 
+from ..error import InvalidValueError
+
 MIN_PERCENT = Decimal(0)
 MAX_PERCENT = Decimal(100)
 
@@ -25,7 +27,7 @@ class Percentage:
         # `warn_unreachable` correctly rejects. Use `of()` to convert from anything else.
         if not MIN_PERCENT <= self.value <= MAX_PERCENT:
             msg = f"Percentage must be 0..100, got {self.value}"
-            raise ValueError(msg)
+            raise InvalidValueError(msg)
 
     @classmethod
     def of(cls, value: int | float | str | Decimal) -> Self:

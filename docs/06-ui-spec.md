@@ -358,7 +358,7 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 │                 vase_final · automatic                               │
 │                                                                      │
 │   3 days ago    Reconciliation             +  6.2 g     724 g       │
-│                 weighed 974 g including core · confirmed by you      │
+│                 weighed 974.2 g including core · confirmed by you    │
 │                                                                      │
 │   4 days ago    Print                      −112.0 g     718 g       │
 │                 enclosure_panel · automatic                          │

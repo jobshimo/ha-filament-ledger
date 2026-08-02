@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Self
 
+from ..error import InvalidValueError
+
 _CHANNEL_MAX = 255
 _RGB_LENGTH = 6
 _RGBA_LENGTH = 8
@@ -38,7 +40,7 @@ class Colour:
                 raise TypeError(msg)
             if not 0 <= channel <= _CHANNEL_MAX:
                 msg = f"{name} must be 0..{_CHANNEL_MAX}, got {channel}"
-                raise ValueError(msg)
+                raise InvalidValueError(msg)
 
     @classmethod
     def parse(cls, value: str) -> Self:
@@ -46,12 +48,12 @@ class Colour:
         text = value.strip().removeprefix("#")
         if len(text) not in (_RGB_LENGTH, _RGBA_LENGTH):
             msg = f"Colour must be RRGGBB or RRGGBBAA, got {value!r}"
-            raise ValueError(msg)
+            raise InvalidValueError(msg)
         try:
             channels = [int(text[i : i + 2], 16) for i in range(0, len(text), 2)]
         except ValueError as error:
             msg = f"Colour must be hexadecimal, got {value!r}"
-            raise ValueError(msg) from error
+            raise InvalidValueError(msg) from error
         if len(channels) == _RGB_LENGTH // 2:
             channels.append(_CHANNEL_MAX)
         return cls(*channels)

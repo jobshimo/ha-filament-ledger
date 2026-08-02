@@ -11,6 +11,8 @@ import uuid
 from dataclasses import dataclass
 from typing import NewType
 
+from ..error import InvalidValueError
+
 SpoolId = NewType("SpoolId", str)
 MovementId = NewType("MovementId", str)
 PrintJobId = NewType("PrintJobId", str)
@@ -50,7 +52,7 @@ class SlotIndex:
     def __post_init__(self) -> None:
         if not MIN_AMS_SLOT <= self.value <= MAX_AMS_SLOT:
             msg = f"AMS slot must be {MIN_AMS_SLOT}..{MAX_AMS_SLOT}, got {self.value}"
-            raise ValueError(msg)
+            raise InvalidValueError(msg)
 
     def __str__(self) -> str:
         return str(self.value)
@@ -70,7 +72,7 @@ class TagUid:
     def __post_init__(self) -> None:
         if not self.value.strip():
             msg = "TagUid cannot be blank"
-            raise ValueError(msg)
+            raise InvalidValueError(msg)
 
     def __str__(self) -> str:
         return self.value

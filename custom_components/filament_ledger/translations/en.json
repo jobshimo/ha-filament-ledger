@@ -1,0 +1,96 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Filament Ledger",
+        "description": "Track how much filament you actually have left, using double-entry bookkeeping instead of guesswork. Everything here can be changed later.",
+        "data": {
+          "default_opening_weight": "Default opening weight (g)",
+          "default_core_weight": "Default empty spool weight (g)",
+          "anomaly_threshold": "Flag a reconciliation this far off (%)"
+        },
+        "data_description": {
+          "default_opening_weight": "What a fresh spool holds. Bambu spools are 1000 g.",
+          "default_core_weight": "The bare reel, without filament. A kitchen scale weighs the whole spool, so the ledger subtracts this for you. Bambu reels are about 250 g.",
+          "anomaly_threshold": "When the scale disagrees with the ledger by more than this, something upstream is systematically wrong and worth a look."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Filament Ledger is already set up. One inventory is the point."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Filament Ledger",
+        "data": {
+          "default_opening_weight": "Default opening weight (g)",
+          "default_core_weight": "Default empty spool weight (g)",
+          "anomaly_threshold": "Flag a reconciliation this far off (%)"
+        }
+      }
+    }
+  },
+  "services": {
+    "register_spool": {
+      "name": "Register spool",
+      "description": "Add a spool to the inventory. It is born with an opening balance movement — there is no such thing as a balance without an entry that explains it.",
+      "fields": {
+        "material": { "name": "Material", "description": "Filament type." },
+        "material_other": { "name": "Material name", "description": "Only when material is OTHER." },
+        "colour": { "name": "Colour", "description": "RRGGBB or RRGGBBAA, with or without a leading #." },
+        "opening_weight": { "name": "Opening weight", "description": "Net filament, excluding the reel." },
+        "core_weight": { "name": "Empty spool weight", "description": "The bare reel. Used to turn a scale reading into filament mass." },
+        "vendor": { "name": "Vendor", "description": "Who made it." },
+        "label": { "name": "Label", "description": "Your own name for this spool." },
+        "tag_uid": { "name": "RFID tag", "description": "Optional. A Bambu tag identifies a batch, not a spool." },
+        "confirm_duplicate_tag": { "name": "Allow duplicate tag", "description": "Two spools from the same batch share a tag. Legal, but it has to be deliberate." }
+      }
+    },
+    "reconcile_spool": {
+      "name": "Weigh spool",
+      "description": "Correct a balance against a physical measurement. The difference is recorded as a movement, so the drift stays visible instead of being silently absorbed.",
+      "fields": {
+        "spool_id": { "name": "Spool", "description": "Which spool." },
+        "measured_g": { "name": "Measured weight", "description": "What the scale says." },
+        "includes_core": { "name": "Includes the reel", "description": "On if you weighed the whole spool." },
+        "note": { "name": "Note", "description": "Anything worth remembering." }
+      }
+    },
+    "discard_filament": {
+      "name": "Discard filament",
+      "description": "Record filament thrown away — a whole spool, or part of one.",
+      "fields": {
+        "spool_id": { "name": "Spool", "description": "Which spool." },
+        "mode": { "name": "Mode", "description": "The whole spool, or a partial amount." },
+        "amount_g": { "name": "Amount", "description": "Required for a partial discard." },
+        "reason": { "name": "Reason", "description": "Required. Six months from now nobody remembers." }
+      }
+    },
+    "adjust_spool": {
+      "name": "Adjust spool",
+      "description": "A free-form correction for cases the specific operations do not cover.",
+      "fields": {
+        "spool_id": { "name": "Spool", "description": "Which spool." },
+        "amount_g": { "name": "Amount", "description": "Negative removes, positive adds." },
+        "reason": { "name": "Reason", "description": "Required. An unexplained adjustment is indistinguishable from a bug." }
+      }
+    },
+    "mount_spool": {
+      "name": "Mount spool",
+      "description": "Put a spool in an AMS slot. Records no movement — moving a spool consumes no filament.",
+      "fields": {
+        "spool_id": { "name": "Spool", "description": "Which spool." },
+        "slot": { "name": "Slot", "description": "AMS tray, 1 to 4." }
+      }
+    },
+    "unmount_spool": {
+      "name": "Unmount spool",
+      "description": "Return a spool to storage. Records no movement.",
+      "fields": {
+        "spool_id": { "name": "Spool", "description": "Which spool." }
+      }
+    }
+  }
+}

@@ -16,7 +16,7 @@ cover is a spool whose dot colour depends on which branch an implementer wrote f
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from ..model.movement import Movement
@@ -41,7 +41,7 @@ class ConfidenceThresholds:
 
 @dataclass(frozen=True, slots=True)
 class ConfidenceEvaluator:
-    thresholds: ConfidenceThresholds = ConfidenceThresholds()
+    thresholds: ConfidenceThresholds = field(default_factory=ConfidenceThresholds)
 
     def evaluate(self, *, movements: Sequence[Movement], opening_weight: Grams) -> Confidence:
         recent = movements_since_anchor(movements)

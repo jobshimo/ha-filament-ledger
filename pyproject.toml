@@ -67,8 +67,17 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN401"]
+# Infrastructure is the layer that is *supposed* to know Home Assistant exists. The ban
+# below is what keeps it out of domain/ and application/; this allow-list names the entire
+# boundary, and it is short on purpose — if it grows, the boundary has moved.
+"custom_components/filament_ledger/__init__.py" = ["TID251"]
+"custom_components/filament_ledger/config_flow.py" = ["TID251"]
+"custom_components/filament_ledger/sensor.py" = ["TID251"]
+"custom_components/filament_ledger/infrastructure/**" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
+# A fast pre-check. The real enforcement is tests/architecture/test_layers.py, which walks
+# the AST and cannot be silenced by an ignore comment.
 "homeassistant".msg = "Infrastructure only. See docs/03-architecture.md §3.2."
 
 [tool.ruff.format]
@@ -92,6 +101,29 @@ files = ["custom_components", "tests"]
 module = ["hypothesis.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# Home Assistant re-exports through package __init__ files without __all__. That is its
+# convention, not a defect, and mypy's no_implicit_reexport is the wrong tool to point at
+# somebody else's codebase.
+module = ["homeassistant.*"]
+implicit_reexport = true
+
+[[tool.mypy.overrides]]
+# The Home Assistant boundary speaks an untyped wire protocol: websocket payloads are
+# dicts, service call data is a dict, entity attributes are a dict. Insisting on
+# disallow_any_explicit here would mean inventing TypedDicts for shapes Home Assistant
+# itself types as Any — ceremony that buys nothing and obscures the translation.
+#
+# Strictness stays absolute where the rules live. domain/ and application/ get no relief,
+# and that is the half where `Grams` has to hold.
+module = [
+    "custom_components.filament_ledger.__init__",
+    "custom_components.filament_ledger.config_flow",
+    "custom_components.filament_ledger.sensor",
+    "custom_components.filament_ledger.infrastructure.ha.*",
+]
+disallow_any_explicit = false
+
 # --------------------------------------------------------------------------------------
 # Pytest
 # --------------------------------------------------------------------------------------
@@ -100,6 +132,11 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# `pytest-homeassistant-custom-component` autoloads a plugin that imports `fcntl`, so it
+# cannot even be imported on Windows. Nothing in these suites needs it — which is the
+# architecture's claim, not a workaround. Phase 2's integration tests will run under their
+# own invocation with the plugin enabled.
+addopts = "-p no:homeassistant"
 # A forgotten `await` produces a use case that silently does nothing — the ledger's worst
 # failure mode, since it leaves no entry and no error. See docs/11-development.md §11.4.
 filterwarnings = ["error::RuntimeWarning"]

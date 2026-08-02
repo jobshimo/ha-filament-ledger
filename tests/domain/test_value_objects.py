@@ -5,12 +5,14 @@ An invalid value object cannot exist. These tests are the proof of that sentence
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
 
 import pytest
 
+from custom_components.filament_ledger.domain.error import DomainError, InvalidValueError
 from custom_components.filament_ledger.domain.value.colour import BLACK, WHITE, Colour
-from custom_components.filament_ledger.domain.value.identifiers import TagUid
+from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, TagUid
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 
@@ -117,3 +119,36 @@ class TestTagUid:
 
     def test_tags_compare_by_value(self) -> None:
         assert TagUid("A1B2") == TagUid("A1B2")
+
+
+class TestEveryValueObjectRaisesTheDomainError:
+    """One catch clause at the adapter has to cover all of them.
+
+    `InvalidValueError` subclasses both `DomainError` and `ValueError`. That is what lets
+    the websocket layer and the service layer catch every malformed field with a single
+    `except DomainError`, instead of maintaining a list of fields to re-validate — a list
+    somebody forgets to extend, where the forgotten entry surfaces as a stack trace.
+    """
+
+    def test_it_is_both_a_domain_error_and_a_value_error(self) -> None:
+        assert issubclass(InvalidValueError, DomainError)
+        assert issubclass(InvalidValueError, ValueError)
+
+    @pytest.mark.parametrize(
+        "construct",
+        [
+            pytest.param(lambda: Colour.parse("nonsense"), id="colour-format"),
+            pytest.param(lambda: Colour.parse("GGGGGG"), id="colour-not-hex"),
+            pytest.param(lambda: Colour(300, 0, 0), id="colour-channel"),
+            pytest.param(lambda: SlotIndex(9), id="slot-out-of-range"),
+            pytest.param(lambda: TagUid("   "), id="tag-blank"),
+            pytest.param(lambda: Material(MaterialKind.OTHER), id="material-unnamed"),
+            pytest.param(lambda: Material(MaterialKind.PLA, "x"), id="material-named-non-other"),
+            pytest.param(lambda: Percentage.of(101), id="percentage-range"),
+        ],
+    )
+    def test_every_rejection_is_catchable_as_a_domain_error(
+        self, construct: Callable[[], object]
+    ) -> None:
+        with pytest.raises(DomainError):
+            construct()
