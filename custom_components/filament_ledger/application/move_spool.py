@@ -1,7 +1,7 @@
-"""UC-02 · MountSpool and UC-03 · UnmountSpool, manual paths only.
+"""UC-02 · MountSpool and UC-03 · UnmountSpool, manual paths.
 
-The automatic RFID paths arrive in Phase 2 with the printer gateway. These are the manual
-variants, which is all the "manual inventory only" mode needs.
+The automatic RFID paths live in `detect_spool`, driven by the printer gateway; both paths
+share `displace_and_mount`, so "at most one spool per slot" has exactly one implementation.
 
 **Neither records a movement.** Moving a spool consumes no filament. Keeping *location
 change* and *quantity change* strictly separate is how an inventory system avoids starting
@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..domain.event import EventPublisher, SpoolMounted, SpoolUnmounted
+from ..domain.model.spool import Spool
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
@@ -22,6 +23,25 @@ from ..domain.value.identifiers import SlotIndex, SpoolId
 from ..domain.value.location import AmsSlot
 from ..domain.value.material import Material
 from .errors import SpoolNotFoundError
+
+
+async def displace_and_mount(
+    spools: SpoolRepository, spool: Spool, slot: SlotIndex
+) -> SpoolId | None:
+    """Put `spool` in `slot`, displacing whatever is there to storage first.
+
+    At most one spool per slot; displacing before mounting means the partial unique index
+    is never momentarily violated. Returns the displaced spool's id so the caller can
+    announce it — this helper writes and publishes nothing itself, because it must run
+    inside the caller's unit of work and events belong after the commit.
+    """
+    displaced: SpoolId | None = None
+    occupant = await spools.find_by_location(AmsSlot(slot))
+    if occupant is not None and occupant.id != spool.id:
+        await spools.save(occupant.unmounted())
+        displaced = occupant.id
+    await spools.save(spool.mounted_in(slot))
+    return displaced
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,20 +57,11 @@ class MountSpool:
     uow: UnitOfWork
 
     async def execute(self, spool_id: SpoolId, slot: SlotIndex) -> None:
-        displaced: SpoolId | None = None
         async with self.uow:
             spool = await self.spools.get(spool_id)
             if spool is None:
                 raise SpoolNotFoundError(spool_id)
-
-            # At most one spool per slot. Whatever is there is displaced to storage first,
-            # so the unique index is never momentarily violated.
-            occupant = await self.spools.find_by_location(AmsSlot(slot))
-            if occupant is not None and occupant.id != spool_id:
-                await self.spools.save(occupant.unmounted())
-                displaced = occupant.id
-
-            await self.spools.save(spool.mounted_in(slot))
+            displaced = await displace_and_mount(self.spools, spool, slot)
 
         # Published after the commit — never for a write that could still roll back.
         if displaced is not None:

@@ -1,0 +1,50 @@
+[
+  {
+    "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_1",
+    "platform": "bambu_lab",
+    "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_1",
+    "translation_key": "tray"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_2",
+    "platform": "bambu_lab",
+    "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_2",
+    "translation_key": "tray"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_3",
+    "platform": "bambu_lab",
+    "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_3",
+    "translation_key": "tray"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_4",
+    "platform": "bambu_lab",
+    "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_4",
+    "translation_key": "tray"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_peso_de_la_impresion",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_print_weight",
+    "translation_key": "print_weight"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_estado_de_la_impresion",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_print_status",
+    "translation_key": "print_status"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_bandeja_activa",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_active_tray",
+    "translation_key": "active_tray"
+  },
+  {
+    "entity_id": "binary_sensor.a1_00000000testser_en_linea",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_online",
+    "translation_key": "online"
+  }
+]

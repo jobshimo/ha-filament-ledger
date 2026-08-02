@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from ...application.query import SpoolSummary
@@ -24,6 +24,10 @@ class LedgerRuntime:
     database: Database
     use_cases: UseCases
     coordinator: DataUpdateCoordinator[list[SpoolSummary]]
+    # The printer gateway's `detach`, held here so `async_unload_entry` can stop tray
+    # events *before* it closes the database below them — `async_on_unload` callbacks run
+    # only after unload returns, which is too late for that ordering.
+    detach_printer: CALLBACK_TYPE
     default_opening_weight_g: int
     default_core_weight_g: int
     known_spool_ids: set[str] = field(default_factory=set)

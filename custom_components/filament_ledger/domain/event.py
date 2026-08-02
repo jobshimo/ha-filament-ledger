@@ -65,6 +65,20 @@ class AnomalyDetected(DomainEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class SpoolDetected(DomainEvent):
+    """A recognisable RFID appeared in a slot while `auto_mount_on_rfid` is off.
+
+    Informational — no location changes. Some users keep spools registered to a shelf and
+    load them briefly; silently rewriting their locations is not a service. The AMS view
+    answers this event with a manual **[ Mount ]** button instead (docs/04-use-cases.md
+    UC-02).
+    """
+
+    tag_uid: TagUid
+    slot: SlotIndex
+
+
+@dataclass(frozen=True, slots=True)
 class UnknownSpoolDetected(DomainEvent):
     """An unrecognised RFID appeared in a slot.
 

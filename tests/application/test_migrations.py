@@ -107,3 +107,45 @@ class TestAFailedMigrationLeavesNoTrace:
             assert [row["version"] for row in versions] == [1]
         finally:
             await database.close()
+
+
+LEGACY_SPOOL = (
+    "INSERT INTO spool (id, material, colour, opening_weight_mg, core_weight_mg, "
+    "location_kind, tag_uid, registered_at, updated_at) "
+    "VALUES (?, 'PLA', '000000FF', 1000000, 250000, 'STORAGE', ?, "
+    "datetime('now'), datetime('now'))"
+)
+
+
+class TestMigration0002ScrubsTheAbsentTagSentinel:
+    async def test_the_sentinel_becomes_null_and_real_tags_survive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact upgrade every pre-0002 install performs: a database stopped at
+        version 1, holding the sentinel an earlier version legally saved, brought to
+        current. The row must come out untagged — `TagUid` refuses sixteen zeros now, so
+        a row still carrying them would fail hydration on every start — and a real tag
+        must come through untouched."""
+        staged = tmp_path / "migrations"
+        staged.mkdir()
+        monkeypatch.setattr(database_module, "MIGRATIONS", staged)
+        initial = MIGRATIONS / "0001_initial.sql"
+        (staged / initial.name).write_text(initial.read_text(encoding="utf-8"), encoding="utf-8")
+
+        database = await Database.open(tmp_path / "ledger.db", run_inline)
+        try:
+            assert await database.migrate() == 1
+            await database.execute(LEGACY_SPOOL, ("untagged", "0000000000000000"))
+            await database.execute(LEGACY_SPOOL, ("tagged", "3C45C3DB00000100"))
+
+            scrub = MIGRATIONS / "0002_scrub_absent_tag_sentinel.sql"
+            (staged / scrub.name).write_text(scrub.read_text(encoding="utf-8"), encoding="utf-8")
+            assert await database.migrate() == 2
+
+            rows = await database.fetch_all("SELECT id, tag_uid FROM spool ORDER BY id")
+            assert [(row["id"], row["tag_uid"]) for row in rows] == [
+                ("tagged", "3C45C3DB00000100"),
+                ("untagged", None),
+            ]
+        finally:
+            await database.close()

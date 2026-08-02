@@ -21,7 +21,7 @@ from typing import cast
 import pytest
 import voluptuous as vol
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import Event, HassJob, HomeAssistant, ServiceCall, State
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.hass_dict import HassDict
 
@@ -37,17 +37,64 @@ from custom_components.filament_ledger.infrastructure.persistence.database impor
 from ..application.conftest import Ledger, build_ledger
 
 
+@dataclass
+class BusListener:
+    """One registration made through `async_listen`, exactly as the bus stores it."""
+
+    event_type: str
+    listener: Callable[[Event[dict[str, object]]], None]
+    event_filter: Callable[[dict[str, object]], bool] | None
+
+
 class FakeBus:
-    """The slice of the Home Assistant event bus the adapters touch: `async_fire`."""
+    """The slices of the Home Assistant event bus the adapters touch.
+
+    `async_fire` records for assertions *and* dispatches to listeners the way the real
+    bus does — filter on the event data first, then the listener with a real `Event` —
+    which is what lets `async_track_state_change_event` run its production machinery
+    against this fake.
+    """
 
     def __init__(self) -> None:
         self.fired: list[tuple[str, dict[str, object] | None]] = []
+        self.listeners: list[BusListener] = []
 
     def async_fire(self, event_type: str, event_data: dict[str, object] | None = None) -> None:
         self.fired.append((event_type, event_data))
+        event = Event(event_type, event_data or {})
+        for entry in list(self.listeners):
+            if entry.event_type != event_type:
+                continue
+            if entry.event_filter is not None and not entry.event_filter(event.data):
+                continue
+            entry.listener(event)
+
+    def async_listen(
+        self,
+        event_type: str,
+        listener: Callable[[Event[dict[str, object]]], None],
+        event_filter: Callable[[dict[str, object]], bool] | None = None,
+    ) -> Callable[[], None]:
+        entry = BusListener(event_type, listener, event_filter)
+        self.listeners.append(entry)
+
+        def remove() -> None:
+            self.listeners.remove(entry)
+
+        return remove
 
     def named(self, event_type: str) -> list[dict[str, object] | None]:
         return [data for name, data in self.fired if name == event_type]
+
+
+class FakeStates:
+    """The state-machine slice the printer gateway reads: `get` by entity id."""
+
+    def __init__(self) -> None:
+        self.by_entity_id: dict[str, State] = {}
+
+    def get(self, entity_id: str) -> State | None:
+        return self.by_entity_id.get(entity_id)
 
 
 @dataclass
@@ -86,9 +133,18 @@ class FakeConfigEntries:
         self.known: dict[str, FakeConfigEntry] = {}
         self.by_unique_id: dict[tuple[str, str], FakeConfigEntry] = {}
         self.flow = FakeFlowProgress()
+        self.unloaded_platforms: list[tuple[str, list[str]]] = []
 
     def async_loaded_entries(self, domain: str) -> list[FakeConfigEntry]:
         return list(self.loaded)
+
+    async def async_unload_platforms(
+        self, entry: FakeConfigEntry, platforms: Iterable[str]
+    ) -> bool:
+        """`async_unload_entry` forwards platform teardown here; the fake only records
+        that it happened and reports success."""
+        self.unloaded_platforms.append((entry.entry_id, list(platforms)))
+        return True
 
     def async_get_known_entry(self, entry_id: str) -> FakeConfigEntry:
         return self.known[entry_id]
@@ -141,10 +197,19 @@ class FakeHass:
     def __init__(self) -> None:
         self.data = HassDict()
         self.bus = FakeBus()
+        self.states = FakeStates()
         self.services = FakeServices()
         self.config_entries = FakeConfigEntries()
         self.http = FakeHttp()
         self.background_tasks: list[asyncio.Task[None]] = []
+
+    def async_run_hass_job(
+        self, job: HassJob[[Event[dict[str, object]]], object], event: Event[dict[str, object]]
+    ) -> None:
+        """Where the state-change tracker dispatches each matched event. The gateway's
+        action is a `@callback`, so production runs it synchronously in the loop — and
+        so does this."""
+        job.target(event)
 
     def async_create_background_task(
         self, target: Coroutine[object, object, None], name: str, eager_start: bool = True
@@ -217,6 +282,8 @@ async def harness(tmp_path: Path) -> AsyncIterator[Harness]:
         database=ledger.database,
         use_cases=ledger.use_cases,
         coordinator=cast(DataUpdateCoordinator[list[SpoolSummary]], coordinator),
+        # No printer gateway in the harness by default; tests that wire one replace this.
+        detach_printer=lambda: None,
         default_opening_weight_g=1000,
         default_core_weight_g=250,
     )

@@ -18,6 +18,7 @@ from custom_components.filament_ledger.config_flow import (
 )
 from custom_components.filament_ledger.const import (
     CONF_ANOMALY_THRESHOLD,
+    CONF_AUTO_MOUNT_ON_RFID,
     CONF_DEFAULT_CORE_WEIGHT,
     CONF_DEFAULT_OPENING_WEIGHT,
     DOMAIN,
@@ -29,6 +30,7 @@ VALID = {
     CONF_DEFAULT_OPENING_WEIGHT: 800,
     CONF_DEFAULT_CORE_WEIGHT: 180,
     CONF_ANOMALY_THRESHOLD: 20,
+    CONF_AUTO_MOUNT_ON_RFID: False,
 }
 
 
@@ -54,6 +56,7 @@ class TestUserStep:
             CONF_DEFAULT_OPENING_WEIGHT: 1000,
             CONF_DEFAULT_CORE_WEIGHT: 250,
             CONF_ANOMALY_THRESHOLD: 15,
+            CONF_AUTO_MOUNT_ON_RFID: True,
         }
 
     async def test_valid_input_creates_the_entry_with_the_documented_fields(self) -> None:
@@ -74,10 +77,11 @@ class TestUserStep:
             pytest.param(CONF_DEFAULT_CORE_WEIGHT, 2001, id="a-two-kilo-reel"),
             pytest.param(CONF_ANOMALY_THRESHOLD, 0, id="a-zero-threshold"),
             pytest.param(CONF_ANOMALY_THRESHOLD, 101, id="a-threshold-past-everything"),
+            pytest.param(CONF_AUTO_MOUNT_ON_RFID, "maybe", id="an-auto-mount-that-hedges"),
         ],
     )
     async def test_out_of_range_values_are_rejected_by_the_form(
-        self, name: str, value: int
+        self, name: str, value: int | str
     ) -> None:
         result = await user_flow(FakeHass()).async_step_user(None)
         schema = result["data_schema"]
@@ -125,6 +129,7 @@ class TestOptionsFlow:
             CONF_DEFAULT_OPENING_WEIGHT: 800,
             CONF_DEFAULT_CORE_WEIGHT: 180,
             CONF_ANOMALY_THRESHOLD: 33,
+            CONF_AUTO_MOUNT_ON_RFID: False,
         }
 
     async def test_submitting_replaces_the_options(self) -> None:

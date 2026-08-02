@@ -10,7 +10,7 @@ from ...domain.model.spool import Spool
 from ...domain.port.repositories import SpoolFilter
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import SlotIndex, SpoolId, TagUid
+from ...domain.value.identifiers import ABSENT_TAG_SENTINEL, SlotIndex, SpoolId, TagUid
 from ...domain.value.location import AmsSlot, ExternalSpool, Location, Storage
 from ...domain.value.material import Material, MaterialKind
 from .database import Database
@@ -47,6 +47,19 @@ def _location_from(kind: str, slot: int | None) -> Location:
     return Storage()
 
 
+def _tag_from(value: str | None) -> TagUid | None:
+    """The sentinel is tolerated on the way out, not only refused on the way in.
+
+    Rows saved before `TagUid` refused sixteen zeros — or restored from a backup that
+    predates migration 0002's scrub — must hydrate as untagged spools. Raising here would
+    fail every list and get, and with them the coordinator and the whole entry: one legacy
+    row must not take the ledger down.
+    """
+    if not value or value == ABSENT_TAG_SENTINEL:
+        return None
+    return TagUid(value)
+
+
 def _to_spool(row: sqlite3.Row) -> Spool:
     kind = MaterialKind(row["material"])
     registered = _parse(row["registered_at"])
@@ -63,7 +76,7 @@ def _to_spool(row: sqlite3.Row) -> Spool:
         registered_at=registered,
         vendor=row["vendor"],
         label=row["label"],
-        tag_uid=TagUid(row["tag_uid"]) if row["tag_uid"] else None,
+        tag_uid=_tag_from(row["tag_uid"]),
         discarded_at=_parse(row["discarded_at"]),
     )
 

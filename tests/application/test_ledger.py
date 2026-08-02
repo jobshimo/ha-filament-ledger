@@ -497,6 +497,54 @@ class TestPersistenceEnforcesTheLedger:
         assert detail.summary.balance == Grams.of(960)
 
 
+class TestLegacySentinelTagRows:
+    """Rows written before `TagUid` refused sixteen zeros.
+
+    The sentinel was a legal, savable tag then, so an upgraded database can hold one until
+    migration 0002 scrubs it — and a backup restored *after* the migration ran skips the
+    scrub entirely. Hydration must read such a row as an untagged spool; raising instead
+    would fail every list and get, and with them the coordinator and the whole entry.
+    """
+
+    SPOOL_ROW = (
+        "INSERT INTO spool (id, material, colour, opening_weight_mg, core_weight_mg, "
+        "location_kind, tag_uid, registered_at, updated_at) "
+        "VALUES (?, 'PLA', '000000FF', 1000000, 250000, 'STORAGE', "
+        "'0000000000000000', '2026-01-01T00:00:00+00:00', datetime('now'))"
+    )
+    OPENING_ROW = (
+        "INSERT INTO movement (id, spool_id, type, amount_mg, source, occurred_at, "
+        "recorded_at) VALUES ('m-legacy', ?, 'OPENING_BALANCE', 1000000, "
+        "'USER_CONFIRMED', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+    )
+
+    async def a_legacy_spool(self, ledger: Ledger) -> SpoolId:
+        """Inserted directly, the way the legacy data got there: no use case can write
+        the sentinel any more, and the test must not depend on one ever doing so again."""
+        await ledger.database.execute(self.SPOOL_ROW, ("legacy",))
+        await ledger.database.execute(self.OPENING_ROW, ("legacy",))
+        return SpoolId("legacy")
+
+    async def test_the_overview_loads_the_row_as_an_untagged_spool(self, ledger: Ledger) -> None:
+        """`overview` is the coordinator's update method — the exact call whose failure
+        used to take the integration down at setup."""
+        spool_id = await self.a_legacy_spool(ledger)
+
+        [summary] = await ledger.use_cases.queries.overview()
+
+        assert summary.spool.id == spool_id
+        assert summary.spool.tag_uid is None
+        assert summary.balance == Grams.of(1000)
+
+    async def test_get_returns_the_row_with_no_tag(self, ledger: Ledger) -> None:
+        spool_id = await self.a_legacy_spool(ledger)
+
+        spool = await SqliteSpoolRepository(ledger.database).get(spool_id)
+
+        assert spool is not None
+        assert spool.tag_uid is None
+
+
 # -- cancellation ----------------------------------------------------------------------
 #
 # Home Assistant cancels tracked service-call tasks at shutdown after 0.1 s of grace, and

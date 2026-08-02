@@ -13,6 +13,7 @@ DOMAIN: Final = "filament_ledger"
 CONF_DEFAULT_OPENING_WEIGHT: Final = "default_opening_weight"
 CONF_DEFAULT_CORE_WEIGHT: Final = "default_core_weight"
 CONF_ANOMALY_THRESHOLD: Final = "anomaly_threshold"
+CONF_AUTO_MOUNT_ON_RFID: Final = "auto_mount_on_rfid"
 
 DEFAULT_OPENING_WEIGHT_G: Final = 1000
 # Bambu spools are roughly this. It is a starting point the user corrects per vendor, not a
@@ -20,6 +21,10 @@ DEFAULT_OPENING_WEIGHT_G: Final = 1000
 # suggestion the service layer fills in. See docs/02-domain-model.md §2.8.
 DEFAULT_CORE_WEIGHT_G: Final = 250
 DEFAULT_ANOMALY_THRESHOLD_PCT: Final = 15
+# On by default: a detected tag mounting its spool is the product working as designed. The
+# option exists for users who keep spools registered to a shelf and load them briefly —
+# silently rewriting their locations is not a service. See docs/04-use-cases.md UC-02.
+DEFAULT_AUTO_MOUNT_ON_RFID: Final = True
 
 DATABASE_FILENAME: Final = "filament_ledger.db"
 

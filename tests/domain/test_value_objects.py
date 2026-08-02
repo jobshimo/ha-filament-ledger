@@ -1,4 +1,4 @@
-"""Colour, Material, Percentage and the identity types.
+"""Colour, Material, Percentage, TrayReading and the identity types.
 
 An invalid value object cannot exist. These tests are the proof of that sentence.
 """
@@ -15,6 +15,7 @@ from custom_components.filament_ledger.domain.value.colour import BLACK, WHITE, 
 from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, TagUid
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
+from custom_components.filament_ledger.domain.value.tray_reading import TrayReading
 
 
 class TestColour:
@@ -117,8 +118,50 @@ class TestTagUid:
         with pytest.raises(ValueError, match="blank"):
             TagUid("   ")
 
+    def test_sixteen_zeros_denotes_absence_not_identity(self) -> None:
+        """The printer reports `0000000000000000` for a spool with no readable tag.
+
+        Accepting it as a value would merge every untagged spool the owner ever buys into
+        one — the gateway translates it to None, and this rejection is the backstop that
+        makes the bug unrepresentable. See docs/12-field-notes.md."""
+        with pytest.raises(ValueError, match="absent"):
+            TagUid("0000000000000000")
+
     def test_tags_compare_by_value(self) -> None:
         assert TagUid("A1B2") == TagUid("A1B2")
+
+
+class TestTrayReading:
+    def test_carries_what_one_tray_reports(self) -> None:
+        reading = TrayReading(
+            slot=SlotIndex(2),
+            tag=TagUid("A1B2C3D4"),
+            empty=False,
+            name="Bambu PLA Basic",
+            material="PLA",
+            colour=Colour.parse("#5E43B7FF"),
+        )
+        assert reading.tag == TagUid("A1B2C3D4")
+        assert str(reading) == "tray 2: A1B2C3D4"
+
+    def test_an_occupied_tray_may_have_no_readable_tag(self) -> None:
+        """A third-party or refilled spool: present, feeding the printer, anonymous."""
+        reading = TrayReading(slot=SlotIndex(3), tag=None, empty=False)
+        assert not reading.empty
+        assert reading.tag is None
+
+    def test_an_empty_tray_cannot_carry_a_tag(self) -> None:
+        """Contradictory data must fail at construction — the empty branch unmounts
+        whatever the ledger has in that slot, and it must never act on a reading that
+        refutes itself."""
+        with pytest.raises(ValueError, match="empty"):
+            TrayReading(slot=SlotIndex(1), tag=TagUid("A1B2"), empty=True)
+
+    def test_a_blank_hint_cannot_exist(self) -> None:
+        with pytest.raises(ValueError, match="hint"):
+            TrayReading(slot=SlotIndex(1), tag=None, empty=False, name="   ")
+        with pytest.raises(ValueError, match="hint"):
+            TrayReading(slot=SlotIndex(1), tag=None, empty=False, material="")
 
 
 class TestEveryValueObjectRaisesTheDomainError:
@@ -142,6 +185,11 @@ class TestEveryValueObjectRaisesTheDomainError:
             pytest.param(lambda: Colour(300, 0, 0), id="colour-channel"),
             pytest.param(lambda: SlotIndex(9), id="slot-out-of-range"),
             pytest.param(lambda: TagUid("   "), id="tag-blank"),
+            pytest.param(lambda: TagUid("0000000000000000"), id="tag-absence-sentinel"),
+            pytest.param(
+                lambda: TrayReading(slot=SlotIndex(1), tag=TagUid("A1"), empty=True),
+                id="tray-empty-yet-tagged",
+            ),
             pytest.param(lambda: Material(MaterialKind.OTHER), id="material-unnamed"),
             pytest.param(lambda: Material(MaterialKind.PLA, "x"), id="material-named-non-other"),
             pytest.param(lambda: Percentage.of(101), id="percentage-range"),

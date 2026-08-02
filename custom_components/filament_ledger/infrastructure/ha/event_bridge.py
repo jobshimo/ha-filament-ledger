@@ -19,6 +19,7 @@ from ...domain.event import (
     DomainEvent,
     MovementRecorded,
     SpoolDepleted,
+    SpoolDetected,
     SpoolMounted,
     SpoolRegistered,
     SpoolUnmounted,
@@ -76,6 +77,11 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
                 "spool_id": anomaly.spool_id,
                 "kind": anomaly.kind.value,
                 "detail": anomaly.detail,
+            }
+        case SpoolDetected(tag_uid, slot):
+            return event_name("spool_detected"), {
+                "tag_uid": tag_uid.value,
+                "slot": slot.value,
             }
         case UnknownSpoolDetected(tag_uid, slot):
             return event_name("unknown_spool_detected"), {

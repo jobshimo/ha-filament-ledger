@@ -16,6 +16,7 @@ from custom_components.filament_ledger.domain.event import (
     DomainEvent,
     MovementRecorded,
     SpoolDepleted,
+    SpoolDetected,
     SpoolMounted,
     SpoolRegistered,
     SpoolUnmounted,
@@ -105,6 +106,12 @@ class TestTranslation:
                 "filament_ledger_anomaly_detected",
                 {"spool_id": "spool-1", "kind": "NEGATIVE_BALANCE", "detail": "balance is -40 g"},
                 id="something-is-implausible",
+            ),
+            pytest.param(
+                SpoolDetected(tag_uid=TagUid("A1B2C3D4"), slot=SlotIndex(3)),
+                "filament_ledger_spool_detected",
+                {"tag_uid": "A1B2C3D4", "slot": 3},
+                id="a-tag-is-seen-with-auto-mount-off",
             ),
             pytest.param(
                 UnknownSpoolDetected(tag_uid=TagUid("A1B2C3D4"), slot=SlotIndex(1)),

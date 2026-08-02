@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .adjust_spool import AdjustSpool, DiscardFilament
+from .detect_spool import DetectSpool
 from .move_spool import EditSpoolDetails, MountSpool, UnmountSpool
 from .query import Queries
 from .reconcile_spool import ReconcileSpool
@@ -23,5 +24,6 @@ class UseCases:
     adjust_spool: AdjustSpool
     mount_spool: MountSpool
     unmount_spool: UnmountSpool
+    detect_spool: DetectSpool
     edit_spool_details: EditSpoolDetails
     queries: Queries

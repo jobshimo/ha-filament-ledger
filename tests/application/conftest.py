@@ -22,6 +22,7 @@ from custom_components.filament_ledger.application.adjust_spool import (
     AdjustSpool,
     DiscardFilament,
 )
+from custom_components.filament_ledger.application.detect_spool import DetectSpool
 from custom_components.filament_ledger.application.move_spool import (
     EditSpoolDetails,
     MountSpool,
@@ -109,6 +110,10 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             adjust_spool=AdjustSpool(spools, movements, clock, events, database),
             mount_spool=MountSpool(spools, clock, events, database),
             unmount_spool=UnmountSpool(spools, events, database),
+            # The production default. The auto-mount-off scenarios build their own
+            # `DetectSpool` with the flag flipped, the way `TestAtomicity` builds its own
+            # `RegisterSpool` — the fixture stays one honest wiring, not a matrix.
+            detect_spool=DetectSpool(spools, events, database, auto_mount=True),
             edit_spool_details=EditSpoolDetails(spools, database),
             queries=Queries(spools=spools, movements=movements),
         ),

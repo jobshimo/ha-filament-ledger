@@ -58,6 +58,13 @@ class SlotIndex:
         return str(self.value)
 
 
+# What the printer reports for a tray holding a spool with no readable tag. Sixteen zeros
+# is a sentinel for "nothing was read", never a serial — see docs/12-field-notes.md.
+# Public because the whole boundary shares the fact: the gateway translates it to `None`
+# on the way in, and hydration tolerates it in rows saved before `TagUid` refused it.
+ABSENT_TAG_SENTINEL = "0000000000000000"
+
+
 @dataclass(frozen=True, slots=True)
 class TagUid:
     """The RFID serial read from a spool.
@@ -65,6 +72,12 @@ class TagUid:
     Optional on a `Spool`: third-party and refilled spools have none. Crucially it is
     *not* identity — a Bambu tag identifies a product batch, so two physical spools can
     carry the same payload. See docs/02-domain-model.md §2.3.
+
+    Sixteen zeros is refused outright. The printer reports `0000000000000000` for a tray
+    whose spool has no readable tag, so it denotes *absence*, not identity — matching on it
+    would merge every untagged spool the owner ever buys into one. The gateway translates
+    the sentinel to `None` at the boundary; this check is the backstop that makes the bug
+    unrepresentable rather than merely unlikely.
     """
 
     value: str
@@ -72,6 +85,12 @@ class TagUid:
     def __post_init__(self) -> None:
         if not self.value.strip():
             msg = "TagUid cannot be blank"
+            raise InvalidValueError(msg)
+        if self.value == ABSENT_TAG_SENTINEL:
+            msg = (
+                f"TagUid {ABSENT_TAG_SENTINEL!r} denotes an absent tag, not an identity; "
+                f"represent it as None"
+            )
             raise InvalidValueError(msg)
 
     def __str__(self) -> str:
