@@ -14,6 +14,7 @@ from ..domain.event import AnomalyDetected, EventPublisher, MovementRecorded, Sp
 from ..domain.model.movement import record
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import MovementRepository, SpoolRepository
+from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance
 from ..domain.value.grams import Grams
@@ -48,6 +49,7 @@ class DiscardFilament:
     movements: MovementRepository
     clock: Clock
     events: EventPublisher
+    uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
 
     async def execute(self, command: DiscardFilamentCommand) -> Grams:
@@ -55,44 +57,49 @@ class DiscardFilament:
             msg = "a discard needs a reason"
             raise InvalidValueError(msg)
 
-        spool = await self.spools.get(command.spool_id)
-        if spool is None:
-            raise SpoolNotFoundError(command.spool_id)
-        if spool.is_discarded:
-            msg = f"spool {spool.display_name} was already discarded"
-            raise SpoolDiscardedError(msg)
+        # One unit of work around the read-compute-write sequence: the balance the
+        # discard is computed from is the balance the ledger holds when the movement
+        # lands, and the movement and the discard flag commit together or not at all.
+        async with self.uow:
+            spool = await self.spools.get(command.spool_id)
+            if spool is None:
+                raise SpoolNotFoundError(command.spool_id)
+            if spool.is_discarded:
+                msg = f"spool {spool.display_name} was already discarded"
+                raise SpoolDiscardedError(msg)
 
-        history = await self.movements.list_for_spool(spool.id)
-        current = balance(history)
-        now = self.clock.now()
+            history = await self.movements.list_for_spool(spool.id)
+            current = balance(history)
+            now = self.clock.now()
 
-        if command.mode is DiscardMode.WHOLE_SPOOL:
-            amount = current
-            if not amount.is_positive:
-                # Nothing left to write off, but the spool still leaves the inventory.
-                await self.spools.save(spool.discarded(now))
-                return Grams.zero()
-        else:
-            if command.amount is None or not command.amount.is_positive:
-                msg = "a partial discard needs a positive amount"
-                raise InvalidValueError(msg)
-            amount = command.amount
+            if command.mode is DiscardMode.WHOLE_SPOOL:
+                amount = current
+                if not amount.is_positive:
+                    # Nothing left to write off, but the spool still leaves the inventory.
+                    await self.spools.save(spool.discarded(now))
+                    return Grams.zero()
+            else:
+                if command.amount is None or not command.amount.is_positive:
+                    msg = "a partial discard needs a positive amount"
+                    raise InvalidValueError(msg)
+                amount = command.amount
 
-        await self.movements.append(
-            record(
-                spool_id=spool.id,
-                type=MovementType.DISCARD,
-                amount=-amount,
-                source=MovementSource.USER_CONFIRMED,
-                occurred_at=now,
-                note=command.reason,
+            await self.movements.append(
+                record(
+                    spool_id=spool.id,
+                    type=MovementType.DISCARD,
+                    amount=-amount,
+                    source=MovementSource.USER_CONFIRMED,
+                    occurred_at=now,
+                    note=command.reason,
+                )
             )
-        )
 
-        new_balance = current - amount
-        if command.mode is DiscardMode.WHOLE_SPOOL:
-            await self.spools.save(spool.discarded(now))
+            new_balance = current - amount
+            if command.mode is DiscardMode.WHOLE_SPOOL:
+                await self.spools.save(spool.discarded(now))
 
+        # Published after the commit — never for a write that could still roll back.
         await self.events.publish(
             MovementRecorded(
                 spool_id=spool.id,
@@ -123,6 +130,7 @@ class AdjustSpool:
     movements: MovementRepository
     clock: Clock
     events: EventPublisher
+    uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
 
     async def execute(self, command: AdjustSpoolCommand) -> Grams:
@@ -133,28 +141,34 @@ class AdjustSpool:
             msg = "a zero adjustment records nothing"
             raise InvalidValueError(msg)
 
-        spool = await self.spools.get(command.spool_id)
-        if spool is None:
-            raise SpoolNotFoundError(command.spool_id)
-        if spool.is_discarded:
-            msg = f"spool {spool.display_name} was discarded"
-            raise SpoolDiscardedError(msg)
+        # The unit of work keeps the history read and the append indivisible, so the
+        # `new_balance` this adjustment reports is computed from the ledger it actually
+        # extended — not from a read another task has since made stale.
+        async with self.uow:
+            spool = await self.spools.get(command.spool_id)
+            if spool is None:
+                raise SpoolNotFoundError(command.spool_id)
+            if spool.is_discarded:
+                msg = f"spool {spool.display_name} was discarded"
+                raise SpoolDiscardedError(msg)
 
-        history = await self.movements.list_for_spool(spool.id)
-        now = self.clock.now()
+            history = await self.movements.list_for_spool(spool.id)
+            now = self.clock.now()
 
-        await self.movements.append(
-            record(
-                spool_id=spool.id,
-                type=MovementType.MANUAL_ADJUSTMENT,
-                amount=command.amount,
-                source=MovementSource.USER_CONFIRMED,
-                occurred_at=now,
-                note=command.reason,
+            await self.movements.append(
+                record(
+                    spool_id=spool.id,
+                    type=MovementType.MANUAL_ADJUSTMENT,
+                    amount=command.amount,
+                    source=MovementSource.USER_CONFIRMED,
+                    occurred_at=now,
+                    note=command.reason,
+                )
             )
-        )
 
-        new_balance = balance(history) + command.amount
+            new_balance = balance(history) + command.amount
+
+        # Published after the commit — never for a write that could still roll back.
         await self.events.publish(
             MovementRecorded(
                 spool_id=spool.id,

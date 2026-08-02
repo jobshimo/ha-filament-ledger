@@ -10,7 +10,8 @@ makes it observable: the entire product below the adapter layer runs on `run_inl
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,6 +34,7 @@ from custom_components.filament_ledger.application.use_cases import UseCases
 from custom_components.filament_ledger.domain.event import DomainEvent
 from custom_components.filament_ledger.infrastructure.persistence.database import (
     Database,
+    Executor,
     run_inline,
 )
 from custom_components.filament_ledger.infrastructure.persistence.movement_repository import (
@@ -43,6 +45,15 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
 )
 
 EPOCH = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+
+
+async def run_yielding[T](target: Callable[[], T]) -> T:
+    """An executor that yields to the event loop first, the way a real thread-pool hop
+    does. `run_inline` never yields, so two gathered use cases run to completion one after
+    the other and a race can never be observed with it — this one is what lets the
+    concurrency tests interleave the way production would."""
+    await asyncio.sleep(0)
+    return target()
 
 
 @dataclass
@@ -79,9 +90,10 @@ class Ledger:
     database: Database
 
 
-@pytest.fixture
-async def ledger(tmp_path: Path) -> AsyncIterator[Ledger]:
-    database = await Database.open(tmp_path / "ledger.db", run_inline)
+async def build_ledger(path: Path, executor: Executor) -> Ledger:
+    """Wire a whole ledger by hand, exactly as the composition root does — the `Database`
+    doubles as the unit of work, there as here."""
+    database = await Database.open(path / "ledger.db", executor)
     await database.migrate()
 
     spools = SqliteSpoolRepository(database)
@@ -89,15 +101,15 @@ async def ledger(tmp_path: Path) -> AsyncIterator[Ledger]:
     clock = FakeClock()
     events = RecordingEventBus()
 
-    yield Ledger(
+    return Ledger(
         use_cases=UseCases(
-            register_spool=RegisterSpool(spools, movements, clock, events),
-            reconcile_spool=ReconcileSpool(spools, movements, clock, events),
-            discard_filament=DiscardFilament(spools, movements, clock, events),
-            adjust_spool=AdjustSpool(spools, movements, clock, events),
-            mount_spool=MountSpool(spools, clock, events),
-            unmount_spool=UnmountSpool(spools, events),
-            edit_spool_details=EditSpoolDetails(spools),
+            register_spool=RegisterSpool(spools, movements, clock, events, database),
+            reconcile_spool=ReconcileSpool(spools, movements, clock, events, database),
+            discard_filament=DiscardFilament(spools, movements, clock, events, database),
+            adjust_spool=AdjustSpool(spools, movements, clock, events, database),
+            mount_spool=MountSpool(spools, clock, events, database),
+            unmount_spool=UnmountSpool(spools, events, database),
+            edit_spool_details=EditSpoolDetails(spools, database),
             queries=Queries(spools=spools, movements=movements),
         ),
         clock=clock,
@@ -105,4 +117,18 @@ async def ledger(tmp_path: Path) -> AsyncIterator[Ledger]:
         database=database,
     )
 
-    await database.close()
+
+@pytest.fixture
+async def ledger(tmp_path: Path) -> AsyncIterator[Ledger]:
+    built = await build_ledger(tmp_path, run_inline)
+    yield built
+    await built.database.close()
+
+
+@pytest.fixture
+async def interleaved_ledger(tmp_path: Path) -> AsyncIterator[Ledger]:
+    """A ledger whose executor yields before every statement, so concurrent use cases
+    actually interleave. See `run_yielding`."""
+    built = await build_ledger(tmp_path, run_yielding)
+    yield built
+    await built.database.close()

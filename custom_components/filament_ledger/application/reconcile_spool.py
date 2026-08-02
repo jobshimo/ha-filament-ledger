@@ -13,6 +13,7 @@ from ..domain.event import AnomalyDetected, EventPublisher, MovementRecorded, Sp
 from ..domain.model.movement import record
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import MovementRepository, SpoolRepository
+from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance
 from ..domain.value.grams import Grams
@@ -41,42 +42,51 @@ class ReconcileSpool:
     movements: MovementRepository
     clock: Clock
     events: EventPublisher
+    uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
 
     async def execute(self, command: ReconcileSpoolCommand) -> ReconcileResult:
-        spool = await self.spools.get(command.spool_id)
-        if spool is None:
-            raise SpoolNotFoundError(command.spool_id)
-        if spool.is_discarded:
-            msg = f"spool {spool.display_name} was discarded"
-            raise SpoolDiscardedError(msg)
+        # The unit of work spans the read-compute-append sequence. Two concurrent
+        # reconciliations of the same spool would otherwise both read the same history,
+        # both compute the same delta, and both append it — doubling the correction.
+        async with self.uow:
+            spool = await self.spools.get(command.spool_id)
+            if spool is None:
+                raise SpoolNotFoundError(command.spool_id)
+            if spool.is_discarded:
+                msg = f"spool {spool.display_name} was discarded"
+                raise SpoolDiscardedError(msg)
 
-        history = await self.movements.list_for_spool(spool.id)
-        current = balance(history)
+            history = await self.movements.list_for_spool(spool.id)
+            current = balance(history)
 
-        measured_net = (
-            spool.net_from_gross(command.measured) if command.includes_core else command.measured
-        )
-        delta = measured_net - current
-
-        if delta.is_zero:
-            # A zero movement records nothing and only adds noise.
-            msg = f"the scale agrees with the ledger at {current}"
-            raise NothingToRecordError(msg)
-
-        now = self.clock.now()
-        await self.movements.append(
-            record(
-                spool_id=spool.id,
-                type=MovementType.RECONCILIATION,
-                amount=delta,
-                source=MovementSource.USER_CONFIRMED,
-                occurred_at=now,
-                note=command.note
-                or f"Weighed {command.measured}{' including core' if command.includes_core else ''}",
+            measured_net = (
+                spool.net_from_gross(command.measured)
+                if command.includes_core
+                else command.measured
             )
-        )
+            delta = measured_net - current
 
+            if delta.is_zero:
+                # A zero movement records nothing and only adds noise.
+                msg = f"the scale agrees with the ledger at {current}"
+                raise NothingToRecordError(msg)
+
+            now = self.clock.now()
+            await self.movements.append(
+                record(
+                    spool_id=spool.id,
+                    type=MovementType.RECONCILIATION,
+                    amount=delta,
+                    source=MovementSource.USER_CONFIRMED,
+                    occurred_at=now,
+                    note=command.note
+                    or f"Weighed {command.measured}"
+                    f"{' including core' if command.includes_core else ''}",
+                )
+            )
+
+        # Published after the commit — never for a write that could still roll back.
         await self.events.publish(
             MovementRecorded(
                 spool_id=spool.id,

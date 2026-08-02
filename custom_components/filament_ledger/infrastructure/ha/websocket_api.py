@@ -46,6 +46,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_detail,
         handle_stock,
         handle_create,
+        handle_update,
         handle_reconcile,
         handle_discard,
         handle_adjust,
@@ -177,6 +178,41 @@ async def handle_create(
     )
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"spool_id": spool_id})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/spools/update",
+        vol.Required("spool_id"): str,
+        # Metadata only — **never the balance**. The schema is the surface of
+        # `EditSpoolDetails`, which replaces fields and cannot clear them: absent and
+        # null both mean "leave unchanged".
+        vol.Optional("label"): vol.Any(str, None),
+        vol.Optional("vendor"): vol.Any(str, None),
+        vol.Optional("colour"): str,
+        vol.Optional("material"): vol.In([kind.value for kind in MaterialKind]),
+        vol.Optional("material_other"): str,
+        vol.Optional("core_weight_g"): vol.Coerce(float),
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_update(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    runtime = _runtime(hass)
+    await runtime.use_cases.edit_spool_details.execute(
+        SpoolId(msg["spool_id"]),
+        label=msg.get("label"),
+        vendor=msg.get("vendor"),
+        colour=Colour.parse(msg["colour"]) if msg.get("colour") is not None else None,
+        material=_material(msg) if msg.get("material") is not None else None,
+        core_weight=(
+            Grams.of(msg["core_weight_g"]) if msg.get("core_weight_g") is not None else None
+        ),
+    )
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True})
 
 
 @websocket_api.websocket_command(

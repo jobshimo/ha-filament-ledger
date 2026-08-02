@@ -26,7 +26,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .application.query import SpoolSummary
 from .const import DOMAIN
 from .infrastructure.ha.runtime import LedgerConfigEntry, LedgerRuntime
-from .infrastructure.ha.serialisers import spool_summary, whole_grams
+from .infrastructure.ha.serialisers import (
+    spool_summary,
+    stock_grams,
+    stock_per_material,
+    whole_grams,
+)
 
 
 async def async_setup_entry(
@@ -169,20 +174,15 @@ class TotalStockSensor(LedgerAggregateSensor):
             key="total_stock",
             name="Total stock",
             icon="mdi:sigma",
-            value=lambda summaries: sum(
-                whole_grams(s.balance) for s in summaries if s.state.counts_as_stock
-            ),
+            # The exact balances are summed and rounded once, exactly as `Queries.stock()`
+            # does for the websocket — summing per-spool roundings would let the sensor
+            # and the panel disagree about the same ledger.
+            value=stock_grams,
         )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        per_material: dict[str, int] = {}
-        for summary in self.summaries:
-            if not summary.state.counts_as_stock:
-                continue
-            key = summary.spool.material.display_name
-            per_material[key] = per_material.get(key, 0) + whole_grams(summary.balance)
-        return {"per_material": per_material}
+        return {"per_material": stock_per_material(self.summaries)}
 
 
 class SpoolCountSensor(LedgerAggregateSensor):

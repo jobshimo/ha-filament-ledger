@@ -3,6 +3,13 @@
 -- All four tables land in the first migration even though Phase 1 only writes to two of
 -- them. print_job and pending_review are referenced by movement's foreign keys, and
 -- reserving them now means the Phase 2 answer to Q2 does not require a schema change.
+--
+-- The whole migration is one transaction, and the last statement inside it records the
+-- version. Either everything lands — tables, triggers, and the schema_version row — or
+-- nothing does: a crash mid-migration must not leave half a schema behind with no version
+-- recorded, which would make every subsequent start fail on "table already exists".
+
+BEGIN;
 
 CREATE TABLE spool (
     id                TEXT PRIMARY KEY,
@@ -109,3 +116,7 @@ BEFORE DELETE ON movement
 BEGIN
     SELECT RAISE(ABORT, 'movements cannot be deleted');
 END;
+
+INSERT INTO schema_version (version, applied_at) VALUES (1, datetime('now'));
+
+COMMIT;

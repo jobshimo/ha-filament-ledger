@@ -67,6 +67,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN401"]
+# The adapter suite tests the Home Assistant boundary, so it is allowed to see Home
+# Assistant — the no-HA CI job never collects it (it runs tests/domain and
+# tests/architecture only), which keeps the "domain runs without HA" claim observable.
+"tests/ha/**" = ["ANN401", "TID251"]
 # Infrastructure is the layer that is *supposed* to know Home Assistant exists. The ban
 # below is what keeps it out of domain/ and application/; this allow-list names the entire
 # boundary, and it is short on purpose — if it grows, the boundary has moved.

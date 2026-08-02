@@ -91,14 +91,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         anomalies=anomalies,
     )
 
+    # `database` is passed where a `UnitOfWork` is expected: the connection is the thing
+    # that can make a multi-write sequence atomic, so it is the thing that implements it.
     use_cases = UseCases(
-        register_spool=RegisterSpool(spools, movements, clock, events),
-        reconcile_spool=ReconcileSpool(spools, movements, clock, events, anomalies),
-        discard_filament=DiscardFilament(spools, movements, clock, events, anomalies),
-        adjust_spool=AdjustSpool(spools, movements, clock, events, anomalies),
-        mount_spool=MountSpool(spools, clock, events),
-        unmount_spool=UnmountSpool(spools, events),
-        edit_spool_details=EditSpoolDetails(spools),
+        register_spool=RegisterSpool(spools, movements, clock, events, database),
+        reconcile_spool=ReconcileSpool(spools, movements, clock, events, database, anomalies),
+        discard_filament=DiscardFilament(spools, movements, clock, events, database, anomalies),
+        adjust_spool=AdjustSpool(spools, movements, clock, events, database, anomalies),
+        mount_spool=MountSpool(spools, clock, events, database),
+        unmount_spool=UnmountSpool(spools, events, database),
+        edit_spool_details=EditSpoolDetails(spools, database),
         queries=queries,
     )
 
@@ -133,8 +135,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bool:
+    from .infrastructure.ha.panel import async_remove_panel
+
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
+        # The sidebar panel belongs to this entry's lifecycle. Leaving it registered
+        # would leave a dead menu item pointing at a runtime that no longer exists —
+        # and setup re-registers it, so a reload comes back whole.
+        async_remove_panel(hass)
         await entry.runtime_data.async_close()
     return unloaded
 

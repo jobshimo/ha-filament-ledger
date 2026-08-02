@@ -14,6 +14,7 @@ from ..domain.model.movement import record
 from ..domain.model.spool import Spool, register
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import MovementRepository, SpoolRepository
+from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
 from ..domain.value.identifiers import SpoolId, TagUid
@@ -41,34 +42,42 @@ class RegisterSpool:
     movements: MovementRepository
     clock: Clock
     events: EventPublisher
+    uow: UnitOfWork
 
     async def execute(self, command: RegisterSpoolCommand) -> SpoolId:
-        await self._guard_duplicate_tag(command)
+        # One unit of work from the duplicate-tag read to the movement append: the guard
+        # is still true when the writes happen, and a crash between the two writes cannot
+        # leave a spool behind with no movement that explains its balance.
+        async with self.uow:
+            await self._guard_duplicate_tag(command)
 
-        now = self.clock.now()
-        spool: Spool = register(
-            material=command.material,
-            colour=command.colour,
-            opening_weight=command.opening_weight,
-            core_weight=command.core_weight,
-            registered_at=now,
-            location=command.location if command.location is not None else Storage(),
-            vendor=command.vendor,
-            label=command.label,
-            tag_uid=command.tag_uid,
-        )
-
-        await self.spools.save(spool)
-        await self.movements.append(
-            record(
-                spool_id=spool.id,
-                type=MovementType.OPENING_BALANCE,
-                amount=command.opening_weight,
-                source=MovementSource.USER_CONFIRMED,
-                occurred_at=now,
-                note="Registered",
+            now = self.clock.now()
+            spool: Spool = register(
+                material=command.material,
+                colour=command.colour,
+                opening_weight=command.opening_weight,
+                core_weight=command.core_weight,
+                registered_at=now,
+                location=command.location if command.location is not None else Storage(),
+                vendor=command.vendor,
+                label=command.label,
+                tag_uid=command.tag_uid,
             )
-        )
+
+            await self.spools.save(spool)
+            await self.movements.append(
+                record(
+                    spool_id=spool.id,
+                    type=MovementType.OPENING_BALANCE,
+                    amount=command.opening_weight,
+                    source=MovementSource.USER_CONFIRMED,
+                    occurred_at=now,
+                    note="Registered",
+                )
+            )
+
+        # Published after the commit — an event for a write that could still roll back
+        # would announce a spool that never existed.
         await self.events.publish(
             SpoolRegistered(spool_id=spool.id, display_name=spool.display_name)
         )

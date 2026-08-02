@@ -1,0 +1,86 @@
+"""Sidebar panel lifecycle: register once, survive reloads, remove quietly.
+
+Home Assistant has no unregister API for static paths, so the route must outlive the
+panel — and the guards in `panel.py` are what keep an unload/reload cycle from stacking
+identical routes or warning about panels that were never there. The real `frontend` and
+`panel_custom` modules run here; only `hass` is faked.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import cast
+
+import pytest
+from homeassistant.components import frontend
+
+from custom_components.filament_ledger.infrastructure.ha.panel import (
+    async_register_panel,
+    async_remove_panel,
+)
+
+from .conftest import FakeHass, as_hass
+
+
+@pytest.fixture
+def hass() -> FakeHass:
+    return FakeHass()
+
+
+def panels(hass: FakeHass) -> dict[str, frontend.Panel]:
+    return cast("dict[str, frontend.Panel]", hass.data.get(frontend.DATA_PANELS) or {})
+
+
+class TestRegister:
+    async def test_the_panel_and_its_static_files_are_registered(self, hass: FakeHass) -> None:
+        await async_register_panel(as_hass(hass))
+
+        panel = panels(hass)["filament-ledger"]
+        assert panel.component_name == "custom"
+        assert panel.sidebar_title == "Filament"
+        assert panel.sidebar_icon == "mdi:printer-3d-nozzle"
+        # Weighing a spool is not an administrative act.
+        assert panel.require_admin is False
+        config = panel.config or {}
+        assert config["domain"] == "filament_ledger"
+        custom = cast("dict[str, object]", config["_panel_custom"])
+        assert custom["module_url"] == "/filament_ledger_static/filament-ledger-panel.js"
+
+        (static,) = hass.http.static_paths
+        assert static.url_path == "/filament_ledger_static"
+        assert Path(static.path).name == "www"
+        assert (Path(static.path) / "filament-ledger-panel.js").is_file()
+
+    async def test_registering_twice_neither_stacks_routes_nor_raises(self, hass: FakeHass) -> None:
+        """Without the guard, `frontend` raises "Overwriting panel" and a second static
+        route lands on the router. Setup runs on every reload, so twice is normal."""
+        await async_register_panel(as_hass(hass))
+        await async_register_panel(as_hass(hass))
+
+        assert list(panels(hass)) == ["filament-ledger"]
+        assert len(hass.http.static_paths) == 1
+
+
+class TestRemove:
+    async def test_remove_then_register_comes_back_without_a_second_route(
+        self, hass: FakeHass
+    ) -> None:
+        await async_register_panel(as_hass(hass))
+        async_remove_panel(as_hass(hass))
+        assert "filament-ledger" not in panels(hass)
+
+        await async_register_panel(as_hass(hass))
+
+        assert "filament-ledger" in panels(hass)
+        # The static route deliberately outlives the panel: registered once per run.
+        assert len(hass.http.static_paths) == 1
+
+    def test_removing_when_absent_neither_warns_nor_crashes(
+        self, hass: FakeHass, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`frontend.async_remove_panel` logs "Removing unknown panel" when asked to remove
+        what is not there; the guard means unload never asks."""
+        with caplog.at_level(logging.WARNING):
+            async_remove_panel(as_hass(hass))
+        assert caplog.records == []

@@ -44,7 +44,8 @@ The domain and application layers, complete, with persistence. No UI, no printer
   `mypy --strict` and the architecture tests, both wired into CI on the first commit
 - All value objects, entities, domain services
 - SQLite repositories with triggers and migrations
-- UC-01, UC-08, UC-09, UC-10, UC-11, UC-12 — everything not printer-dependent
+- UC-01, UC-08, UC-09, UC-10, UC-11, UC-12, and the manual paths of UC-02/UC-03 — mount
+  and unmount as services and websocket commands. Everything not printer-dependent
 - Full domain and application test suites; architecture tests in place from the start
 
 The toolchain goes first, not last. `mypy --strict` is what makes the `Grams` type discipline
@@ -68,7 +69,8 @@ Connect to reality.
 - `BambuLabGateway` implementing `PrinterGateway`, against the boundary fixed in
   [05 §5.8](05-ha-integration.md) and fixture-tested with payloads captured from the real A1
 - Job lifecycle tracking; RFID detection
-- UC-02, UC-03, UC-04, UC-05, **UC-06, UC-07**
+- UC-04, UC-05, **UC-06, UC-07**, and the automatic RFID paths of UC-02/UC-03 — the manual
+  mount/unmount paths shipped with Phase 1
 - `LinearProgressEstimator` only
 - HA entities, services, event bridge
 - Config flow

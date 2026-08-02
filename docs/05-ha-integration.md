@@ -197,8 +197,7 @@ from entity attributes, because entity state is a presentation surface, not a qu
 
 ```
 filament_ledger/spools/list          → SpoolOverview[]     (UC-11)
-filament_ledger/spools/get           → SpoolDetail
-filament_ledger/spools/movements     → MovementHistory     (UC-12)
+filament_ledger/spools/get           → SpoolDetail         (UC-12 — history included)
 filament_ledger/spools/create        → SpoolId             (UC-01)
 filament_ledger/spools/update        → ok                  (metadata only — never balance)
 filament_ledger/reviews/list         → PendingReview[]
@@ -211,9 +210,14 @@ filament_ledger/slots/state          → SlotState[]
 filament_ledger/subscribe            → live event stream
 ```
 
-`spools/update` edits metadata — label, vendor, colour — and **cannot alter a balance**. There
-is no endpoint that sets a balance directly. Changing a balance requires a movement, and that
-is the whole design. An API that could set a balance would make the ledger decorative.
+Movement history is not a separate command. `spools/get` returns the full `SpoolDetail`,
+history included, because the panel always shows the two together — a second round-trip
+would buy latency and nothing else.
+
+`spools/update` edits metadata — label, vendor, colour, material, core weight — and **cannot
+alter a balance**. There is no endpoint that sets a balance directly. Changing a balance
+requires a movement, and that is the whole design. An API that could set a balance would make
+the ledger decorative.
 
 ## 5.7 Panel registration
 

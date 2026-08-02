@@ -10,12 +10,12 @@ to lie.
 
 from __future__ import annotations
 
-import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ..domain.event import EventPublisher, SpoolMounted, SpoolUnmounted
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import SpoolRepository
+from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
 from ..domain.value.identifiers import SlotIndex, SpoolId
@@ -29,17 +29,16 @@ class MountSpool:
     spools: SpoolRepository
     clock: Clock
     events: EventPublisher
-    # Mounting is a read-then-two-writes sequence, and the database serialises each write
-    # individually rather than the sequence. Two concurrent mounts into the same slot could
-    # therefore interleave between the displacement and the mount, and land on the partial
-    # unique index as a raw `IntegrityError` instead of a rule the user can read.
-    #
-    # A single lock is the whole fix. Mounting is a human action a few times a week; there
-    # is nothing to gain from letting two of them overlap.
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Mounting is a read-then-two-writes sequence. Two concurrent mounts into the same
+    # slot could interleave between the displacement and the mount, and land on the
+    # partial unique index as a raw `IntegrityError` instead of a rule the user can read.
+    # The unit of work serialises the whole sequence and makes it atomic besides: the
+    # displaced occupant and the mounted spool commit together or not at all.
+    uow: UnitOfWork
 
     async def execute(self, spool_id: SpoolId, slot: SlotIndex) -> None:
-        async with self._lock:
+        displaced: SpoolId | None = None
+        async with self.uow:
             spool = await self.spools.get(spool_id)
             if spool is None:
                 raise SpoolNotFoundError(spool_id)
@@ -49,10 +48,13 @@ class MountSpool:
             occupant = await self.spools.find_by_location(AmsSlot(slot))
             if occupant is not None and occupant.id != spool_id:
                 await self.spools.save(occupant.unmounted())
-                await self.events.publish(SpoolUnmounted(spool_id=occupant.id))
+                displaced = occupant.id
 
             await self.spools.save(spool.mounted_in(slot))
 
+        # Published after the commit — never for a write that could still roll back.
+        if displaced is not None:
+            await self.events.publish(SpoolUnmounted(spool_id=displaced))
         await self.events.publish(SpoolMounted(spool_id=spool_id, slot=slot))
 
 
@@ -60,12 +62,14 @@ class MountSpool:
 class UnmountSpool:
     spools: SpoolRepository
     events: EventPublisher
+    uow: UnitOfWork
 
     async def execute(self, spool_id: SpoolId) -> None:
-        spool = await self.spools.get(spool_id)
-        if spool is None:
-            raise SpoolNotFoundError(spool_id)
-        await self.spools.save(spool.unmounted())
+        async with self.uow:
+            spool = await self.spools.get(spool_id)
+            if spool is None:
+                raise SpoolNotFoundError(spool_id)
+            await self.spools.save(spool.unmounted())
         await self.events.publish(SpoolUnmounted(spool_id=spool_id))
 
 
@@ -79,6 +83,7 @@ class EditSpoolDetails:
     """
 
     spools: SpoolRepository
+    uow: UnitOfWork
 
     async def execute(
         self,
@@ -90,15 +95,18 @@ class EditSpoolDetails:
         material: Material | None = None,
         core_weight: Grams | None = None,
     ) -> None:
-        spool = await self.spools.get(spool_id)
-        if spool is None:
-            raise SpoolNotFoundError(spool_id)
-        await self.spools.save(
-            spool.with_details(
-                label=label,
-                vendor=vendor,
-                colour=colour,
-                material=material,
-                core_weight=core_weight,
+        # The unit of work keeps the read-modify-save indivisible, so two concurrent
+        # edits cannot interleave and silently drop one another's fields.
+        async with self.uow:
+            spool = await self.spools.get(spool_id)
+            if spool is None:
+                raise SpoolNotFoundError(spool_id)
+            await self.spools.save(
+                spool.with_details(
+                    label=label,
+                    vendor=vendor,
+                    colour=colour,
+                    material=material,
+                    core_weight=core_weight,
+                )
             )
-        )

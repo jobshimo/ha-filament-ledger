@@ -29,6 +29,7 @@ tests/fixtures/captured/
 # Local agent tooling
 .atl/
 .agentboard/
+.codegraph/
 
 # Editors / OS
 .vscode/

@@ -7,6 +7,7 @@ surfaces can disagree about what 611.7 g looks like.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -18,7 +19,7 @@ from ...application.query import (
     movement_label,
     source_label,
 )
-from ...domain.value.grams import Grams
+from ...domain.value.grams import Grams, total
 
 
 def grams(value: Grams) -> float:
@@ -33,6 +34,28 @@ def whole_grams(value: Grams) -> int:
     the gram, and showing a decimal claims a precision the system cannot back up.
     """
     return int(value.as_decimal.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def stock_grams(summaries: Iterable[SpoolSummary]) -> int:
+    """Total stock, rounded exactly once.
+
+    Accumulate exact `Grams` and round the sum — never sum per-spool roundings. Three
+    0.3 g spools hold 0.9 g of stock, which is 1 g; rounding each spool first would call
+    it 0. `Queries.stock()` already follows this rule; this helper is the entity surface
+    doing the same, so the sensor and the websocket cannot disagree about one ledger.
+    """
+    return whole_grams(total([s.balance for s in summaries if s.state.counts_as_stock]))
+
+
+def stock_per_material(summaries: Iterable[SpoolSummary]) -> dict[str, int]:
+    """Per-material stock totals, each rounded exactly once — same rule as `stock_grams`."""
+    per_material: dict[str, Grams] = {}
+    for summary in summaries:
+        if not summary.state.counts_as_stock:
+            continue
+        key = summary.spool.material.display_name
+        per_material[key] = per_material.get(key, Grams.zero()) + summary.balance
+    return {name: whole_grams(amount) for name, amount in per_material.items()}
 
 
 def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
