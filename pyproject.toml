@@ -1,0 +1,105 @@
+[project]
+name = "filament-ledger"
+version = "0.1.0"
+description = "Home Assistant custom integration that tracks remaining filament with an append-only ledger"
+requires-python = ">=3.14.2"
+dependencies = []
+
+# The integration itself declares no runtime dependencies. See docs/11-development.md §11.2.
+
+[dependency-groups]
+# Everything needed to develop and test the domain and application layers.
+# Deliberately does NOT include homeassistant: docs/03-architecture.md §3.2 requires those
+# layers to be testable without it, and a dependency group is the cheapest way to prove it.
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "hypothesis>=6.120",
+    "mypy>=1.14",
+    "ruff>=0.9",
+]
+
+# Only the integration tests need Home Assistant. Phase 2 onward.
+ha = [
+    "homeassistant==2026.7.4",
+    # Floor pinned deliberately: this plugin tracks Home Assistant release-for-release, so
+    # an unconstrained resolve can silently adopt a version built for a different core.
+    "pytest-homeassistant-custom-component>=0.13.348",
+]
+
+[tool.uv]
+package = false
+
+# --------------------------------------------------------------------------------------
+# Ruff
+# --------------------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "C4",          # comprehensions
+    "SIM",         # simplify
+    "PT",          # pytest style
+    "PTH",         # use pathlib
+    "TID",         # tidy imports
+    "ANN",         # annotations — every signature is typed
+    "ASYNC",       # blocking calls inside coroutines (ADR-0005)
+    "RUF",         # ruff-specific
+]
+ignore = [
+    "E501",        # line length is enforced by the formatter
+    # Relative imports are how a Home Assistant custom component refers to itself; the
+    # integration directory is not importable by an absolute path outside HA's loader.
+    "TID252",
+    # The prose in this project uses typographic minus and arrows. That is deliberate.
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN401"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"homeassistant".msg = "Infrastructure only. See docs/03-architecture.md §3.2."
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --------------------------------------------------------------------------------------
+# Mypy — docs/11-development.md §11.3
+# --------------------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+disallow_any_explicit = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "."
+files = ["custom_components", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["hypothesis.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------------------
+# Pytest
+# --------------------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+# A forgotten `await` produces a use case that silently does nothing — the ledger's worst
+# failure mode, since it leaves no entry and no error. See docs/11-development.md §11.4.
+filterwarnings = ["error::RuntimeWarning"]

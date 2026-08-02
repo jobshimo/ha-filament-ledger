@@ -384,7 +384,9 @@ Flags spools whose state is physically implausible:
 
 - Balance is negative.
 - Balance is zero but the spool is still mounted and printing.
-- Reconciliation delta exceeded a threshold (default 15% of opening weight).
+- Reconciliation delta **reached or exceeded** a threshold (default 15% of opening weight).
+  Inclusive on purpose: an anomaly is a prompt to look, not an accusation, so the boundary
+  errs toward telling the user.
 
 **A negative balance is permitted, not rejected.** If the ledger says −40 g, the physical
 truth is that the opening weight was wrong, or a movement was missed. Refusing to record it
@@ -460,6 +462,7 @@ MovementRepository
     async append(Movement) -> None            -- note: no update, no delete
     async list_for_spool(SpoolId) -> Movement[]
     async list_since(SpoolId, datetime) -> Movement[]
+    async count_for_spool(SpoolId) -> int    -- for SpoolState.derive; see §2.2
 
 PrintJobRepository
     async get(PrintJobId) -> PrintJob?

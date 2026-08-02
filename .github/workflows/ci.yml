@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege. Nothing here writes to the repository, comments on a pull request, or
+# publishes anything, so nothing here needs a token that could.
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, types and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # `--group ha` is what makes the `domain-is-standalone` job below mean something:
+        # without it, no job would ever install Home Assistant and "runs without HA" would
+        # be true of every job by accident rather than by design. It also proves the lock
+        # still resolves homeassistant on Python 3.14.
+        run: uv sync --locked --group ha
+
+      - name: Ruff — lint
+        run: uv run ruff check .
+
+      - name: Ruff — format
+        run: uv run ruff format --check .
+
+      - name: Mypy — strict
+        # What makes the `Grams` type discipline real rather than decorative.
+        # See docs/09-testing-strategy.md §9.2.
+        run: uv run mypy
+
+      - name: Tests
+        run: uv run pytest -q
+
+  architecture:
+    name: Architecture rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --locked
+
+      # Its own job on purpose. These are the executable form of docs/03-architecture.md
+      # §3.2, and a rule that lives only in a document is a rule that will be broken
+      # during the first difficult afternoon.
+      - name: Domain stays framework-free and synchronous
+        run: uv run pytest tests/architecture -q
+
+  domain-is-standalone:
+    name: Domain tests run without Home Assistant
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # The `quality` job installs Home Assistant; this one does not. That difference is
+      # the whole point: if the domain ever grows a Home Assistant import, this job fails
+      # on ImportError before any assertion runs, while `quality` sails past — a louder and
+      # earlier signal than a lint rule, and one that names the culprit.
+      - name: Install without Home Assistant
+        run: uv sync --locked --no-group ha
+
+      - name: Domain and architecture suites
+        run: uv run pytest tests/domain tests/architecture -q
+
+  hassfest:
+    name: Home Assistant manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to a commit rather than @master. The documented usage is the branch, but a
+      # branch ref means CI runs whatever landed there this morning — and this job runs
+      # third-party code against our checkout.
+      - uses: home-assistant/actions/hassfest@ab22029681aa532bfe7de5774a9972d67bfbd2c0

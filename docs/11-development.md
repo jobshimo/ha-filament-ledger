@@ -36,7 +36,7 @@ dev = [
     "homeassistant==2026.7.4",
     "pytest",
     "pytest-asyncio",                        # ADR-0005: use cases are coroutines
-    "pytest-homeassistant-custom-component", # integration tests only
+    "pytest-homeassistant-custom-component>=0.13.348", # integration tests only
     "hypothesis",                            # property tests for the ledger invariant
     "mypy",
     "ruff",
