@@ -12,8 +12,9 @@ from typing import Protocol
 from .service.anomaly_detector import Anomaly
 from .value.confidence import Confidence
 from .value.grams import Grams
-from .value.identifiers import SlotIndex, SpoolId, TagUid
+from .value.identifiers import PrintJobId, ReviewId, SlotIndex, SpoolId, TagUid
 from .value.movement_type import MovementType
+from .value.review import ReviewReason, ReviewState
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,29 @@ class ConfidenceDegraded(DomainEvent):
 @dataclass(frozen=True, slots=True)
 class AnomalyDetected(DomainEvent):
     anomaly: Anomaly
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewOpened(DomainEvent):
+    """An interrupted job, or unmapped usage, needs attention.
+
+    Carries the job's name so the obvious automation — a notification saying *which*
+    print wants a decision — needs no follow-up query.
+    """
+
+    review_id: ReviewId
+    job_id: PrintJobId
+    job_name: str
+    reason: ReviewReason
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewResolved(DomainEvent):
+    """A review was approved or dismissed. `state` says which — always terminal."""
+
+    review_id: ReviewId
+    job_id: PrintJobId
+    state: ReviewState
 
 
 @dataclass(frozen=True, slots=True)

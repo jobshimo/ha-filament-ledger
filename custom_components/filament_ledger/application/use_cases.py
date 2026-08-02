@@ -14,6 +14,7 @@ from .move_spool import EditSpoolDetails, MountSpool, UnmountSpool
 from .query import Queries
 from .reconcile_spool import ReconcileSpool
 from .register_spool import RegisterSpool
+from .review_queue import ApproveReview, DismissReview, OpenPendingReview
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,4 +27,7 @@ class UseCases:
     unmount_spool: UnmountSpool
     detect_spool: DetectSpool
     edit_spool_details: EditSpoolDetails
+    open_pending_review: OpenPendingReview
+    approve_review: ApproveReview
+    dismiss_review: DismissReview
     queries: Queries

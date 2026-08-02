@@ -31,8 +31,16 @@ from custom_components.filament_ledger.application.move_spool import (
 from custom_components.filament_ledger.application.query import Queries
 from custom_components.filament_ledger.application.reconcile_spool import ReconcileSpool
 from custom_components.filament_ledger.application.register_spool import RegisterSpool
+from custom_components.filament_ledger.application.review_queue import (
+    ApproveReview,
+    DismissReview,
+    OpenPendingReview,
+)
 from custom_components.filament_ledger.application.use_cases import UseCases
 from custom_components.filament_ledger.domain.event import DomainEvent
+from custom_components.filament_ledger.infrastructure.estimation.linear_progress_estimator import (
+    LinearProgressEstimator,
+)
 from custom_components.filament_ledger.infrastructure.persistence.database import (
     Database,
     Executor,
@@ -40,6 +48,12 @@ from custom_components.filament_ledger.infrastructure.persistence.database impor
 )
 from custom_components.filament_ledger.infrastructure.persistence.movement_repository import (
     SqliteMovementRepository,
+)
+from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
+    SqlitePrintJobRepository,
+)
+from custom_components.filament_ledger.infrastructure.persistence.review_repository import (
+    SqliteReviewRepository,
 )
 from custom_components.filament_ledger.infrastructure.persistence.spool_repository import (
     SqliteSpoolRepository,
@@ -99,6 +113,8 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
 
     spools = SqliteSpoolRepository(database)
     movements = SqliteMovementRepository(database)
+    jobs = SqlitePrintJobRepository(database)
+    reviews = SqliteReviewRepository(database)
     clock = FakeClock()
     events = RecordingEventBus()
 
@@ -115,6 +131,13 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             # `RegisterSpool` — the fixture stays one honest wiring, not a matrix.
             detect_spool=DetectSpool(spools, events, database, auto_mount=True),
             edit_spool_details=EditSpoolDetails(spools, database),
+            # The production estimator, not a fake: it is pure arithmetic over the job the
+            # test itself constructs, so faking it would only test the fake.
+            open_pending_review=OpenPendingReview(
+                jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
+            ),
+            approve_review=ApproveReview(reviews, spools, movements, clock, events, database),
+            dismiss_review=DismissReview(reviews, clock, events, database),
             queries=Queries(spools=spools, movements=movements),
         ),
         clock=clock,

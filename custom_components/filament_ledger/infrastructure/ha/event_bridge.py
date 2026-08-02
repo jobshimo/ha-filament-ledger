@@ -18,6 +18,8 @@ from ...domain.event import (
     ConfidenceDegraded,
     DomainEvent,
     MovementRecorded,
+    ReviewOpened,
+    ReviewResolved,
     SpoolDepleted,
     SpoolDetected,
     SpoolMounted,
@@ -77,6 +79,19 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
                 "spool_id": anomaly.spool_id,
                 "kind": anomaly.kind.value,
                 "detail": anomaly.detail,
+            }
+        case ReviewOpened(review_id, job_id, job_name, reason):
+            return event_name("review_opened"), {
+                "review_id": review_id,
+                "job_id": job_id,
+                "job_name": job_name,
+                "reason": reason.value,
+            }
+        case ReviewResolved(review_id, job_id, state):
+            return event_name("review_resolved"), {
+                "review_id": review_id,
+                "job_id": job_id,
+                "state": state.value,
             }
         case SpoolDetected(tag_uid, slot):
             return event_name("spool_detected"), {

@@ -49,6 +49,16 @@ class AmbiguousTagError(DomainError):
     """
 
 
+class ReviewAlreadyPendingError(DomainError):
+    """A job already has an open review; a second would split one decision across two items.
+
+    The partial unique index `idx_review_job_pending` enforces the same rule at the last
+    possible layer. This error is the use case saying it in the language of the problem
+    instead of letting an IntegrityError surface — a constraint name is not an answer a
+    user can act on.
+    """
+
+
 class ReviewAlreadyResolvedError(DomainError):
     """A review that is APPROVED or DISMISSED cannot be resolved again.
 
@@ -67,3 +77,14 @@ class UnresolvedSlotError(DomainError):
 
 class NothingToRecordError(DomainError):
     """The requested operation would produce a zero movement, which records nothing."""
+
+
+class EstimationUnavailableError(DomainError):
+    """No estimation strategy could produce a figure for this job.
+
+    Half of the `ConsumptionEstimator` contract (docs/07-consumption-estimation.md §7.3):
+    an estimator returns per-slot grams or raises this — never `None`, and never an
+    invented zero, because a fabricated number in a ledger is worse than a missing one.
+    The specification names it `EstimationUnavailable`; the `Error` suffix follows this
+    module's convention (see the module docstring).
+    """

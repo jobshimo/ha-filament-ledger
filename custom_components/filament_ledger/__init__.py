@@ -47,6 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .application.query import Queries
     from .application.reconcile_spool import ReconcileSpool
     from .application.register_spool import RegisterSpool
+    from .application.review_queue import ApproveReview, DismissReview, OpenPendingReview
     from .application.use_cases import UseCases
     from .const import (
         CONF_ANOMALY_THRESHOLD,
@@ -62,6 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     )
     from .domain.service.anomaly_detector import AnomalyDetector
     from .domain.service.confidence_evaluator import ConfidenceEvaluator
+    from .infrastructure.estimation.linear_progress_estimator import LinearProgressEstimator
     from .infrastructure.ha.bambu_gateway import BambuLabGateway
     from .infrastructure.ha.event_bridge import HomeAssistantEventBus
     from .infrastructure.ha.panel import async_register_panel
@@ -70,6 +72,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .infrastructure.ha.websocket_api import async_register_commands
     from .infrastructure.persistence.database import Database
     from .infrastructure.persistence.movement_repository import SqliteMovementRepository
+    from .infrastructure.persistence.print_job_repository import SqlitePrintJobRepository
+    from .infrastructure.persistence.review_repository import SqliteReviewRepository
     from .infrastructure.persistence.spool_repository import SqliteSpoolRepository
     from .infrastructure.system_clock import SystemClock
 
@@ -81,6 +85,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
 
     spools = SqliteSpoolRepository(database)
     movements = SqliteMovementRepository(database)
+    jobs = SqlitePrintJobRepository(database)
+    reviews = SqliteReviewRepository(database)
     clock = SystemClock()
     events = HomeAssistantEventBus(hass)
 
@@ -115,6 +121,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             auto_mount=bool(settings.get(CONF_AUTO_MOUNT_ON_RFID, DEFAULT_AUTO_MOUNT_ON_RFID)),
         ),
         edit_spool_details=EditSpoolDetails(spools, database),
+        # The review queue, constructed and wired even though nothing drives it yet: the
+        # printer gateway learns to classify job endings in the next work unit, exactly as
+        # `DetectSpool` sat here one phase before the gateway learned to report trays.
+        # `LinearProgressEstimator` stands alone until Phase 4 brings the G-code strategy
+        # and a composite to choose between them.
+        open_pending_review=OpenPendingReview(
+            jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
+        ),
+        approve_review=ApproveReview(
+            reviews, spools, movements, clock, events, database, anomalies
+        ),
+        dismiss_review=DismissReview(reviews, clock, events, database),
         queries=queries,
     )
 

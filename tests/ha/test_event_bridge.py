@@ -15,6 +15,8 @@ from custom_components.filament_ledger.domain.event import (
     ConfidenceDegraded,
     DomainEvent,
     MovementRecorded,
+    ReviewOpened,
+    ReviewResolved,
     SpoolDepleted,
     SpoolDetected,
     SpoolMounted,
@@ -29,11 +31,14 @@ from custom_components.filament_ledger.domain.service.anomaly_detector import (
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    PrintJobId,
+    ReviewId,
     SlotIndex,
     SpoolId,
     TagUid,
 )
 from custom_components.filament_ledger.domain.value.movement_type import MovementType
+from custom_components.filament_ledger.domain.value.review import ReviewReason, ReviewState
 from custom_components.filament_ledger.infrastructure.ha.event_bridge import (
     HomeAssistantEventBus,
 )
@@ -106,6 +111,32 @@ class TestTranslation:
                 "filament_ledger_anomaly_detected",
                 {"spool_id": "spool-1", "kind": "NEGATIVE_BALANCE", "detail": "balance is -40 g"},
                 id="something-is-implausible",
+            ),
+            pytest.param(
+                ReviewOpened(
+                    review_id=ReviewId("review-1"),
+                    job_id=PrintJobId("job-1"),
+                    job_name="bracket_v3.gcode.3mf",
+                    reason=ReviewReason.CANCELLED,
+                ),
+                "filament_ledger_review_opened",
+                {
+                    "review_id": "review-1",
+                    "job_id": "job-1",
+                    "job_name": "bracket_v3.gcode.3mf",
+                    "reason": "CANCELLED",
+                },
+                id="a-print-needs-a-decision",
+            ),
+            pytest.param(
+                ReviewResolved(
+                    review_id=ReviewId("review-1"),
+                    job_id=PrintJobId("job-1"),
+                    state=ReviewState.APPROVED,
+                ),
+                "filament_ledger_review_resolved",
+                {"review_id": "review-1", "job_id": "job-1", "state": "APPROVED"},
+                id="a-decision-is-made",
             ),
             pytest.param(
                 SpoolDetected(tag_uid=TagUid("A1B2C3D4"), slot=SlotIndex(3)),

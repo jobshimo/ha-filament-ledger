@@ -15,8 +15,10 @@ from datetime import datetime
 from typing import Protocol
 
 from ..model.movement import Movement
+from ..model.pending_review import PendingReview
+from ..model.print_job import PrintJob
 from ..model.spool import Spool
-from ..value.identifiers import SpoolId, TagUid
+from ..value.identifiers import PrintJobId, ReviewId, SpoolId, TagUid
 from ..value.location import Location
 
 
@@ -66,3 +68,28 @@ class MovementRepository(Protocol):
     async def list_since(self, spool_id: SpoolId, moment: datetime) -> list[Movement]: ...
 
     async def count_for_spool(self, spool_id: SpoolId) -> int: ...
+
+
+class PrintJobRepository(Protocol):
+    """Jobs are upserted, not appended: a job's state and counters evolve as the printer
+    reports, and `save` reflects whatever is currently claimed. The ledger's immutability
+    lives in `movement`, not here — a job is a report, a movement is a fact."""
+
+    async def get(self, job_id: PrintJobId) -> PrintJob | None: ...
+
+    async def save(self, job: PrintJob) -> None: ...
+
+    async def list_recent(self, limit: int) -> list[PrintJob]: ...
+
+
+class ReviewRepository(Protocol):
+    """Deliberately no `find_pending_for_job`: `list_pending` returns the whole open queue,
+    which every caller — the panel, the sensor, UC-05's one-per-job guard — already wants,
+    and the queue is human-sized by construction. A narrower query would be a second code
+    path to keep honest for no measurable gain."""
+
+    async def get(self, review_id: ReviewId) -> PendingReview | None: ...
+
+    async def list_pending(self) -> list[PendingReview]: ...
+
+    async def save(self, review: PendingReview) -> None: ...

@@ -6,7 +6,7 @@ for does not exist, or cannot be found. The domain's errors are about rules.
 
 from __future__ import annotations
 
-from ..domain.value.identifiers import SpoolId
+from ..domain.value.identifiers import ReviewId, SpoolId
 
 
 class ApplicationError(Exception):
@@ -17,3 +17,9 @@ class SpoolNotFoundError(ApplicationError):
     def __init__(self, spool_id: SpoolId) -> None:
         super().__init__(f"no spool with id {spool_id}")
         self.spool_id = spool_id
+
+
+class ReviewNotFoundError(ApplicationError):
+    def __init__(self, review_id: ReviewId) -> None:
+        super().__init__(f"no review with id {review_id}")
+        self.review_id = review_id
