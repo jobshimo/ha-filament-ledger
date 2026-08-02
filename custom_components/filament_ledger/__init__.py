@@ -4,9 +4,14 @@ The composition root. Wiring happens in exactly one place, here, during
 `async_setup_entry`. Nothing else constructs a dependency, which is precisely what makes
 every use case testable with in-memory fakes and no patching.
 
-Read it from the inside out: the domain knows nothing about this file, the application layer
-knows only the ports, and this is the only module that knows Home Assistant, SQLite and the
-file system all exist at once.
+**Home Assistant is imported inside the setup functions, not at module level.** Importing
+any submodule executes this file first, so a module-level `import homeassistant` here would
+make the domain unimportable without Home Assistant installed — and the domain being
+importable on its own is not a stylistic preference, it is the claim
+docs/03-architecture.md §3.2 makes and that `tests/architecture` exists to keep true.
+
+The CI job that installs everything *except* Home Assistant caught this on its first run.
+That is the job earning its place.
 """
 
 from __future__ import annotations
@@ -14,42 +19,18 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
-from .application.adjust_spool import AdjustSpool, DiscardFilament
-from .application.move_spool import EditSpoolDetails, MountSpool, UnmountSpool
-from .application.query import Queries, SpoolSummary
-from .application.reconcile_spool import ReconcileSpool
-from .application.register_spool import RegisterSpool
-from .application.use_cases import UseCases
-from .const import (
-    CONF_ANOMALY_THRESHOLD,
-    CONF_DEFAULT_CORE_WEIGHT,
-    CONF_DEFAULT_OPENING_WEIGHT,
-    DATABASE_FILENAME,
-    DEFAULT_ANOMALY_THRESHOLD_PCT,
-    DEFAULT_CORE_WEIGHT_G,
-    DEFAULT_OPENING_WEIGHT_G,
-    DOMAIN,
-)
-from .domain.service.anomaly_detector import AnomalyDetector
-from .domain.service.confidence_evaluator import ConfidenceEvaluator
-from .infrastructure.ha.event_bridge import HomeAssistantEventBus
-from .infrastructure.ha.panel import async_register_panel
-from .infrastructure.ha.runtime import LedgerConfigEntry, LedgerRuntime
-from .infrastructure.ha.services import async_register_services
-from .infrastructure.ha.websocket_api import async_register_commands
-from .infrastructure.persistence.database import Database
-from .infrastructure.persistence.movement_repository import SqliteMovementRepository
-from .infrastructure.persistence.spool_repository import SqliteSpoolRepository
-from .infrastructure.system_clock import SystemClock
+    from .infrastructure.ha.runtime import LedgerConfigEntry
 
 LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+# Plain strings rather than the `Platform` enum, so this module needs nothing from Home
+# Assistant at import time. `async_forward_entry_setups` accepts either.
+PLATFORMS: list[str] = ["sensor"]
 
 # The ledger is push-shaped: it changes when somebody does something. This interval is a
 # safety net for a missed refresh, not the mechanism.
@@ -57,6 +38,36 @@ SCAN_INTERVAL = timedelta(minutes=15)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bool:
+    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+
+    from .application.adjust_spool import AdjustSpool, DiscardFilament
+    from .application.move_spool import EditSpoolDetails, MountSpool, UnmountSpool
+    from .application.query import Queries
+    from .application.reconcile_spool import ReconcileSpool
+    from .application.register_spool import RegisterSpool
+    from .application.use_cases import UseCases
+    from .const import (
+        CONF_ANOMALY_THRESHOLD,
+        CONF_DEFAULT_CORE_WEIGHT,
+        CONF_DEFAULT_OPENING_WEIGHT,
+        DATABASE_FILENAME,
+        DEFAULT_ANOMALY_THRESHOLD_PCT,
+        DEFAULT_CORE_WEIGHT_G,
+        DEFAULT_OPENING_WEIGHT_G,
+        DOMAIN,
+    )
+    from .domain.service.anomaly_detector import AnomalyDetector
+    from .domain.service.confidence_evaluator import ConfidenceEvaluator
+    from .infrastructure.ha.event_bridge import HomeAssistantEventBus
+    from .infrastructure.ha.panel import async_register_panel
+    from .infrastructure.ha.runtime import LedgerRuntime
+    from .infrastructure.ha.services import async_register_services
+    from .infrastructure.ha.websocket_api import async_register_commands
+    from .infrastructure.persistence.database import Database
+    from .infrastructure.persistence.movement_repository import SqliteMovementRepository
+    from .infrastructure.persistence.spool_repository import SqliteSpoolRepository
+    from .infrastructure.system_clock import SystemClock
+
     settings = {**entry.data, **entry.options}
 
     database = await Database.open(hass.config.path(DATABASE_FILENAME), hass.async_add_executor_job)
@@ -72,10 +83,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         settings.get(CONF_ANOMALY_THRESHOLD, DEFAULT_ANOMALY_THRESHOLD_PCT)
     ) / Decimal(100)
     anomalies = AnomalyDetector(reconciliation_delta_ratio=threshold)
-    confidence = ConfidenceEvaluator()
 
     queries = Queries(
-        spools=spools, movements=movements, confidence=confidence, anomalies=anomalies
+        spools=spools,
+        movements=movements,
+        confidence=ConfidenceEvaluator(),
+        anomalies=anomalies,
     )
 
     use_cases = UseCases(
@@ -89,7 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         queries=queries,
     )
 
-    coordinator: DataUpdateCoordinator[list[SpoolSummary]] = DataUpdateCoordinator(
+    coordinator = DataUpdateCoordinator(
         hass,
         LOGGER,
         config_entry=entry,

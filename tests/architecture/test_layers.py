@@ -142,3 +142,92 @@ class TestLayout:
 
     def test_every_domain_module_is_reachable(self) -> None:
         assert list(modules_under(DOMAIN)), "no domain modules found — check the layout"
+
+
+class TestTheDomainIsImportableAlone:
+    """Importing a submodule executes its parent packages first.
+
+    So a module-level `import homeassistant` in the integration's `__init__.py` makes the
+    entire domain unimportable without Home Assistant installed — silently, and only on a
+    machine that does not have it. The CI job that installs everything *except* Home
+    Assistant found exactly that on its first run; this test makes the rule local and fast.
+
+    The rule is precise: a framework import is allowed **inside a function body**, where it
+    runs only when Home Assistant is already driving us, or **inside `if TYPE_CHECKING:`**,
+    where it never runs at all. Anywhere else — including nested in a `try` or a plain `if`,
+    which a shallow top-level scan would miss — it executes on import and breaks the claim.
+    """
+
+    def deferred_offenders(self, module: Path) -> list[str]:
+        tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        exempt: set[ast.AST] = set()
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                exempt.update(ast.walk(node))
+            elif isinstance(node, ast.If) and _is_type_checking(node.test):
+                for branch in node.body:
+                    exempt.update(ast.walk(branch))
+
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if node in exempt or not isinstance(node, ast.Import | ast.ImportFrom):
+                continue
+            names = (
+                [alias.name.split(".")[0] for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [(node.module or "").split(".")[0]]
+            )
+            offenders.extend(name for name in names if name in FORBIDDEN_INWARD)
+        return offenders
+
+    def test_the_package_root_defers_its_framework_imports(self) -> None:
+        root = INTEGRATION / "__init__.py"
+        offenders = self.deferred_offenders(root)
+        assert not offenders, (
+            f"{root.name} imports {sorted(set(offenders))} where it executes on import; "
+            f"move it inside async_setup_entry so the domain stays importable alone"
+        )
+
+    def test_the_guard_catches_an_import_hidden_in_a_conditional(self, tmp_path: Path) -> None:
+        """Guards the guard.
+
+        A top-level-only scan would pass this file, which is exactly the bypass worth
+        closing: the import still executes the moment the module is loaded.
+        """
+        sneaky = tmp_path / "__init__.py"
+        sneaky.write_text(
+            "import os\nif os.name:\n    from homeassistant.core import HomeAssistant\n",
+            encoding="utf-8",
+        )
+        assert self.deferred_offenders(sneaky) == ["homeassistant"]
+
+    def test_a_type_checking_import_is_allowed(self, tmp_path: Path) -> None:
+        """The other half: annotations must stay honest, and they never execute."""
+        annotated = tmp_path / "__init__.py"
+        annotated.write_text(
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from homeassistant.core import HomeAssistant\n",
+            encoding="utf-8",
+        )
+        assert self.deferred_offenders(annotated) == []
+
+    def test_the_root_still_annotates_with_the_real_types(self) -> None:
+        """Stops the first test being satisfied by deleting the annotations instead."""
+        root = INTEGRATION / "__init__.py"
+        tree = ast.parse(root.read_text(encoding="utf-8"), filename=str(root))
+        type_checking_imports = [
+            (node.module or "")
+            for block in ast.walk(tree)
+            if isinstance(block, ast.If) and _is_type_checking(block.test)
+            for node in ast.walk(block)
+            if isinstance(node, ast.ImportFrom)
+        ]
+        assert "homeassistant.core" in type_checking_imports
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
