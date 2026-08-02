@@ -21,6 +21,10 @@ The A1 is the reference hardware for this project, which means the `remain` fiel
 degraded input to be corrected — **it does not exist**. Software accounting is not one design
 option among several. It is the only possible approach.
 
+**Confirmed on the reference machine, 2026-08-02.** All four AMS trays report `remain: 100`
+with `remain_enabled: true`, including spools that have visibly been used. The field is
+present, claims to be active, and is worthless. See [12 — Field Notes](12-field-notes.md).
+
 ### What `print_weight` actually is
 
 This matters more than any other fact in this document, because an earlier draft of this
@@ -188,7 +192,14 @@ the layer where an interrupted print stopped. That is a genuine accuracy gain fo
 prints and nothing more. `GcodeLayerEstimator` is therefore an enhancement, exactly where
 [10 — Roadmap](10-roadmap.md) already puts it, and its failure is not a degraded product.
 
-### Q4 — open, highest risk
+### Q4 — open, highest risk *(partially measured 2026-08-02)*
+
+**Measured since:** on the reference A1 in hybrid mode — cloud session plus local MQTT — the
+per-job weight **does** populate (`40.51 g`), which is better than the LAN-mode failure
+reports suggested. The per-tray breakdown was empty, but that job finished before the
+integration existed, so it proves nothing. Full notes in [12 — Field Notes](12-field-notes.md).
+
+The question closes when a print runs start-to-finish with the integration connected.
 
 The per-tray figures only exist once the sliced `.3mf` has been retrieved (LAN) or the cloud
 task data has been fetched. Upstream reports that the LAN-mode download fails frequently

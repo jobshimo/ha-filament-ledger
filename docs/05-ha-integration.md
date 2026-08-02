@@ -268,6 +268,26 @@ an upstream refactor into a corrupted ledger.
   nowhere else.
 - Every one of these values can be absent. The gateway returns "unknown", never a zero. See
   [03 §3.8](03-architecture.md).
+- **Entity ids are localised.** On a Spanish instance the tray sensor is
+  `sensor.a1_<serial>_ams_1_bandeja_1`, not `..._ams_1_tray_1`. Matching on entity id strings
+  breaks for every user not running the language the developer happened to use. Resolve
+  through the device registry and upstream's `unique_id`s instead. Real names captured in
+  [12 — Field Notes](12-field-notes.md).
+- **`tag_uid: "0000000000000000"` means absent, not a tag.** A third-party or refilled spool
+  reports sixteen zeros. Treating that as an identity would merge every untagged spool the
+  user owns into one — and the identity belongs to the *spool*, which moves between trays,
+  not to the tray.
+
+### Connection mode
+
+The integration is used in **hybrid** mode: authenticated against Bambu Cloud, with local
+MQTT enabled. Job state and `ams_mapping` arrive over the local network; the print history,
+which carries the per-tray weights, comes from the cloud session.
+
+**Never instruct a user to enable LAN mode on the printer.** On a Bambu machine that is not a
+connection preference — it disables the cloud, and with it Bambu Handy and remote printing
+from Bambu Studio. The design's preference for local transport does not outrank how somebody
+uses their printer every day. See [12 — Field Notes](12-field-notes.md).
 
 This section is the price of [ADR-0002](adr/0002-reject-spoolman-as-foundation.md) and
 [ADR-0003](adr/0003-custom-integration-over-addon.md) being right: the integration is small

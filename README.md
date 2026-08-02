@@ -3,8 +3,13 @@
 A Home Assistant custom integration that tracks how much filament you actually have left,
 using double-entry bookkeeping instead of guesswork.
 
-> **Status: specification.** No code yet. This repository currently holds the complete
-> design. Implementation starts once the specs are reviewed and frozen.
+> **Status: running.** The ledger works end to end inside Home Assistant — register a spool,
+> weigh it against a scale, discard part of one, read the full history that produced its
+> balance. The printer is connected and reporting; wiring it into the ledger is Phase 2.
+>
+> Done: domain, application, SQLite persistence, config flow, entities, services, WebSocket
+> API and the panel. Not done: automatic deduction from prints, the review queue, and the
+> consumption estimators.
 
 ---
 
@@ -72,6 +77,8 @@ This is a ledger, not a counter. You can always answer *why* a spool holds 340 g
 | [09 — Testing Strategy](docs/09-testing-strategy.md) | What is tested, and where |
 | [10 — Roadmap](docs/10-roadmap.md) | Delivery phases |
 | [11 — Development](docs/11-development.md) | Toolchain, CI, conventions |
+| [12 — Field Notes](docs/12-field-notes.md) | What the real printer actually reports |
+| [13 — Phase 2 Brief](docs/13-phase-2-brief.md) | Where the next session starts |
 | [ADRs](docs/adr/) | Architecture decision records |
 
 ## Hardware this was designed against
