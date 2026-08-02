@@ -200,12 +200,17 @@ class TestAnInterruptedPrint:
 
 
 class TestAFinishedPrint:
-    async def test_a_finish_records_the_figures_and_opens_no_review(self, ledger: Ledger) -> None:
-        """The UC-04 seam: the job ran to completion, so no decision is needed — and the
-        automatic deduction is deliberately not built until Q4 closes. The figures are
-        preserved and `consumption_recorded` stays untouched for the day it is."""
-        spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+    async def test_a_finish_hands_the_figures_to_uc04_and_opens_no_review(
+        self, ledger: Ledger
+    ) -> None:
+        """The seam as wired (Q4, closed): the job ran to completion, so no decision is
+        needed — UC-04 deducts from every mounted slot and marks the job recorded in the
+        same pass. Its full behaviour lives in test_record_print_consumption.py; this
+        pins the handoff."""
+        first = await a_spool(ledger, label="first")
+        second = await a_spool(ledger, label="second")
+        await ledger.use_cases.mount_spool.execute(first, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(second, SLOT_2)
         await ledger.use_cases.track_print_job.execute(started())
 
         await ledger.use_cases.track_print_job.execute(
@@ -218,14 +223,17 @@ class TestAFinishedPrint:
         [job] = await stored_jobs(ledger)
         assert job.state is PrintJobState.FINISHED
         assert job.reported_usage == {SLOT_1: Grams.of("38.2"), SLOT_2: Grams.of("9.4")}
-        assert job.consumption_recorded is False
+        assert job.consumption_recorded is True
         assert await SqliteReviewRepository(ledger.database).list_pending() == []
         assert ledger.events.of(ReviewOpened) == []
-        assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == Grams.of(1000)
+        assert (await ledger.use_cases.queries.detail(first)).summary.balance == Grams.of("961.8")
+        assert (await ledger.use_cases.queries.detail(second)).summary.balance == Grams.of("990.6")
 
     async def test_a_finish_without_figures_records_none_not_zero(self, ledger: Ledger) -> None:
-        """Q4 open: the per-tray attributes may never populate. `None` keeps that fact —
-        a retrieval failure must stay distinguishable from a claim of zero consumption."""
+        """The per-tray attributes flicker (docs/12-field-notes.md): a finish can still
+        arrive figureless. `None` keeps that fact — a retrieval failure must stay
+        distinguishable from a claim of zero consumption — and UC-04's missing-figure
+        branch turns it into a review instead of a silent zero."""
         await ledger.use_cases.track_print_job.execute(started(plan=None))
 
         await ledger.use_cases.track_print_job.execute(
@@ -235,6 +243,10 @@ class TestAFinishedPrint:
         [job] = await stored_jobs(ledger)
         assert job.state is PrintJobState.FINISHED
         assert job.reported_usage is None
+        assert job.consumption_recorded is True
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.reason is ReviewReason.UNMAPPED_USAGE
+        assert review.estimator_used is EstimatorKind.NONE
 
 
 class TestDuplicateEndings:

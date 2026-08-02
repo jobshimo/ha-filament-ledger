@@ -93,6 +93,8 @@ state populated while the integration is watching. It never had the chance.
 connected and the attributes are read again. Until then, no decision that depends on
 automatic deduction may be frozen.
 
+*(Closed the next day — see [2026-08-03](#2026-08-03--q4-closed-per-tray-weights-populate) below.)*
+
 ---
 
 ## Entity names, as actually created
@@ -135,3 +137,37 @@ scale, and that reconciliation is the first real number in the ledger.
 
 Every one starts at `HIGH` confidence, which is correct per [02 §2.6](02-domain-model.md):
 the opening balance is a human-confirmed anchor. It degrades as consumption accumulates.
+
+---
+
+## 2026-08-03 — Q4 closed: per-tray weights populate
+
+A print ran start to finish with the integration connected — the condition the
+2026-08-02 entry named. Captured off the weight sensor at the moment the job finished:
+
+```
+sensor.…_peso_de_la_impresion   state: 296.56                          ← total, grams
+                                attributes: {"AMS 1 Tray 4": 296.56}   ← per-tray breakdown
+```
+
+**The per-tray breakdown populates, and in exactly the `AMS 1 Tray n` key format the
+gateway already translates.** One tray loaded, one key reported, total and tray figure in
+agreement. This is the measurement the 2026-08-02 capture could not make: that job had
+finished before the integration existed, so `_ams_print_weights` never had the chance to
+fill.
+
+**The attributes flicker.** An adjacent recorder row from the same window carried **no
+tray key at all** — the same sensor, breakdown present at the event and absent moments
+away. Two consequences, both already designed for:
+
+- **Capture at event time, confirmed.** The gateway reads the sensor when the lifecycle
+  event fires, not on a poll — a reading taken off-beat can land in a gap and report
+  nothing while the figure exists.
+- **The missing-figure branch is load-bearing, not theoretical.** A finish can still
+  arrive figureless, and [04 UC-04](04-use-cases.md) step 2 — review, never zero — is
+  the branch that catches it. Built alongside the happy path, exactly as
+  [13](13-phase-2-brief.md) demanded.
+
+**Verdict: per-tray weights populate at event time; UC-04 built as designed.** The
+anonymised capture lives in `tests/fixtures/bambu/print_sensors_finished.json`, and the
+translation is fixture-tested rather than believed, same as every other shape here.

@@ -69,6 +69,11 @@ TRAY_ATTRIBUTES: dict[str, dict[str, object]] = json.loads(
 PRINT_SENSORS: dict[str, dict[str, object]] = json.loads(
     (FIXTURES / "print_sensors.json").read_text(encoding="utf-8")
 )
+# The weight sensor as captured at the moment a print finished — the shape that closed Q4
+# (docs/12-field-notes.md, 2026-08-03): per-tray attributes populated, `AMS 1 Tray n` keys.
+PRINT_SENSORS_FINISHED: dict[str, dict[str, object]] = json.loads(
+    (FIXTURES / "print_sensors_finished.json").read_text(encoding="utf-8")
+)
 
 TRAY_1 = "sensor.a1_00000000testser_ams_1_bandeja_1"
 TRAY_2 = "sensor.a1_00000000testser_ams_1_bandeja_2"
@@ -476,9 +481,11 @@ class TestEndToEnd:
 class TestJobEventTranslation:
     """`bambu_lab_event` into domain terms, reading the moment's sensors.
 
-    Every figure is captured off the fixture-shaped states from the reference instance;
-    the per-tray attribute dialect (`AMS 1 Tray n`, `External Spool`) comes from the
-    installed upstream source, since Q4 has not yet produced a live capture of it.
+    Every figure is captured off the fixture-shaped states from the reference instance.
+    The per-tray attribute dialect is pinned by the live Q4 capture
+    (`print_sensors_finished.json` — docs/12-field-notes.md, 2026-08-03); the shapes the
+    capture does not cover (`External Spool`, a second AMS) come from the installed
+    upstream source.
     """
 
     def subscribed(self, hass: FakeHass) -> RecordingPrintListener:
@@ -579,6 +586,27 @@ class TestJobEventTranslation:
         assert isinstance(event, PrintEnded)
         assert event.outcome is PrintJobState.FAILED
         assert event.raw_print_error == 50348044
+
+    async def test_the_q4_capture_translates_its_tray_key(self) -> None:
+        """The populated shape captured live at the moment a print finished — the capture
+        that closed Q4: the state carries the total, the attributes name tray 4, and the
+        gateway translates exactly what the printer said."""
+        hass = bambu_hass()
+        shape = PRINT_SENSORS_FINISHED[WEIGHT]
+        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
+            WEIGHT,
+            state=str(shape["state"]),
+            attributes=cast("dict[str, object]", shape["attributes"]),
+        )
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintEnded)
+        assert event.outcome is PrintJobState.FINISHED
+        assert event.reported_usage == {SlotIndex(4): Grams.of("296.56")}
 
     async def test_a_finish_captures_the_final_per_tray_figures(self) -> None:
         hass = bambu_hass()
@@ -736,37 +764,36 @@ class TestPrintLifecycleEndToEnd:
         assert review.job_id == job.id
         assert review.reason is ReviewReason.FAILED
 
-    async def test_a_finished_print_keeps_its_figures_and_opens_no_review(
-        self, harness: Harness
-    ) -> None:
-        """The UC-04 seam, observed from the outside: the figures land on the job, the
-        idempotency guard stays unset, and the queue stays empty — nothing is deducted
-        until Q4 closes and `RecordPrintConsumption` exists."""
+    async def test_a_finished_print_deducts_automatically(self, harness: Harness) -> None:
+        """UC-04 end to end (Q4, closed): the bus event fires, the gateway reads the
+        populated attributes at that moment, and the ledger deducts from the mounted
+        spool — no review, no decision, because the job ran to completion."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
         self.wire(harness)
         fire_job_event(harness.hass, "event_print_started")
         await harness.hass.drain()
-        harness.hass.states.by_entity_id[WEIGHT] = State(
-            WEIGHT, "47.6", {"AMS 1 Tray 1": 38.2, "AMS 1 Tray 2": 9.4}
-        )
+        harness.hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "38.2", {"AMS 1 Tray 1": 38.2})
 
         fire_job_event(harness.hass, "event_print_finished")
         await harness.hass.drain()
 
         [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
         assert job.state is PrintJobState.FINISHED
-        assert job.reported_usage == {
-            SlotIndex(1): Grams.of("38.2"),
-            SlotIndex(2): Grams.of("9.4"),
-        }
-        assert job.consumption_recorded is False
+        assert job.reported_usage == {SlotIndex(1): Grams.of("38.2")}
+        assert job.consumption_recorded is True
         assert await SqliteReviewRepository(harness.ledger.database).list_pending() == []
         assert harness.ledger.events.of(ReviewOpened) == []
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of("961.8")
 
     async def test_a_finish_without_per_tray_attributes_records_the_absence(
         self, harness: Harness
     ) -> None:
-        """The Q4-open path end to end: the weight total populates, the breakdown does
-        not, and the job records `None` — a missing figure is not a figure of zero."""
+        """The attributes flicker (docs/12-field-notes.md): a finish can still arrive
+        with the total populated and no breakdown. The job records `None` — a missing
+        figure is not a figure of zero — and UC-04's missing-figure branch opens a
+        review instead of deducting nothing silently."""
         self.wire(harness)
         fire_job_event(harness.hass, "event_print_started")
         await harness.hass.drain()
@@ -777,7 +804,10 @@ class TestPrintLifecycleEndToEnd:
         [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
         assert job.state is PrintJobState.FINISHED
         assert job.reported_usage is None
-        assert await SqliteReviewRepository(harness.ledger.database).list_pending() == []
+        assert job.consumption_recorded is True
+        [review] = await SqliteReviewRepository(harness.ledger.database).list_pending()
+        assert review.job_id == job.id
+        assert review.reason is ReviewReason.UNMAPPED_USAGE
 
 
 class TestUnload:

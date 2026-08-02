@@ -13,6 +13,7 @@ from .detect_spool import DetectSpool
 from .move_spool import EditSpoolDetails, MountSpool, UnmountSpool
 from .query import Queries
 from .reconcile_spool import ReconcileSpool
+from .record_print_consumption import RecordPrintConsumption
 from .register_spool import RegisterSpool
 from .review_queue import ApproveReview, DismissReview, OpenPendingReview
 from .track_print_job import TrackPrintJob
@@ -29,6 +30,7 @@ class UseCases:
     detect_spool: DetectSpool
     edit_spool_details: EditSpoolDetails
     track_print_job: TrackPrintJob
+    record_print_consumption: RecordPrintConsumption
     open_pending_review: OpenPendingReview
     approve_review: ApproveReview
     dismiss_review: DismissReview

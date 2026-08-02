@@ -30,6 +30,9 @@ from custom_components.filament_ledger.application.move_spool import (
 )
 from custom_components.filament_ledger.application.query import Queries
 from custom_components.filament_ledger.application.reconcile_spool import ReconcileSpool
+from custom_components.filament_ledger.application.record_print_consumption import (
+    RecordPrintConsumption,
+)
 from custom_components.filament_ledger.application.register_spool import RegisterSpool
 from custom_components.filament_ledger.application.review_queue import (
     ApproveReview,
@@ -124,6 +127,9 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
     open_pending_review = OpenPendingReview(
         jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
     )
+    record_print_consumption = RecordPrintConsumption(
+        jobs, spools, movements, open_pending_review, clock, events, database
+    )
 
     return Ledger(
         use_cases=UseCases(
@@ -139,8 +145,13 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             detect_spool=DetectSpool(spools, events, database, auto_mount=True),
             edit_spool_details=EditSpoolDetails(spools, database),
             track_print_job=TrackPrintJob(
-                jobs=jobs, open_pending_review=open_pending_review, clock=clock, uow=database
+                jobs=jobs,
+                open_pending_review=open_pending_review,
+                record_print_consumption=record_print_consumption,
+                clock=clock,
+                uow=database,
             ),
+            record_print_consumption=record_print_consumption,
             open_pending_review=open_pending_review,
             approve_review=ApproveReview(reviews, spools, movements, clock, events, database),
             dismiss_review=DismissReview(reviews, clock, events, database),

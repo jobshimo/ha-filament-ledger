@@ -47,6 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .application.move_spool import EditSpoolDetails, MountSpool, UnmountSpool
     from .application.query import Queries
     from .application.reconcile_spool import ReconcileSpool
+    from .application.record_print_consumption import RecordPrintConsumption
     from .application.register_spool import RegisterSpool
     from .application.review_queue import ApproveReview, DismissReview, OpenPendingReview
     from .application.track_print_job import TrackPrintJob
@@ -114,6 +115,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
     )
 
+    # UC-04, the only fully automatic deduction (Q4, closed — docs/12-field-notes.md).
+    # `TrackPrintJob` hands it every FINISHED job; the review queue is its degradation
+    # path for anything the printer could not attribute.
+    record_print_consumption = RecordPrintConsumption(
+        jobs, spools, movements, open_pending_review, clock, events, database, anomalies
+    )
+
     # `database` is passed where a `UnitOfWork` is expected: the connection is the thing
     # that can make a multi-write sequence atomic, so it is the thing that implements it.
     use_cases = UseCases(
@@ -133,12 +141,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             auto_mount=bool(settings.get(CONF_AUTO_MOUNT_ON_RFID, DEFAULT_AUTO_MOUNT_ON_RFID)),
         ),
         edit_spool_details=EditSpoolDetails(spools, database),
-        # What the gateway's job events drive: starts become RUNNING rows, endings become
-        # reviews. Classification arrives on the event itself (Q1); UC-04's automatic
-        # deduction is deliberately not built until Q4 closes — see track_print_job.py.
+        # What the gateway's job events drive: starts become RUNNING rows, interrupted
+        # endings become reviews, and a finish goes to UC-04 for the automatic
+        # deduction. Classification arrives on the event itself (Q1, closed).
         track_print_job=TrackPrintJob(
-            jobs=jobs, open_pending_review=open_pending_review, clock=clock, uow=database
+            jobs=jobs,
+            open_pending_review=open_pending_review,
+            record_print_consumption=record_print_consumption,
+            clock=clock,
+            uow=database,
         ),
+        record_print_consumption=record_print_consumption,
         open_pending_review=open_pending_review,
         approve_review=ApproveReview(
             reviews, spools, movements, clock, events, database, anomalies

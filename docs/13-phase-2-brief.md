@@ -34,6 +34,11 @@ hass.states["sensor.a1_<serial>_peso_de_la_impresion"]
 Nothing else in Phase 2 should be built before this is known. Building UC-04 against a field
 that never populates is the single most expensive mistake available here.
 
+> **Answered — 2026-08-03.** The attributes carry `AMS 1 Tray n` keys, captured live at
+> the moment a print finished ([12 — Field Notes](12-field-notes.md)). The first outcome
+> held, so UC-04 is built as designed — and the capture also showed the attributes
+> *flicker*, which is why the missing-figure branch shipped with it rather than after it.
+
 ## Then, in order
 
 1. **`BambuLabGateway`** against the boundary in [05 §5.8](05-ha-integration.md). State

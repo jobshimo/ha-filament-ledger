@@ -24,6 +24,7 @@ from custom_components.filament_ledger.application.review_queue import (
     OpenPendingReviewCommand,
 )
 from custom_components.filament_ledger.domain.error import (
+    InvalidValueError,
     ReviewAlreadyPendingError,
     ReviewAlreadyResolvedError,
     SpoolDiscardedError,
@@ -210,6 +211,20 @@ class TestOpeningAReview:
         review = await stored_review(ledger, await opened(ledger, job))
 
         assert review.slot_resolution == {SLOT_1: None}
+
+    async def test_the_ambient_channel_refuses_to_estimate(self, ledger: Ledger) -> None:
+        """`open_within_unit` runs while the caller holds the ledger's one write lock,
+        where estimation — file I/O in Phase 4 — must never happen. Amounts are mandatory
+        there: refused outright, not documented and hoped for."""
+        with pytest.raises(InvalidValueError):
+            await ledger.use_cases.open_pending_review.open_within_unit(
+                OpenPendingReviewCommand(
+                    job=a_job(reported_usage={SLOT_1: Grams.of(209)}),
+                    reason=ReviewReason.UNMAPPED_USAGE,
+                )
+            )
+
+        assert await SqliteReviewRepository(ledger.database).list_pending() == []
 
     async def test_a_job_cannot_hold_two_open_reviews(self, ledger: Ledger) -> None:
         job = a_job(reported_usage={SLOT_1: Grams.of(209)})

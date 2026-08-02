@@ -5,14 +5,10 @@ One use case receives every `PrintEvent` the gateway translates. A start becomes
 or failed job — opens a review through UC-05. The classification is never made here: the
 event arrives with its outcome already read off the upstream event type (Q1, closed).
 
-**UC-04 is deliberately not built yet.** A `FINISHED` job is recorded with whatever
-per-slot figures the printer reported and then this use case stops: no deduction, no
-review. When Q4 closes and the per-tray attributes are known to populate,
-`RecordPrintConsumption` slots in exactly where `_ended` returns for a finished job —
-consuming `reported_usage`, guarded by `consumption_recorded`, degrading to a review with
-reason `UNMAPPED_USAGE` when the figures are missing (docs/04-use-cases.md UC-04). The
-figures it will need are already captured and persisted here, so building it later costs
-no data recorded today.
+A `FINISHED` job goes to UC-04 (Q4, closed — docs/12-field-notes.md): the ending's row,
+the automatic deduction and the `consumption_recorded` flag land in one unit inside
+`RecordPrintConsumption`, which degrades to a review with reason `UNMAPPED_USAGE`
+wherever a figure cannot be attributed (docs/04-use-cases.md UC-04).
 """
 
 from __future__ import annotations
@@ -29,6 +25,7 @@ from ..domain.value.identifiers import PrintJobId, new_print_job_id
 from ..domain.value.print_event import PrintEnded, PrintEvent, PrintStarted
 from ..domain.value.print_job_state import PrintJobState
 from ..domain.value.review import ReviewReason
+from .record_print_consumption import RecordPrintConsumption
 from .review_queue import OpenPendingReview, OpenPendingReviewCommand
 
 LOGGER = logging.getLogger(__name__)
@@ -50,6 +47,7 @@ _REVIEW_REASONS = {
 class TrackPrintJob:
     jobs: PrintJobRepository
     open_pending_review: OpenPendingReview
+    record_print_consumption: RecordPrintConsumption
     clock: Clock
     uow: UnitOfWork
 
@@ -107,10 +105,10 @@ class TrackPrintJob:
 
         reason = _REVIEW_REASONS.get(event.outcome)
         if reason is None:
-            # FINISHED. The figures are preserved and nothing is deducted — this return
-            # is the UC-04 seam described in the module docstring.
-            async with self.uow:
-                await self.jobs.save(ended)
+            # FINISHED. UC-04 owns the whole write: the ending's row, the deduction and
+            # the idempotency flag commit in one unit — saving the row here first would
+            # put a second delivery's stale claims outside the guard.
+            await self.record_print_consumption.execute(ended)
             return ended.id
 
         try:

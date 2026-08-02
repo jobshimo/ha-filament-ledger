@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from ..domain.error import (
     EstimationUnavailableError,
+    InvalidValueError,
     ReviewAlreadyPendingError,
     SpoolDiscardedError,
 )
@@ -99,45 +100,74 @@ class OpenPendingReview:
         estimates, estimator_used = await self._estimates_for(command)
 
         async with self.uow:
-            await self.jobs.save(command.job)
-            queue = await self.reviews.list_pending()
-            if any(pending.job_id == command.job.id for pending in queue):
-                msg = f"job {command.job.id} already has a pending review"
-                raise ReviewAlreadyPendingError(msg)
-
-            # Freeze slot→spool now. A review may sit for days while spools are swapped;
-            # resolving at approval time would deduct a cancelled Tuesday print from
-            # whatever happens to be in the slot on Friday. No mounted spool freezes as
-            # None — a fact worth recording, not an error.
-            lines: list[ReviewLine] = []
-            for slot in sorted(estimates):
-                mounted = await self.spools.find_by_location(AmsSlot(slot))
-                lines.append(
-                    ReviewLine(
-                        slot=slot,
-                        estimated=estimates[slot],
-                        spool_id=mounted.id if mounted is not None else None,
-                    )
-                )
-            review = open_review(
-                job_id=command.job.id,
-                reason=command.reason,
-                lines=tuple(lines),
-                estimator_used=estimator_used,
-                opened_at=self.clock.now(),
-            )
-            await self.reviews.save(review)
+            opened = await self._open(command, estimates, estimator_used)
 
         # Published after the commit — never for a write that could still roll back.
-        await self.events.publish(
-            ReviewOpened(
-                review_id=review.id,
-                job_id=command.job.id,
-                job_name=command.job.name,
-                reason=command.reason,
+        await self.events.publish(opened)
+        return opened.review_id
+
+    async def open_within_unit(self, command: OpenPendingReviewCommand) -> ReviewOpened:
+        """Open inside the caller's ambient unit of work — UC-04's transactional channel.
+
+        The caller already holds the unit, so the review lands in the same transaction
+        as whatever the caller has written — movements, the idempotency flag — and rolls
+        back with them (docs/04-use-cases.md UC-04 steps 2 and 7). Two consequences the
+        caller owns:
+
+        - The returned `ReviewOpened` is **not published here**. The caller publishes it
+          after *its* commit, because an event for a write that could still roll back
+          would announce something that never happened.
+        - Only the amounts channel is legal. Estimation may do file I/O (Phase 4), which
+          must never run while the ledger's one write lock is held — and UC-04 always
+          knows its figures, so the restriction costs nothing. Refused here rather than
+          documented and hoped for.
+        """
+        if command.amounts is None:
+            msg = "opening a review inside an ambient unit requires caller-supplied amounts"
+            raise InvalidValueError(msg)
+        return await self._open(command, dict(command.amounts), EstimatorKind.NONE)
+
+    async def _open(
+        self,
+        command: OpenPendingReviewCommand,
+        estimates: dict[SlotIndex, Grams],
+        estimator_used: EstimatorKind,
+    ) -> ReviewOpened:
+        """The transactional core: runs inside a unit of work the caller holds."""
+        await self.jobs.save(command.job)
+        queue = await self.reviews.list_pending()
+        if any(pending.job_id == command.job.id for pending in queue):
+            msg = f"job {command.job.id} already has a pending review"
+            raise ReviewAlreadyPendingError(msg)
+
+        # Freeze slot→spool now. A review may sit for days while spools are swapped;
+        # resolving at approval time would deduct a cancelled Tuesday print from
+        # whatever happens to be in the slot on Friday. No mounted spool freezes as
+        # None — a fact worth recording, not an error.
+        lines: list[ReviewLine] = []
+        for slot in sorted(estimates):
+            mounted = await self.spools.find_by_location(AmsSlot(slot))
+            lines.append(
+                ReviewLine(
+                    slot=slot,
+                    estimated=estimates[slot],
+                    spool_id=mounted.id if mounted is not None else None,
+                )
             )
+        review = open_review(
+            job_id=command.job.id,
+            reason=command.reason,
+            lines=tuple(lines),
+            estimator_used=estimator_used,
+            opened_at=self.clock.now(),
         )
-        return review.id
+        await self.reviews.save(review)
+        return ReviewOpened(
+            review_id=review.id,
+            job_id=command.job.id,
+            job_name=command.job.name,
+            reason=command.reason,
+        )
 
     async def _estimates_for(
         self, command: OpenPendingReviewCommand
