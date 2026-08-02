@@ -100,8 +100,8 @@
       "description": "Confirm what an interrupted print consumed. Only approval writes to the ledger — your numbers always win over the estimate.",
       "fields": {
         "review_id": { "name": "Review", "description": "Which pending review." },
-        "amounts": { "name": "Corrected amounts", "description": "Grams per slot, like {\"1\": 28.4}. Overrides the estimate for the slots you name." },
-        "assign": { "name": "Spool assignments", "description": "Spool per slot, like {\"3\": \"spool-id\"}. Resolves a slot the review recorded without a spool." },
+        "amounts": { "name": "Corrected amounts", "description": "Grams keyed by slot number — for example, slot 1 to 28.4. Overrides the estimate for the slots you name." },
+        "assign": { "name": "Spool assignments", "description": "Spool id keyed by slot number — for example, slot 3 to a spool id. Resolves a slot the review recorded without a spool." },
         "note": { "name": "Note", "description": "Anything worth remembering about the decision." }
       }
     },
