@@ -118,10 +118,14 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
 
     Estimates carry one decimal, like movement amounts — an estimate is a proposed
     movement. The total accumulates exact grams and rounds once, per this module's rule.
-    `raw_print_error` travels as the verbatim integer: formatting it into the searchable
-    HMS quad is the card's display work, not a fact about the job. A line's `spool_id` is
-    the *frozen* resolution — `null` says no spool was mounted when the review opened,
-    which is the row the approval flow asks the user to complete.
+    `raw_print_error` travels as a DECIMAL STRING, or null: HMS codes are 64-bit
+    integers — 0x0300010000020001 already exceeds 2^53 — and a JSON number crosses the
+    websocket into a JavaScript double, which would corrupt the code before the panel
+    could format it. The database keeps the verbatim integer; only the wire
+    representation changes. Formatting it into the searchable HMS quad is the card's
+    display work, not a fact about the job. A line's `spool_id` is the *frozen*
+    resolution — `null` says no spool was mounted when the review opened, which is the
+    row the approval flow asks the user to complete.
     """
     review = detail.review
     job = detail.job
@@ -137,7 +141,7 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
         "total_layers": job.total_layers,
         "progress_pct": job.progress.rounded if job.progress is not None else None,
         "raw_gcode_state": job.raw_gcode_state,
-        "raw_print_error": job.raw_print_error,
+        "raw_print_error": str(job.raw_print_error) if job.raw_print_error is not None else None,
         "estimated_total_g": grams(total([line.estimated for line in review.lines])),
         "lines": [
             {

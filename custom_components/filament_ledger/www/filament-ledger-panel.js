@@ -18,6 +18,17 @@ const CONFIDENCE = {
 
 const MATERIALS = ["PLA", "PETG", "ABS", "ASA", "TPU", "PC", "PA", "PVA", "SUPPORT", "OTHER"];
 
+/**
+ * How each EstimatorKind is named on a review card (docs/06 §6.3): provenance is shown so
+ * a guess is never mistaken for a measurement. NONE only reaches this map when its figures
+ * are non-zero — the printer reported them (domain/value/review.py); the all-zero NONE
+ * review renders the distinct no-data banner instead.
+ */
+const ESTIMATORS = {
+  LINEAR_PROGRESS: "Estimated from progress · approximate",
+  NONE: "Reported by the printer · not an estimate",
+};
+
 const TABS = [
   { id: "inventory", label: "Inventory" },
   { id: "review", label: "Review" },
@@ -31,6 +42,24 @@ const esc = (value) =>
 
 const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
 const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
+
+/**
+ * The verbatim `print_error` as the searchable HMS quad — AABB-CCDD-EEFF-GGHH, sixteen
+ * hex digits zero-padded from the 64-bit value. HMS codes are searchable; the user
+ * diagnosing a failure needs the real string (docs/06 §6.3). The code arrives as a
+ * DECIMAL STRING: HMS codes are 64-bit, a JSON number lands in JS as a double, and any
+ * value past 2^53 would already be corrupted before BigInt could see it — BigInt(string)
+ * is exact at any magnitude. Formatting is display work: the exact decimal string stays
+ * untouched in a title attribute. Anything that is not a plain decimal string within 64
+ * bits renders as-is — never reformatted, never invented.
+ */
+function hms(code) {
+  if (typeof code !== "string" || !/^[0-9]+$/.test(code)) return String(code);
+  const hex = BigInt(code).toString(16).toUpperCase();
+  if (hex.length > 16) return code;
+  const quad = hex.padStart(16, "0");
+  return `HMS ${quad.slice(0, 4)}-${quad.slice(4, 8)}-${quad.slice(8, 12)}-${quad.slice(12, 16)}`;
+}
 
 function when(iso) {
   if (!iso) return "";
@@ -49,6 +78,7 @@ class FilamentLedgerPanel extends HTMLElement {
     this._tab = "inventory";
     this._spools = [];
     this._stock = null;
+    this._reviews = [];
     this._detail = null;
     this._error = null;
     this._loading = true;
@@ -70,6 +100,9 @@ class FilamentLedgerPanel extends HTMLElement {
     this._root = this.shadowRoot.getElementById("root");
     this._root.addEventListener("click", (event) => this._onClick(event));
     this._root.addEventListener("submit", (event) => this._onSubmit(event));
+    // Review cards are edited in place — a full re-render per keystroke would steal the
+    // focus mid-number — so edits patch the card directly instead of going through render().
+    this._root.addEventListener("input", (event) => this._onInput(event));
     this.render();
   }
 
@@ -80,9 +113,16 @@ class FilamentLedgerPanel extends HTMLElement {
   async refresh() {
     try {
       this._error = null;
-      const [spools, stock] = await Promise.all([this.call("spools/list"), this.call("stock")]);
+      const [spools, stock, reviews] = await Promise.all([
+        this.call("spools/list"),
+        this.call("stock"),
+        this.call("reviews/list"),
+      ]);
       this._spools = spools;
       this._stock = stock;
+      // The one source of truth for everything review-shaped: the cards, the tab badge
+      // and the "n pending" count all read this list.
+      this._reviews = reviews;
       if (this._detail) this._detail = await this.call("spools/get", { spool_id: this._detail.id });
     } catch (error) {
       this._error = error.message || String(error);
@@ -144,9 +184,24 @@ class FilamentLedgerPanel extends HTMLElement {
         this._dialog = { kind: "mount", slot: Number(slot) };
         this.render();
         break;
+      case "review-distribute":
+        this._distribute(target.closest(".rv-card"));
+        break;
+      case "review-approve":
+        this._approveReview(target.closest(".rv-card"), id);
+        break;
+      case "review-dismiss":
+        this._dialog = { kind: "dismiss-review", review: this._reviews.find((r) => r.id === id) };
+        this.render();
+        break;
       default:
         break;
     }
+  }
+
+  _onInput(event) {
+    const card = event.target.closest(".rv-card");
+    if (card) this._syncReviewCard(card);
   }
 
   _onSubmit(event) {
@@ -203,6 +258,14 @@ class FilamentLedgerPanel extends HTMLElement {
           this.call("spools/mount", { spool_id: data.spool_id, slot: this._dialog.slot }),
         );
         break;
+      case "dismiss-review":
+        this.guarded(() =>
+          this.call("reviews/dismiss", {
+            review_id: this._dialog.review.id,
+            note: data.note || null,
+          }),
+        );
+        break;
       default:
         break;
     }
@@ -223,9 +286,12 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   header() {
-    const badge = this._stock?.needs_weighing
-      ? `<span class="count">${this._stock.needs_weighing}</span>`
-      : "";
+    const badges = {
+      inventory: this._stock?.needs_weighing
+        ? `<span class="count">${this._stock.needs_weighing}</span>`
+        : "",
+      review: this._reviews.length ? `<span class="count">${this._reviews.length}</span>` : "",
+    };
     return `
       <header>
         <h1>Filament Ledger</h1>
@@ -233,7 +299,7 @@ class FilamentLedgerPanel extends HTMLElement {
           ${TABS.map(
             (tab) => `
             <button data-action="tab" data-id="${tab.id}" class="${this._tab === tab.id && !this._detail ? "on" : ""}">
-              ${tab.label}${tab.id === "inventory" ? badge : ""}
+              ${tab.label}${badges[tab.id] || ""}
             </button>`,
           ).join("")}
         </nav>
@@ -354,7 +420,8 @@ class FilamentLedgerPanel extends HTMLElement {
   // -- review ------------------------------------------------------------------------
 
   reviewView() {
-    return `
+    if (!this._reviews.length) {
+      return `
       <div class="empty teach">
         <h2>Nothing to review.</h2>
         <p>
@@ -366,6 +433,246 @@ class FilamentLedgerPanel extends HTMLElement {
           ledger is one you entered yourself.
         </p>
       </div>`;
+    }
+
+    // Newest first (docs/06 §6.3): the backend serves oldest first, the card stack leads
+    // with the doubt the user most recently created. ISO timestamps sort lexically.
+    const cards = this._reviews
+      .slice()
+      .sort((a, b) => String(b.opened_at).localeCompare(String(a.opened_at)))
+      .map((review) => this.reviewCard(review))
+      .join("");
+    const n = this._reviews.length;
+    return `
+      <section class="stack">
+        <div class="muted">${n} pending</div>
+        ${cards}
+      </section>`;
+  }
+
+  reviewCard(review) {
+    const failed = review.job_state === "FAILED";
+    // NONE doubles as the explicit no-consumption-data flag when every frozen figure is
+    // zero (domain/value/review.py): that review renders the distinct no-data card, not
+    // an estimator line — a zero the user was told about, not one the system invented.
+    const noData =
+      review.estimator === "NONE" && review.lines.every((line) => line.estimated_g === 0);
+
+    const metaBits = [when(review.opened_at)];
+    if (review.job_state === "FINISHED") {
+      metaBits.push("completed");
+    } else if (review.layer_reached != null && review.total_layers != null) {
+      const pct = review.progress_pct != null ? ` (${esc(review.progress_pct)}%)` : "";
+      metaBits.push(
+        `stopped at layer ${esc(review.layer_reached)} of ${esc(review.total_layers)}${pct}`,
+      );
+    } else if (review.progress_pct != null) {
+      metaBits.push(`stopped at ${esc(review.progress_pct)}%`);
+    }
+
+    // The raw facts, verbatim (docs/06 §6.3): the HMS quad is searchable, the title holds
+    // the untouched integer, and `gcode_state` travels unparaphrased next to it.
+    const rawBits = [];
+    // String-or-null on the wire — 64-bit codes exceed a JSON number's exact range.
+    // "0" is the printer's no-error value, hidden exactly as the integer 0 was.
+    if (review.raw_print_error != null && review.raw_print_error !== "0") {
+      rawBits.push(
+        `Printer error <span class="rv-hms" title="raw print_error ${esc(review.raw_print_error)}">${esc(hms(review.raw_print_error))}</span>`,
+      );
+    }
+    if (review.raw_gcode_state) {
+      rawBits.push(`printer reported &quot;${esc(review.raw_gcode_state)}&quot;`);
+    }
+
+    const banner = noData
+      ? `<div class="rv-nodata">
+           <div class="t">⛔ No consumption data — the printer never reported it</div>
+           <div class="muted small">Nothing has been deducted for this print.</div>
+         </div>`
+      : `<div class="rv-est">${esc(ESTIMATORS[review.estimator] ?? review.estimator)}</div>`;
+
+    const rows = review.lines.map((line) => this.reviewRow(line)).join("");
+    const total = review.lines.length > 1
+      ? `<div class="rv-total">total <b>${esc(review.estimated_total_g.toFixed(1))}</b> g</div>`
+      : "";
+
+    // Approve starts disabled whenever a non-zero row has no spool — the button and the
+    // domain rule (02 §2.3) must never disagree about what is legal.
+    const blockedSlots = review.lines
+      .filter((line) => !line.spool_id && line.estimated_g !== 0)
+      .map((line) => line.slot);
+    const blocked = blockedSlots.length > 0;
+
+    return `
+      <article class="card rv-card" data-id="${esc(review.id)}">
+        <div class="rv-head">
+          <span class="rv-ico">${failed ? "⛔" : "⚠"}</span>
+          <span class="rv-name">${esc(review.job_name)}</span>
+          <span class="rv-state">${esc(review.job_state)}</span>
+        </div>
+        <div class="sub">${metaBits.join(" · ")}</div>
+        ${rawBits.length ? `<div class="sub">${rawBits.join(" · ")}</div>` : ""}
+        ${banner}
+        <div class="rv-rows">${rows}${total}</div>
+        <div class="rv-weigh">
+          <span>⚖ I weighed the ${noData ? "spools" : "waste"}:</span>
+          <input class="rv-weighed num" type="number" min="0" step="0.1"> g
+          <button data-action="review-distribute">Distribute</button>
+        </div>
+        <label class="rv-notewrap">Note
+          <input class="rv-note" placeholder="optional">
+        </label>
+        <div class="rv-actions">
+          <button data-action="review-dismiss" data-id="${esc(review.id)}">Dismiss</button>
+          <button class="primary rv-approve" data-action="review-approve" data-id="${esc(review.id)}"
+            ${blocked ? "disabled" : ""}>✓ Approve</button>
+        </div>
+        <div class="rv-hint muted small" ${blocked ? "" : "hidden"}>${this._approveHint(blockedSlots)}</div>
+      </article>`;
+  }
+
+  reviewRow(line) {
+    const spool = line.spool_id ? this._spools.find((s) => s.id === line.spool_id) : null;
+    const amount = `
+      <span class="rv-slot">Slot ${esc(line.slot)}</span>
+      <input class="rv-amt num" type="number" min="0" step="0.1" value="${esc(line.estimated_g.toFixed(1))}"> g`;
+
+    if (line.spool_id) {
+      return `
+        <div class="rv-row" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}">
+          <span class="rv-dot" style="background:${esc(spool?.colour ?? "transparent")}"></span>
+          <span class="rv-spool">${esc(spool ? spool.name : "Unknown spool")}</span>
+          ${amount}
+        </div>`;
+    }
+
+    // A slot the review froze without a spool is shown, never hidden (docs/06 §6.3): the
+    // amount is known, the spool is not, and the user is the one who knows which it was.
+    // Discarded spools stay out of the picker — charging one is refused by the domain.
+    const options = this._spools
+      .filter((s) => s.state !== "DISCARDED")
+      .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`)
+      .join("");
+    return `
+      <div class="rv-row unresolved" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}">
+        <span class="rv-warn">⚠</span>
+        <span class="rv-spool muted">no spool recorded</span>
+        ${amount}
+        <div class="rv-pickline">which spool was in this slot?
+          <select class="rv-pick"><option value="">Choose spool…</option>${options}</select>
+        </div>
+      </div>`;
+  }
+
+  _approveHint(slots) {
+    if (!slots.length) return "";
+    const list = slots.map((s) => `slot ${esc(s)}`).join(" and ");
+    return `Approve is disabled until ${list} has a spool, or its amount is 0.`;
+  }
+
+  /** Re-derive the card's total, hint and Approve state from its inputs, in place. */
+  _syncReviewCard(card) {
+    let total = 0;
+    let invalid = false;
+    const unattributed = [];
+    for (const row of card.querySelectorAll(".rv-row")) {
+      const raw = row.querySelector(".rv-amt").value;
+      const value = raw === "" ? 0 : Number(raw);
+      if (!Number.isFinite(value) || value < 0) {
+        invalid = true;
+        continue;
+      }
+      total += value;
+      const pick = row.querySelector(".rv-pick");
+      if (pick && !pick.value && value !== 0) unattributed.push(row.dataset.slot);
+    }
+
+    const totalEl = card.querySelector(".rv-total b");
+    if (totalEl) totalEl.textContent = total.toFixed(1);
+
+    const blocked = invalid || unattributed.length > 0;
+    card.querySelector(".rv-approve").disabled = blocked;
+    const hint = card.querySelector(".rv-hint");
+    hint.hidden = !blocked;
+    hint.textContent = unattributed.length
+      ? `Approve is disabled until ${unattributed.map((s) => `slot ${s}`).join(" and ")} has a spool, or its amount is 0.`
+      : "Amounts must be zero or positive numbers.";
+  }
+
+  /**
+   * Split the weighed total across the rows in the same proportion as the frozen
+   * estimates (docs/06 §6.3) — a click, not arithmetic. With one row it replaces the
+   * value outright, which is the same rule with one term. When every estimate is zero —
+   * the no-data card — the spec names no proportion, so the split is even: the honest
+   * default when nothing distinguishes the slots.
+   *
+   * Rounding: cumulative, one decimal like every movement — row i gets
+   * round1(cumulative share through i) − round1(cumulative share through i−1). The
+   * rounded cumulative totals telescope, so the rows sum to round1(total) BY
+   * CONSTRUCTION, and each row stays within 0.1 of its fair share. Rounding each row
+   * independently cannot give that guarantee: every row can round up at once, and the
+   * rows then claim more than the scale read (shares 33.06 + 33.06 + 33.06 + 0.02 of
+   * 99.2 would become 33.1 + 33.1 + 33.1 + 0.0 = 99.3). Cumulative totals only grow
+   * when shares are non-negative, so no clamp is needed either.
+   */
+  _distribute(card) {
+    const weighed = card.querySelector(".rv-weighed");
+    const total = weighed.value === "" ? NaN : Number(weighed.value);
+    if (!Number.isFinite(total) || total < 0) return;
+
+    const rows = [...card.querySelectorAll(".rv-row")];
+    const basis = rows.map((row) => Number(row.dataset.orig) || 0);
+    const basisTotal = basis.reduce((a, b) => a + b, 0);
+    const shares =
+      basisTotal > 0 ? basis.map((b) => b / basisTotal) : basis.map(() => 1 / rows.length);
+
+    const round1 = (value) => Math.round(value * 10) / 10;
+    let cumShare = 0;
+    let cumRounded = 0;
+    rows.forEach((row, i) => {
+      cumShare += shares[i];
+      // The last row closes on exactly 1, so float drift in the running share can never
+      // leave the sum a tenth short of — or past — what the scale read.
+      const next = round1(total * (i === rows.length - 1 ? 1 : cumShare));
+      row.querySelector(".rv-amt").value = round1(next - cumRounded).toFixed(1);
+      cumRounded = next;
+    });
+    this._syncReviewCard(card);
+  }
+
+  /**
+   * Approve with only the overrides the user actually changed: `amounts` carries a slot
+   * only when its value differs from what the card DISPLAYED — the estimate seeded into
+   * the input at one decimal — and `assign` only the pickers with a choice. The
+   * comparison must round `data-orig` the same way the seed did (`toFixed(1)`):
+   * `data-orig` keeps the full-precision estimate for Distribute's basis, and comparing
+   * the one-decimal input against it would flag every untouched row as edited whenever
+   * the estimate carries sub-0.1 g precision, silently replacing the frozen estimate
+   * with its rounded display value server-side. Untouched rows are omitted, so the
+   * backend charges the full-precision frozen estimate. An input cleared to empty reads
+   * as 0, sent iff 0 differs from the displayed seed — clearing a non-zero row is a
+   * deliberate "this slot consumed nothing". JSON object keys are strings; the schema's
+   * Coerce(int) reads them as slots.
+   */
+  _approveReview(card, reviewId) {
+    const payload = { review_id: reviewId };
+    const amounts = {};
+    const assign = {};
+    for (const row of card.querySelectorAll(".rv-row")) {
+      const raw = row.querySelector(".rv-amt").value;
+      const value = raw === "" ? 0 : Number(raw);
+      const seeded = Number(Number(row.dataset.orig).toFixed(1));
+      if (Number.isFinite(value) && value >= 0 && value !== seeded) {
+        amounts[row.dataset.slot] = value;
+      }
+      const pick = row.querySelector(".rv-pick");
+      if (pick && pick.value) assign[row.dataset.slot] = pick.value;
+    }
+    if (Object.keys(amounts).length) payload.amounts = amounts;
+    if (Object.keys(assign).length) payload.assign = assign;
+    const note = card.querySelector(".rv-note").value.trim();
+    if (note) payload.note = note;
+    this.guarded(() => this.call("reviews/approve", payload));
   }
 
   // -- spool detail ------------------------------------------------------------------
@@ -444,6 +751,7 @@ class FilamentLedgerPanel extends HTMLElement {
       adjust: this.adjustForm(),
       discard: this.discardForm(),
       mount: this.mountForm(),
+      "dismiss-review": this.dismissReviewForm(),
     };
     return `
       <div class="scrim" data-action="close-dialog">
@@ -530,6 +838,17 @@ class FilamentLedgerPanel extends HTMLElement {
           ${available.map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`).join("")}
         </select></label>
         ${this.formActions("Mount")}
+      </form>`;
+  }
+
+  dismissReviewForm() {
+    return `
+      <form data-form="dismiss-review">
+        <h3>Record no consumption for this print?</h3>
+        <p class="muted">${esc(this._dialog.review?.job_name ?? "")}</p>
+        <label>Reason<input name="note" placeholder="optional"></label>
+        <p class="muted small">Dismissal is a decision written to history, not a delete.</p>
+        ${this.formActions("Dismiss")}
       </form>`;
   }
 
@@ -651,6 +970,48 @@ table.ledger td.bal { color: var(--secondary-text-color); }
   font-family: ui-monospace, "Roboto Mono", Menlo, monospace; font-size: 12.5px; overflow-x: auto;
   white-space: nowrap; color: var(--secondary-text-color); }
 .checksum b { color: var(--primary-text-color); }
+
+.rv-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.rv-head { display: flex; align-items: baseline; gap: 9px; }
+.rv-ico { flex: none; }
+.rv-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.rv-state { margin-left: auto; font-size: 11px; letter-spacing: .08em; font-weight: 700;
+  color: var(--secondary-text-color); white-space: nowrap; }
+.rv-card .sub { font-size: 12.5px; color: var(--secondary-text-color); }
+.rv-hms { font-family: ui-monospace, "Roboto Mono", Menlo, monospace; }
+.rv-est { font-size: 12.5px; color: var(--secondary-text-color); font-style: italic; }
+.rv-nodata { border-left: 3px solid var(--error-color, #c62828); padding: 8px 12px;
+  background: var(--secondary-background-color, #f5f5f5); border-radius: 0 8px 8px 0; }
+.rv-nodata .t { font-weight: 500; }
+.rv-rows { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+.rv-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.rv-dot { width: 14px; height: 14px; border-radius: 4px; flex: none;
+  border: 1px solid var(--divider-color, #e0e0e0); }
+.rv-warn { flex: none; width: 14px; text-align: center; }
+.rv-spool { flex: 1 1 140px; min-width: 0; }
+.rv-slot { font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; }
+input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; border-radius: 8px;
+  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
+  color: var(--primary-text-color); text-align: right; font-variant-numeric: tabular-nums; }
+.rv-pickline { flex-basis: 100%; padding-left: 23px; font-size: 12.5px;
+  color: var(--secondary-text-color); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rv-pick { font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px;
+  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
+  color: var(--primary-text-color); }
+.rv-total { align-self: flex-end; font-size: 13px; color: var(--secondary-text-color);
+  border-top: 1px solid var(--divider-color, #e0e0e0); padding-top: 5px;
+  font-variant-numeric: tabular-nums; }
+.rv-total b { color: var(--primary-text-color); }
+.rv-weigh { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.rv-weigh button { padding: 6px 12px; font-size: 13px; }
+.rv-notewrap { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px;
+  color: var(--secondary-text-color); }
+.rv-note { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
+  color: var(--primary-text-color); }
+.rv-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.rv-actions .primary:disabled { opacity: .45; cursor: not-allowed; }
+.rv-hint { text-align: right; }
 
 .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center;
   padding: 16px; z-index: 20; }

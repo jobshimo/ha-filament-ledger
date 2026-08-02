@@ -30,7 +30,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
-from custom_components.filament_ledger.domain.value.review import ReviewReason
+from custom_components.filament_ledger.domain.value.review import EstimatorKind, ReviewReason
 from custom_components.filament_ledger.infrastructure.ha.websocket_api import (
     async_register_commands,
 )
@@ -149,7 +149,9 @@ async def a_created_spool(ws: WsClient, **overrides: object) -> str:
     return cast(str, result["spool_id"])
 
 
-async def an_open_review(harness: Harness, job_id: str = "job-1") -> ReviewId:
+async def an_open_review(
+    harness: Harness, job_id: str = "job-1", raw_print_error: int = 50348044
+) -> ReviewId:
     """A pending review for a cancelled print, opened through the real use case.
 
     The websocket deliberately has no command that opens a review — opening is the
@@ -165,7 +167,7 @@ async def an_open_review(harness: Harness, job_id: str = "job-1") -> ReviewId:
         progress=Percentage.of(34),
         reported_usage={SlotIndex(1): Grams.of(209)},
         raw_gcode_state="pause",
-        raw_print_error=50348044,
+        raw_print_error=raw_print_error,
     )
     return await harness.ledger.use_cases.open_pending_review.execute(
         OpenPendingReviewCommand(job=job, reason=ReviewReason.CANCELLED)
@@ -571,7 +573,9 @@ class TestReviewsList:
             "total_layers": 209,
             "progress_pct": 34,
             "raw_gcode_state": "pause",
-            "raw_print_error": 50348044,
+            # A decimal string, never a JSON number: HMS codes are 64-bit and a number
+            # would land in the browser as a corrupted double past 2^53.
+            "raw_print_error": "50348044",
             # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool.
             "estimated_total_g": 71.0,
             "lines": [{"slot": 1, "estimated_g": 71.0, "spool_id": spool_id}],
@@ -587,6 +591,61 @@ class TestReviewsList:
         (payload,) = await ws.result_list(REVIEWS_LIST)
 
         assert payload["lines"] == [{"slot": 1, "estimated_g": 71.0, "spool_id": None}]
+
+    async def test_a_64_bit_hms_code_crosses_the_wire_as_the_exact_decimal_string(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """0x0300010000020001 — a real HMS code shape — exceeds 2^53, the largest integer
+        a JSON number survives as once a browser has parsed it into a double. The wire
+        carries the decimal string verbatim, so the panel's BigInt conversion is exact at
+        any magnitude; the database keeps the integer."""
+        await an_open_review(harness, raw_print_error=0x0300010000020001)
+
+        (payload,) = await ws.result_list(REVIEWS_LIST)
+
+        assert payload["raw_print_error"] == "216173881625542657"
+
+    async def test_no_consumption_data_travels_as_estimator_none_with_all_zero_lines(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The shape the panel's distinct no-data card keys off (docs/06 §6.3): estimator
+        `NONE` with every line frozen at zero. The spools were mounted, so the rows are
+        attributed — only the amounts are missing."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        job = PrintJob(
+            id=PrintJobId("job-nodata"),
+            name="bracket_v4.3mf",
+            state=PrintJobState.FINISHED,
+            started_at=EPOCH,
+            # No layers, no percent: estimation is unavailable, and the review opens with
+            # the explicit no-data flag instead of a fabricated figure.
+            reported_usage={SlotIndex(1): Grams.of(209)},
+            raw_gcode_state="finish",
+        )
+        await harness.ledger.use_cases.open_pending_review.execute(
+            OpenPendingReviewCommand(job=job, reason=ReviewReason.UNCLASSIFIED)
+        )
+
+        (payload,) = await ws.result_list(REVIEWS_LIST)
+
+        assert payload["estimator"] == "NONE"
+        assert payload["job_state"] == "FINISHED"
+        assert payload["raw_print_error"] is None
+        assert payload["estimated_total_g"] == 0.0
+        assert payload["lines"] == [{"slot": 1, "estimated_g": 0.0, "spool_id": spool_id}]
+
+    async def test_the_vocabularies_the_panel_branches_on_are_pinned(self) -> None:
+        """The panel's estimator-label map covers exactly these kinds, and its card header
+        branches on exactly these job states. A member added or renamed on either enum must
+        arrive together with its rendering — this failing test is how that is remembered."""
+        assert {kind.value for kind in EstimatorKind} == {"LINEAR_PROGRESS", "NONE"}
+        assert {state.value for state in PrintJobState} == {
+            "RUNNING",
+            "FINISHED",
+            "CANCELLED",
+            "FAILED",
+        }
 
 
 class TestReviewsApprove:

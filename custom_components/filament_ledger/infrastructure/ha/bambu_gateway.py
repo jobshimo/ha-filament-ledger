@@ -306,6 +306,8 @@ class BambuLabGateway:
             return None
         try:
             return Percentage.of(state.state)
+        # PEP 758 (Python 3.14): an unparenthesized pair catches either exception.
+        # This is the formatter's canonical form, not the Python 2 `except A as B`.
         except InvalidValueError, ArithmeticError:
             LOGGER.debug("print_progress reads %r, which is not a percentage", state.state)
             return None
