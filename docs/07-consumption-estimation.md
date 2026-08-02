@@ -53,6 +53,17 @@ tool, including purge, up to the exact stopping point.
 That difference — accumulating what was commanded rather than scaling a total — is what
 removes every non-linearity described above at once.
 
+**What this does *not* buy.** The per-tool totals for a job already arrive without any of
+this: `ha-bambulab` parses them out of the sliced `.3mf` and exposes them as attributes of
+`print_weight` ([05 §5.8](05-ha-integration.md)). What the G-code adds is the **curve** — how
+that total accumulated layer by layer, so an interrupted print can be cut at the right point.
+
+Worth being precise about, because it moves the whole estimator question from *"can we get
+numbers at all"* to *"how good is the shape between zero and the total"*. That is why
+[Q3](01-vision.md) is an accuracy question rather than a feasibility one, and why
+[10 — Roadmap](10-roadmap.md) can leave this to Phase 4 without the product being crippled
+until then.
+
 ---
 
 ## 7.3 Strategy pattern
@@ -81,10 +92,17 @@ to run.
 
 ### `GcodeLayerEstimator`
 
-1. Fetch the G-code for the job through `PrinterGateway.fetch_gcode`.
+1. Fetch the sliced file through `GcodeSource`, an **infrastructure-level** collaborator.
+   Deliberately not a method on the domain's `PrinterGateway`: FTP retrieval of a file format
+   is not something the domain should be able to name ([02 §2.7](02-domain-model.md)).
 2. Parse it once, building a table of cumulative filament per tool per layer.
 3. Look up the cumulative value at `layer_reached`.
-4. Return per-slot grams, mapping tool index to AMS slot.
+4. Map tool index to AMS slot using the printer's `ams_mapping`, and return per-slot grams.
+
+Step 4 is not a detail. The slicer numbers its filaments in its own order, and the mapping
+onto physical trays is chosen per job — `ams_mapping` is what upstream itself uses to attribute
+`used_g` to trays. Assuming filament *n* means tray *n* works right up until the first job
+where it does not, and then it deducts from the wrong spool without ever looking wrong.
 
 Reports `EstimatorKind.GCODE_LAYER` so the UI can label it *"layer-accurate"*.
 
@@ -153,36 +171,51 @@ from real data during Phase 4 ([10 — Roadmap](10-roadmap.md)).
 
 ## 7.6 Purge accounting
 
-**Open question Q2**: does the per-tray weight reported by `ha-bambulab` for a *successful*
-print already include purge?
+**Open question Q2**: does the per-tray figure — the slicer's `used_g` — already include the
+flush at colour changes?
 
-- **If yes** — purge is covered, and `PURGE_WASTE` remains available for manual entry only.
-- **If no** — a separate purge movement is needed per colour change, and the slicer's flush
-  volume becomes an input the system must read.
+- **If yes** — purge is covered, and `PURGE_WASTE` stays a reserved type with no producer.
+- **If no** — a separate purge movement is needed per colour change, the slicer's flush volume
+  becomes an input the system must read, and Phase 4 writes the producer.
 
-**This must be settled by measurement, not assumption.** The test is defined in
-[10 — Roadmap](10-roadmap.md) Phase 4: print a two-colour job, weigh both spools before and
-after, compare the real total against what the integration reported. The `PURGE_WASTE`
-movement type exists in the model from day one so that neither answer requires a schema
-change.
+**This must be settled by evidence, not assumption** — and the first step no longer needs a
+printer. Slice a two-colour plate and compare the `used_g` values in the `.3mf`'s `slice_info`
+metadata against the filament and flush totals Bambu Studio reports for that plate. The
+physical two-colour print with a scale ([09 §9.7](09-testing-strategy.md)) then confirms it.
+
+`PURGE_WASTE` is reserved in the model and in the first migration precisely so that neither
+answer requires a schema change. It has **no producer in v1**, and
+[02 §2.2](02-domain-model.md) says so plainly rather than implying a manual-entry path that
+does not exist.
 
 ---
 
 ## 7.7 Cancellation classification
 
-**Open question Q1**: can a user cancellation be distinguished from a system failure?
+**Q1 is closed**, and how it closed is worth keeping.
 
-Working hypothesis: `print_error == 0` indicates the user stopped the print; a non-zero value
-indicates the printer stopped it. **Unverified, and not documented by any public source.**
+The working hypothesis was that `print_error == 0` indicates a user cancellation and a
+non-zero value indicates the printer stopped the print. It was unverified and undocumented,
+and a physical procedure was written to test it.
 
-The design does not depend on the answer:
+It never needed testing. `ha-bambulab` already fires distinct events —
+`event_print_canceled` and `event_print_failed` — on the Home Assistant bus. The classification
+is made upstream, by code that reads the MQTT stream for a living, and consuming it is both
+more accurate and someone else's maintenance burden.
+
+**The cheapest answer to a hard question is often that somebody already answered it.** A day
+spent reading a dependency's source removed a physical test procedure from the plan and made
+a provisional rule unnecessary.
+
+The design's tolerance for being wrong stays exactly as it was, because upstream can be wrong
+too:
 
 1. `PrintJob` stores `raw_print_error` and `raw_gcode_state` **verbatim**.
 2. `ReviewReason` includes `UNCLASSIFIED` as a legitimate value, not an error state.
 3. The review UI shows the classification as a suggestion and lets the user change it.
-4. When the rule is confirmed, it can be applied retroactively to jobs already stored —
-   *because the raw values were kept*.
+4. If the classification ever turns out to be wrong, it can be recomputed retroactively for
+   jobs already stored — *because the raw values were kept*.
 
 Storing raw inputs alongside derived conclusions is what makes a wrong conclusion recoverable.
-Storing only the conclusion would make Q1 unanswerable after the fact, and every job recorded
-before the answer would be permanently misclassified.
+Storing only the conclusion would leave every job recorded before the discovery permanently
+misclassified.

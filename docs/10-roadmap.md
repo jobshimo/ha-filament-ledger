@@ -7,20 +7,30 @@ purely as scaffolding for the next.
 
 ## Phase 0 — Answer the open questions
 
-**Before any production code.**
+**Before any printer-dependent code. Runs in parallel with Phase 1.**
 
-The four questions in [01 §1.6](01-vision.md) are answered with the physical procedures in
+The remaining questions in [01 §1.6](01-vision.md) are answered with the procedures in
 [09 §9.7](09-testing-strategy.md), on the actual A1.
 
-Deliverables: recorded MQTT payloads for cancellations and failures; a purge measurement from a
-two-colour print; a G-code retrieval success rate; a confirmed sensor population path. Findings
-written back into [01](01-vision.md).
+Prerequisite, and it is not optional: **`ha-bambulab` must be installed and connected to the
+printer.** Nothing in this phase can start before that.
 
-**Why first:** Q4 determines whether automatic deduction works at all, and Q3 determines
-whether the accurate estimator is the default or a bonus. Building on assumptions and
-discovering later that the sensors were never populated would invalidate a phase of work.
+Deliverables: a `print_weight` population rate across twenty completed prints in each of LAN
+and Cloud configurations (Q4); a flush comparison from a sliced `.3mf`, confirmed against a
+scale (Q2); a G-code retrieval success rate (Q3); confirmation that the cancel and fail events
+behave as upstream documents them (Q1). Findings written back into [01](01-vision.md).
 
-**A day of measurement here removes weeks of building on a guess.**
+**Why it gates Phase 2 and not Phase 1.** Q4 determines whether automatic deduction works at
+all and Q3 determines how good the interrupted-print estimate can get — both are questions
+about the *printer*. Phase 1 touches no printer. An earlier draft of this roadmap held all
+production code behind this phase, which meant an afternoon of physical measurement blocked
+several weeks of work that does not depend on its outcome.
+
+That gate was self-imposed and wrong. The whole point of putting the printer behind
+`PrinterGateway` ([03](03-architecture.md)) is that the ledger does not wait for it.
+
+**A day of measurement here still removes weeks of building on a guess — it just does not have
+to be the first day.**
 
 ---
 
@@ -28,10 +38,18 @@ discovering later that the sensors were never populated would invalidate a phase
 
 The domain and application layers, complete, with persistence. No UI, no printer.
 
+**Can start immediately.** It depends on no open question and on no hardware.
+
+- Project skeleton and toolchain from [11 — Development](11-development.md), including
+  `mypy --strict` and the architecture tests, both wired into CI on the first commit
 - All value objects, entities, domain services
 - SQLite repositories with triggers and migrations
 - UC-01, UC-08, UC-09, UC-10, UC-11, UC-12 — everything not printer-dependent
 - Full domain and application test suites; architecture tests in place from the start
+
+The toolchain goes first, not last. `mypy --strict` is what makes the `Grams` type discipline
+real rather than decorative ([09 §9.2](09-testing-strategy.md)), and retrofitting strict typing
+onto a finished layer is a different and worse job than starting with it.
 
 **Usable outcome:** a working manual inventory driven through HA service calls. Register a
 spool, weigh it, discard part of it, read its history. No printer required — which is exactly
@@ -47,12 +65,16 @@ satisfiable.
 
 Connect to reality.
 
-- `BambuLabGateway` implementing `PrinterGateway`
+- `BambuLabGateway` implementing `PrinterGateway`, against the boundary fixed in
+  [05 §5.8](05-ha-integration.md) and fixture-tested with payloads captured from the real A1
 - Job lifecycle tracking; RFID detection
-- UC-02, UC-03, UC-04, UC-05
+- UC-02, UC-03, UC-04, UC-05, **UC-06, UC-07**
 - `LinearProgressEstimator` only
 - HA entities, services, event bridge
 - Config flow
+
+UC-06 and UC-07 belong here, not later. A review that cannot be approved or dismissed is a
+queue that only fills up, and the exit criteria below require resolving one.
 
 **Usable outcome:** successful prints deduct automatically; cancellations open reviews
 resolvable by service call.

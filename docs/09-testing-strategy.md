@@ -29,8 +29,22 @@ signal.
 Coverage targets, by category rather than percentage:
 
 **Value objects** — construction validity, arithmetic, equality, and the invalid cases that
-must be rejected. `Grams` in particular: milligram precision, signed arithmetic, and the fact
-that adding a bare number does not compile.
+must be rejected. `Grams` in particular: milligram precision, signed arithmetic, and that
+adding a bare number raises `TypeError`.
+
+> An earlier draft claimed `Grams(1) + 5` "does not compile". Python has no compile step that
+> would catch it, so as written the guarantee was decoration. It is made real by two things
+> instead: a runtime `TypeError` covered by a test, and **`mypy --strict` running in CI**
+> ([11 §11.3](11-development.md)) so the mistake is caught before the code is ever executed.
+>
+> The point of `Grams` is that it makes a class of bug impossible. A type discipline nothing
+> enforces makes it merely discouraged.
+
+**Derived state** — `SpoolState` and `Confidence` are functions, and both are specified as
+total ([02 §2.2](02-domain-model.md), [02 §2.6](02-domain-model.md)). Tested as such: every
+branch, both boundaries of every threshold, and a property test asserting that an arbitrary
+movement history always yields exactly one state and exactly one confidence level. A rule
+with a gap is a rule two implementers will resolve differently.
 
 **State machines** — every legal `SpoolState` transition, and every illegal one rejected.
 Illegal transitions matter more; a state machine that only permits is not a state machine.
@@ -39,11 +53,18 @@ Illegal transitions matter more; a state machine that only permits is not a stat
 matters most:
 
 ```
-∀ movements: balance == opening + Σ(amounts)
+∀ movements: balance == Σ(amounts)
 ```
 
-Property-based, with generated movement sequences. This is the central rule of the system and
-deserves more than example tests.
+No separate `opening` term — the opening balance is the first movement
+([02 §2.1](02-domain-model.md)). Any formulation that adds or subtracts an opening weight
+*alongside* the sum counts it twice, and the sign error that hides in the subtracting variant
+makes every print increase the balance.
+
+Property-based, with generated movement sequences including mixed signs and a
+reconciliation that raises the balance. This is the central rule of the system and deserves
+more than example tests — it is the one assertion that, if it passes, means the product's
+headline number is arithmetic rather than opinion.
 
 **`ConfidenceEvaluator`** — each level's boundary conditions, and the transitions between them
 in both directions.
@@ -69,6 +90,12 @@ The cases that must not be missed, because they are where correctness actually l
 | An opened review changes no balance | The core guarantee of the queue |
 | Confirmed amounts override estimates | The user's number always wins |
 | An unknown RFID creates no spool | Never invent an opening weight |
+| An RFID matching two spools mounts neither | Guessing sends every later print to the wrong ledger |
+| A finished print with no per-tray figure deducts nothing and opens a review | Missing is not zero, and zero would be invisible |
+| A finished print with an unmounted consuming slot opens a review for that slot | The consumption is real even when the attribution is not |
+| Approving a review with an unresolved non-zero slot is rejected | The alternative is inventing a spool or dropping grams silently |
+| A review's slot→spool resolution is frozen at open, not read at approval | A spool swapped in the meantime must not absorb the deduction |
+| Registering without a core weight fails | A silent zero corrupts every later reconciliation |
 | Reconciliation with zero delta writes nothing | A zero movement is noise |
 | Discarding more than the balance succeeds and flags an anomaly | The ledger records reality |
 | Unmounting records no movement | Location is not quantity |
@@ -97,10 +124,18 @@ def test_domain_imports_no_framework(): ...
 def test_application_imports_no_framework(): ...
 def test_domain_does_not_import_infrastructure(): ...
 def test_movement_repository_exposes_no_mutation(): ...
+def test_domain_entities_and_services_are_synchronous(): ...
 ```
 
-The last one inspects the port interface and asserts no method name suggests update or delete.
-It looks pedantic until the afternoon someone adds one to fix a bug quickly.
+`test_movement_repository_exposes_no_mutation` inspects the port interface and asserts no
+method name suggests update or delete. It looks pedantic until the afternoon someone adds one
+to fix a bug quickly.
+
+`test_domain_entities_and_services_are_synchronous` asserts that nothing under `domain/model`,
+`domain/value` or `domain/service` is a coroutine function. [ADR-0005](adr/0005-async-io-ports.md)
+puts the async boundary at the I/O ports; the first `async def` that appears on an entity is
+the first sign that I/O has leaked inward, and it will be added for a reason that seems good
+at the time.
 
 **A rule that lives only in a document is a rule that will be broken.** These four keep the
 architecture honest without requiring anyone to remember it.
@@ -120,18 +155,28 @@ payloads.
 Some things cannot be automated, and pretending otherwise produces tests that pass while the
 product is wrong. Each open question from [01 §1.6](01-vision.md) has a physical procedure:
 
-**Q1 — cancellation classification.** Cancel a print by hand; record `gcode_state` and
-`print_error`. Induce a real failure; record both again. Repeat across several instances.
+**Q1 — closed.** `ha-bambulab` already distinguishes the cases on the event bus, so no
+procedure is needed. What remains is a *confirmation*, folded into Q4's runs: check that a
+hand cancellation produces `event_print_canceled` and a genuine failure produces
+`event_print_failed`, and keep the raw fields so a disagreement is recoverable.
 
-**Q2 — purge accounting.** Weigh two spools. Run a two-colour print. Weigh again. Compare the
-real total against the integration's reported per-tray figures. The difference is the purge —
-and whether it was already counted.
+**Q2 — purge accounting.** Two steps, cheapest first:
+
+1. **No printer required.** Slice a two-colour plate. Compare the `used_g` values in the
+   `.3mf`'s `slice_info` metadata against the filament and flush totals Bambu Studio reports
+   for the same plate. That answers whether flush is inside `used_g`.
+2. **Confirmation.** Weigh two spools, run the print, weigh again, and compare the real total
+   against the integration's per-tray figures.
 
 **Q3 — G-code retrieval.** Attempt retrieval for twenty consecutive jobs; record success rate
-and latency.
+and latency. Now scoped to the per-layer curve only, since the per-tray totals arrive without
+it.
 
-**Q4 — sensor population path.** Test with Bambu Cloud, then LAN with FTP model data. Record
-which populates the weight sensors.
+**Q4 — population path. The one that matters.** Test with Bambu Cloud, then LAN with FTP model
+data. For twenty consecutive completed prints, record how often `print_weight` and its
+per-tray attributes are actually populated by the time the finish event fires. A rate below
+100% is not a curiosity — it is the size of the hole that [UC-04](04-use-cases.md) step 2
+exists to cover, and it decides whether the LAN-only setup can be recommended at all.
 
 Results are written back into [01 §1.6](01-vision.md), and the provisional rules that depend on
 them are then either confirmed or replaced. **No estimator accuracy figure is published until

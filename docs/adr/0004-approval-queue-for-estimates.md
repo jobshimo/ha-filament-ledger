@@ -5,11 +5,28 @@
 
 ## Context
 
-A successful print reports its filament usage. That number is measured.
+A print job arrives with a **plan**: the slicer's per-tray filament figure, surfaced by
+`ha-bambulab` and dissected in [01 §1.1](../01-vision.md). It is not a measurement — nothing
+in this system weighs anything except the user, on a kitchen scale.
 
-A cancelled or failed print reports nothing, yet consumed real filament. That number can only
-be inferred, and [07](../07-consumption-estimation.md) shows the inference is unreliable —
-badly so for multi-colour prints without G-code, where purge is unaccounted for.
+What separates the two cases is not how the number was obtained. It is **whether the plan
+ran**.
+
+- A print that reaches `FINISHED` executed its plan in full. Plan and reality agree to within
+  flow-rate variance.
+- A cancelled or failed print stopped partway, and how far through the plan it got can only be
+  inferred. [07](../07-consumption-estimation.md) shows that inference is unreliable — badly
+  so for multi-colour prints without G-code, where purge lands at colour changes rather than
+  spreading evenly.
+
+> **Correction.** An earlier version of this ADR argued the asymmetry from *measured versus
+> estimated*, on the belief that the printer weighed each tray. Reading `pybambu/models.py`
+> showed the figure comes from the sliced `.3mf` or from Bambu Cloud task data — the slicer's
+> prediction, available before the first layer.
+>
+> The decision below survives unchanged; its justification did not, and it is rewritten rather
+> than quietly patched. An ADR whose reasoning is wrong is worse than no ADR, because it will
+> be cited.
 
 Three options:
 
@@ -48,12 +65,26 @@ insist on.
 
 Deliberately asymmetric. Successful prints deduct automatically, with no review.
 
-Because the number is *measured*, and because **an approval step applied to trustworthy data
-trains the user to approve without reading**. An approval reflex is worse than no approval
-step: it produces the appearance of oversight with none of the substance, and it would
-compromise the reviews that genuinely need attention.
+Not because the number is measured — it is not. Because **the plan was carried out**, which
+makes the remaining uncertainty flow-rate variance: the same order of error a kitchen scale
+introduces, and far smaller than the uncertainty in "how much of a 209-layer print had run
+when it stopped at layer 71".
 
-Approval is reserved for data that is actually uncertain. That is what keeps it meaningful.
+And because **an approval step applied to reliable data trains the user to approve without
+reading**. An approval reflex is worse than no approval step: it produces the appearance of
+oversight with none of the substance, and it would compromise the reviews that genuinely need
+attention.
+
+Approval is reserved for consumption that is actually uncertain. That is what keeps it
+meaningful.
+
+**One exception, and it runs the other way.** If a print reaches `FINISHED` but its per-tray
+figure never arrived — a real possibility in LAN mode, [Q4](../01-vision.md) — there is no
+plan to trust and nothing to deduct. That job opens a review too
+([UC-04](../04-use-cases.md) step 2). The rule is not "finished prints deduct"; it is
+**"deduct only when the plan is known and known to have completed"**. A missing figure fails
+the first half, and treating it as zero would be the one error this system could never
+detect.
 
 ## Consequences
 
@@ -68,7 +99,8 @@ Approval is reserved for data that is actually uncertain. That is what keeps it 
 
 **Gained**
 
-- Every gram in the ledger is either measured or human-confirmed. No third category.
+- Every gram in the ledger came from a plan known to have completed, or from a human. No third
+  category — nothing enters on the strength of a guess about how far an interrupted print got.
 - `MovementSource` cleanly separates the two, which is what makes the confidence model
   ([02 §2.6](../02-domain-model.md)) computable.
 - Weighing waste becomes a natural part of the flow rather than an afterthought, so the most

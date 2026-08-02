@@ -20,26 +20,44 @@ CREATE TABLE spool (
     vendor            TEXT,
     label             TEXT,
     opening_weight_mg INTEGER NOT NULL CHECK (opening_weight_mg > 0),
-    core_weight_mg    INTEGER NOT NULL DEFAULT 0 CHECK (core_weight_mg >= 0),
-    state             TEXT    NOT NULL,          -- SEALED|ACTIVE|DEPLETED|DISCARDED
+    core_weight_mg    INTEGER NOT NULL CHECK (core_weight_mg >= 0),
     location_kind     TEXT    NOT NULL,          -- STORAGE|AMS_SLOT|EXTERNAL_SPOOL
     location_slot     INTEGER,                   -- non-null only for AMS_SLOT
     tag_uid           TEXT,
     registered_at     TEXT    NOT NULL,
+    discarded_at      TEXT,                      -- the only stored part of SpoolState
     updated_at        TEXT    NOT NULL,
 
     CHECK ((location_kind = 'AMS_SLOT') = (location_slot IS NOT NULL))
 );
 
-CREATE INDEX idx_spool_tag      ON spool(tag_uid) WHERE tag_uid IS NOT NULL;
-CREATE INDEX idx_spool_state    ON spool(state);
+CREATE INDEX idx_spool_tag       ON spool(tag_uid) WHERE tag_uid IS NOT NULL;
+CREATE INDEX idx_spool_discarded ON spool(discarded_at);
+
 CREATE UNIQUE INDEX idx_spool_slot
     ON spool(location_slot)
-    WHERE location_kind = 'AMS_SLOT' AND state != 'DISCARDED';
+    WHERE location_kind = 'AMS_SLOT' AND discarded_at IS NULL;
+
+CREATE UNIQUE INDEX idx_spool_external
+    ON spool(location_kind)
+    WHERE location_kind = 'EXTERNAL_SPOOL' AND discarded_at IS NULL;
 ```
 
-That last index enforces "one spool per AMS slot" in the database. A cross-aggregate invariant
-that only lives in application code is one race condition away from being violated.
+**There is no `state` column.** `SpoolState` is derived from `discarded_at` and the balance
+([02 §2.2](02-domain-model.md)). Storing it would put a value that is *computed from the
+ledger* next to the ledger, where the two can disagree and nothing detects it — the exact
+arrangement [ADR-0001](adr/0001-append-only-ledger.md) exists to reject. Applying that ADR to
+the balance but not to the state would have been half a decision.
+
+**`core_weight_mg` has no default.** An omitted core weight is a bug in the caller, and the
+column says so by refusing the insert. The friendly per-vendor default lives in the config
+flow and is applied by the service layer ([05 §5.4](05-ha-integration.md)), in one place. A
+`DEFAULT 0` here would turn that bug into a silent 250 g error inside every reconciliation —
+see [02 §2.8](02-domain-model.md).
+
+The two unique indexes enforce the physical facts that a slot holds one spool and the direct
+feed holds one spool. A cross-aggregate invariant that only lives in application code is one
+race condition away from being violated.
 
 ```sql
 CREATE TABLE movement (
@@ -112,9 +130,10 @@ twice, and a duplicate ledger entry is indistinguishable from a real one after t
 CREATE TABLE pending_review (
     id               TEXT PRIMARY KEY,
     job_id           TEXT    NOT NULL REFERENCES print_job(id),
-    reason           TEXT    NOT NULL,           -- CANCELLED|FAILED|UNCLASSIFIED
-    estimated_usage  TEXT    NOT NULL,           -- JSON {spool_id: mg}
-    confirmed_usage  TEXT,                       -- JSON {spool_id: mg}
+    reason           TEXT    NOT NULL,           -- CANCELLED|FAILED|UNCLASSIFIED|UNMAPPED_USAGE
+    estimated_usage  TEXT    NOT NULL,           -- JSON {slot: mg}
+    confirmed_usage  TEXT,                       -- JSON {slot: mg}
+    slot_resolution  TEXT    NOT NULL,           -- JSON {slot: spool_id|null}, frozen at open
     estimator_used   TEXT    NOT NULL,           -- GCODE_LAYER|LINEAR_PROGRESS|NONE
     state            TEXT    NOT NULL,           -- PENDING|APPROVED|DISMISSED
     opened_at        TEXT    NOT NULL,
@@ -141,12 +160,17 @@ CREATE TABLE schema_version (
 
 ## 8.2 JSON columns
 
-`reported_usage`, `estimated_usage` and `confirmed_usage` hold JSON maps rather than child
-tables.
+`reported_usage`, `estimated_usage`, `confirmed_usage` and `slot_resolution` hold JSON maps
+rather than child tables.
 
 Justified because they are always read and written whole, never queried by key, and bounded at
 four entries by the hardware. A child table would add joins and migrations for no query
 benefit.
+
+All four are keyed by **slot index**, not by spool. `slot_resolution` carries the slot→spool
+mapping frozen when the review opened, with `null` for a slot that had no spool mounted —
+which is the case a spool-keyed map could not represent at all
+([02 §2.3](02-domain-model.md)).
 
 **This is a deliberate exception, not a licence.** Anything queried, aggregated, or filtered
 gets a real column. Movements — the data that is actually queried by range and summed — are

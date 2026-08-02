@@ -15,10 +15,40 @@ The printer cannot answer this.
 | RFID tag on Bambu spools | Material, colour, temperatures, slicer profile ID | Identity only. Contains no remaining quantity. |
 | AMS `remain` field | Odometry estimate: filament length per full spool rotation, assuming 1 kg = 100% | **Not reported at all on A1 / A1 Mini.** On other models, documented failures: stuck at 100% (AMS Lite), returning `-1` (P1S). |
 | Slicer estimate | Weight the job *should* consume | Only known before printing. Says nothing about cancellations, failures, or purge waste. |
+| `ha-bambulab` per-tray `print_weight` | Grams per AMS tray for the current job | **The slicer's plan, not a measurement.** See below. |
 
 The A1 is the reference hardware for this project, which means the `remain` field is not a
 degraded input to be corrected — **it does not exist**. Software accounting is not one design
 option among several. It is the only possible approach.
+
+### What `print_weight` actually is
+
+This matters more than any other fact in this document, because an earlier draft of this
+design was built on a misreading of it.
+
+`ha-bambulab` exposes a `print_weight` sensor whose extra attributes break the job down per
+AMS tray (`AMS 1 Tray 1`, `External Spool`, …). Verified against `pybambu/models.py` on
+`main`, that value is populated by one of two paths:
+
+- **LAN** — the sliced `.3mf` is fetched over FTP, its `slice_info` metadata is parsed, and
+  the per-filament `used_g` field is mapped onto AMS trays using the MQTT `print.ams_mapping`
+  array.
+- **Cloud** — the per-AMS `weight` figures come from the Bambu Cloud task data.
+
+Both are **the slicer's prediction for the whole job**. The figure is available *before the
+first layer is printed* and does not change according to how the print actually went. The
+printer does not weigh anything.
+
+The consequence is precise, and it is not "the design is wrong":
+
+- Deducting automatically when a job reaches `FINISHED` remains correct — a completed job
+  executed the plan in full, so plan and reality agree to within flow-rate variance.
+- But the reason is **"the plan was carried out"**, not **"the number was measured"**. Every
+  place this project reasons about *measured versus estimated* means, precisely, *plan
+  fully executed versus plan interrupted partway*. See [ADR-0004](adr/0004-approval-queue-for-estimates.md).
+
+Nothing in this system is ever weighed except by the user, on a kitchen scale. That is why
+[UC-08](04-use-cases.md) is called the system's ground truth and this is not.
 
 ### Why existing tools do not close the gap
 
@@ -38,10 +68,11 @@ Spoolman remains valuable as an *optional export target*. See [ADR-0002](adr/000
 **G1 — Unified inventory.** Spools mounted in the AMS and spools in storage are the same kind
 of object in different locations, visible in one place.
 
-**G2 — Automatic deduction for measured consumption.** Successful prints deduct without
-intervention, because the printer reports actual per-tray weight.
+**G2 — Automatic deduction for completed prints.** Successful prints deduct without
+intervention, using the slicer's per-tray figure, because a job that ran to completion
+consumed what it was planned to consume.
 
-**G3 — Human approval for estimated consumption.** Cancelled and failed prints produce a
+**G3 — Human approval for interrupted prints.** Cancelled and failed prints produce a
 *proposal*, which is applied only after the user confirms or corrects the amount.
 
 **G4 — Manual entry everywhere it matters.** The user can weigh waste on a scale and enter
@@ -115,13 +146,61 @@ Anything not required by those seven statements is out of scope for v1.
 
 Tracked here until resolved. Each is a genuine unknown, not a placeholder.
 
-| # | Question | Impact | How it gets resolved |
-|---|---|---|---|
-| Q1 | Does `print_error == 0` reliably distinguish a user cancellation from a system failure? | Determines whether cancellation reason can be auto-classified or must always be user-set | Instrument both fields, capture real cancellations and real failures, compare |
-| Q2 | Does the per-tray weight reported by `ha-bambulab` already include AMS purge waste? | Determines whether purge needs separate accounting or is already covered | Print a two-colour job, compare reported total against a scale measurement |
-| Q3 | Is G-code retrievable via FTP on the A1 reliably enough to base the primary estimator on it? | Determines whether `GcodeLayerEstimator` is the default or an enhancement | Attempt retrieval across several jobs, measure success rate and latency |
-| Q4 | Which population path do the `print weight` sensors need — Bambu Cloud, or LAN with FTP model data enabled? | Determines the required user setup and documentation | Test both configurations against the owner's actual printer |
+Four were opened during design. Reading the `ha-bambulab` source closed one outright and
+changed the shape of two others — recorded below rather than silently edited away, because
+how a question was answered is worth as much as the answer.
 
-**No implementation decision that depends on these questions may be frozen before the
-question is answered.** Where a decision cannot wait, the design must degrade safely — see
-[07 — Consumption Estimation](07-consumption-estimation.md) for how the estimator handles Q3.
+| # | Question | Status |
+|---|---|---|
+| Q1 | Can a user cancellation be distinguished from a system failure? | **Closed by source reading.** See below. |
+| Q2 | Does the per-tray figure already include AMS purge waste? | **Open, and now cheaper to answer.** |
+| Q3 | Is G-code retrievable over FTP reliably enough to be the primary estimator? | **Open, downgraded.** |
+| Q4 | Which population path do the per-tray weight figures need? | **Open, and now the highest risk in the project.** |
+
+### Q1 — closed
+
+The original hypothesis was that `print_error == 0` distinguishes a user cancellation from a
+system failure. That inference is unnecessary: `ha-bambulab` already fires `bambu_lab_event`
+on the Home Assistant bus with a `type` field of `event_print_finished`,
+`event_print_canceled` or `event_print_failed` (`coordinator.py`). The distinction is made
+upstream, and maintaining it is upstream's problem rather than ours.
+
+`raw_print_error` and `raw_gcode_state` are still stored verbatim ([02 §2.3](02-domain-model.md)).
+Upstream can be wrong, and keeping the raw values is what makes a reclassification possible
+later. Storing them costs two columns.
+
+### Q2 — open, and now cheaper
+
+Does the slicer's `used_g` per filament already account for the flush/purge at colour changes?
+
+This no longer needs a printer. It needs **one sliced `.3mf`**: compare the `used_g` values in
+its `slice_info` metadata against the totals Bambu Studio displays for the same plate, which
+report filament and flush separately. A physical two-colour print with a scale
+([09 §9.7](09-testing-strategy.md)) remains the confirmation, not the first step.
+
+### Q3 — open, downgraded
+
+G-code retrieval was believed to be the only route to per-tray numbers. It is not: the
+per-tray totals already arrive through `print_weight` for every job.
+
+What parsing the G-code adds is the **per-layer curve** — how consumption accumulated up to
+the layer where an interrupted print stopped. That is a genuine accuracy gain for cancelled
+prints and nothing more. `GcodeLayerEstimator` is therefore an enhancement, exactly where
+[10 — Roadmap](10-roadmap.md) already puts it, and its failure is not a degraded product.
+
+### Q4 — open, highest risk
+
+The per-tray figures only exist once the sliced `.3mf` has been retrieved (LAN) or the cloud
+task data has been fetched. Upstream reports that the LAN-mode download fails frequently
+enough to leave the sensor unpopulated
+([greghesp/ha-bambulab#959](https://github.com/greghesp/ha-bambulab/issues/959)).
+
+An unpopulated figure means a completed print deducts **nothing, silently** — the single
+worst outcome available to this system, because it is invisible and it errs optimistically.
+
+Resolved by testing both configurations on the owner's printer and recording the success
+rate. Until it is resolved, [03 §3.8](03-architecture.md) requires that a `FINISHED` job with
+no usable per-tray figure open a review rather than record zero.
+
+**No implementation decision that depends on an open question may be frozen before the
+question is answered.** Where a decision cannot wait, the design must degrade safely.

@@ -25,8 +25,10 @@ Every spool has an opening balance. Every gram that leaves it is recorded as an 
 movement. The current balance is derived, never stored:
 
 ```
-balance = opening_weight − Σ(movements)
+balance = Σ(movements)
 ```
+
+The opening weight is the first movement, so there is no special case to keep in sync.
 
 This is a ledger, not a counter. You can always answer *why* a spool holds 340 g, not just
 *that* it does. Corrections are new entries, never edits to history.
@@ -34,8 +36,8 @@ This is a ledger, not a counter. You can always answer *why* a spool holds 340 g
 ## What it does
 
 - **One inventory** for spools mounted in the AMS and spools sitting on a shelf.
-- **Automatic deduction** for successful prints, using per-tray weight reported by the
-  printer.
+- **Automatic deduction** for prints that run to completion, using the slicer's per-tray
+  figure — because a job that finished consumed what it was planned to consume.
 - **A review queue** for cancelled and failed prints. Estimated consumption is *proposed*,
   never applied silently. You confirm the number — and you can weigh the waste and type in
   the real one.
@@ -46,8 +48,9 @@ This is a ledger, not a counter. You can always answer *why* a spool holds 340 g
 
 ## Design principles
 
-1. **The system never guesses silently.** Measured data is applied automatically. Estimated
-   data requires human approval.
+1. **The system never guesses silently.** A plan that ran to completion is applied
+   automatically. Anything interrupted, unattributable or missing requires human approval —
+   and a missing number is never treated as zero.
 2. **History is append-only.** Nothing is edited. Nothing is deleted.
 3. **A number without its error margin is a lie with formatting.** Every balance carries a
    confidence level.
@@ -68,6 +71,7 @@ This is a ledger, not a counter. You can always answer *why* a spool holds 340 g
 | [08 — Data Model](docs/08-data-model.md) | SQLite schema and migrations |
 | [09 — Testing Strategy](docs/09-testing-strategy.md) | What is tested, and where |
 | [10 — Roadmap](docs/10-roadmap.md) | Delivery phases |
+| [11 — Development](docs/11-development.md) | Toolchain, CI, conventions |
 | [ADRs](docs/adr/) | Architecture decision records |
 
 ## Hardware this was designed against
@@ -80,4 +84,4 @@ remaining-filament data whatsoever.
 
 ## Licence
 
-MIT (intended — not yet applied).
+[MIT](LICENSE).

@@ -139,6 +139,7 @@ custom_components/filament_ledger/
 │   │   ├── colour.py
 │   │   ├── location.py
 │   │   ├── spool_state.py
+│   │   ├── percentage.py
 │   │   └── confidence.py
 │   ├── service/
 │   │   ├── balance_calculator.py
@@ -191,6 +192,7 @@ custom_components/filament_ledger/
 │   │   ├── gcode_layer_estimator.py
 │   │   ├── linear_progress_estimator.py
 │   │   ├── composite_estimator.py
+│   │   ├── gcode_source.py         infra-level FTP retrieval; not a domain port
 │   │   └── gcode_parser.py
 │   └── export/
 │       └── spoolman_exporter.py
@@ -245,13 +247,21 @@ what makes each one testable with in-memory fakes and no patching.
 
 ## 3.7 Concurrency and consistency
 
-Home Assistant is asyncio. Two rules:
+Home Assistant is asyncio. Three rules:
 
 1. **SQLite access runs in an executor.** Blocking the event loop stalls the whole of Home
    Assistant — an unacceptable neighbour effect for an integration.
-2. **Writes to a single spool are serialised** by a per-spool lock. Two movements appended
-   concurrently would each read a stale balance. The ledger tolerates this for reads, but
-   anomaly detection and confidence evaluation must see a consistent sequence.
+2. **Every port that performs I/O is `async`, and so is every use case.** The sync/async
+   boundary sits at the port interface, not somewhere inside the adapters. Recorded as
+   [ADR-0005](adr/0005-async-io-ports.md), because it determines the signature of every
+   interface in [02 §2.7](02-domain-model.md) and is expensive to reverse.
+3. **Writes to a single spool are serialised** by a per-spool `asyncio.Lock`. Two movements
+   appended concurrently would each read a stale balance. The ledger tolerates this for reads,
+   but anomaly detection and confidence evaluation must see a consistent sequence.
+
+The domain itself stays synchronous. Entities, value objects, `BalanceCalculator`,
+`ConfidenceEvaluator` and `AnomalyDetector` perform no I/O, so there is nothing for them to
+await — and their tests need no event loop.
 
 Balance is computed on demand and cached in memory, invalidated on append. With a
 recomputation cost linear in movement count and a Raspberry Pi as the target floor, a spool
@@ -267,7 +277,17 @@ Constraint C4 requires that an unavailable printer never corrupts data.
 | Printer offline | Inventory management fully functional. Slot state marked stale, not cleared. |
 | `ha-bambulab` missing or broken | Integration loads; printer-dependent features disabled with a clear message. Manual operations unaffected. |
 | G-code unavailable | Estimator falls back to linear. The review records which estimator ran, so the user knows the number's provenance. |
+| **Job reaches `FINISHED` with no usable per-tray figure** | **A review is opened with a zero estimate and an explicit flag. Nothing is deducted, and nothing is assumed to be zero.** |
+| Slot consumed filament with no spool mounted | A review is opened for that slot with the amount and no resolution, and the user assigns the spool. |
+| RFID resolves to several spools | `AmbiguousTagDetected`; the slot stays unmounted until the user picks one. |
 | Print ends while HA is down | Job reconstructed from printer state on reconnect. If consumption cannot be determined, a review is opened rather than a value invented. |
 | Database corruption | Migrations are transactional. The ledger is append-only, so a partial write loses the last entry rather than the history. |
+
+The fourth row is the one that earns this table. The per-tray figure only exists once the
+sliced `.3mf` has been retrieved, and upstream reports that retrieval failing often enough to
+matter in LAN mode ([Q4](01-vision.md)). A completed print that deducts nothing is invisible
+and optimistic — the system would report filament that has already been extruded. Treating a
+missing figure as zero is the one failure mode this design cannot tolerate, so it is written
+into the failure posture rather than left to an implementer's judgement.
 
 The consistent principle: **degrade to asking the user, never to inventing a number.**

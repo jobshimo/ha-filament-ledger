@@ -47,8 +47,8 @@ The default landing view. Answers "what do I have?" without a click.
 │  │      612 g           │  │      184 g           │                 │
 │  │ ▓▓▓▓▓▓▓▓▓▓▓░░░░ 61%  │  │ ▓▓▓░░░░░░░░░░░░ 18%  │                 │
 │  │                      │  │                      │                 │
-│  │ 🟢 AMS · Slot 1      │  │ 🔴 AMS · Slot 2      │                 │
-│  │                      │  │    Weigh this spool  │                 │
+│  │ 🔴 AMS · Slot 1      │  │ 🔴 AMS · Slot 2      │                 │
+│  │    Weigh this spool  │  │    Weigh this spool  │                 │
 │  └──────────────────────┘  └──────────────────────┘                 │
 │                                                                      │
 │  ┌──────────────────────┐  ┌──────────────────────┐                 │
@@ -57,9 +57,9 @@ The default landing view. Answers "what do I have?" without a click.
 │  │      Bambu Lab       │  │      Bambu Lab       │                 │
 │  │                      │  │                      │                 │
 │  │      1 000 g         │  │      847 g           │                 │
-│  │ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ 100% │  │ ▓▓▓▓▓▓▓▓▓▓▓▓░░░ 85%  │                 │
+│  │  ⬚ Sealed            │  │ ▓▓▓▓▓▓▓▓▓▓▓▓░░░ 85%  │                 │
 │  │                      │  │                      │                 │
-│  │ 🟢 Storage · Sealed  │  │ 🟡 Storage           │                 │
+│  │ 🟢 Storage           │  │ 🟡 Storage           │                 │
 │  └──────────────────────┘  └──────────────────────┘                 │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -134,7 +134,7 @@ and nothing leaves without a decision.
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │ ⛔ calibration_cube.3mf                     FAILED              │  │
-│  │    Yesterday, 22:41 · stopped at layer 4 of 60 (6%)             │  │
+│  │    Yesterday, 22:41 · stopped at layer 4 of 60 (7%)             │  │
 │  │    Printer error  HMS 0300-0100-0002-0001                      │  │
 │  │                                                                │  │
 │  │    Estimated from progress · approximate  ⓘ                    │  │
@@ -166,6 +166,53 @@ needs the real string, not a friendly paraphrase of it.
 
 **Approve is never the default focus.** No accidental Enter-key approval. The whole point of
 the queue is deliberate confirmation; a reflex approval is worse than no queue at all.
+
+**A slot with no spool is shown, not hidden.** Rows are keyed by *slot*, and a slot the
+system could not attribute renders with a spool picker in place of the swatch:
+
+```
+│    ███ PLA Basic Black    Slot 1     [  28.4 ] g               │
+│    ⚠  no spool recorded   Slot 3     [  12.1 ] g               │
+│        which spool was in this slot?  [ Choose spool ▾ ]       │
+│                                                                │
+│                          [ Dismiss ]        [ ✓ Approve ]      │
+│                            Approve is disabled until slot 3    │
+│                            has a spool, or its amount is 0     │
+```
+
+This is the case [UC-04](04-use-cases.md) opens when filament was consumed from a slot the
+inventory did not know was loaded: the amount is known, the spool is not. **Approve stays
+disabled** while any non-zero row is unattributed — matching the domain rule in
+[02 §2.3](02-domain-model.md), because a disabled button and a rejected service call should
+never disagree about what is legal.
+
+The alternative designs both lose information: hiding the row discards a real consumption, and
+silently attributing it to whatever is in the slot *now* deducts from the wrong spool. The
+user knows which spool it was. Ask them.
+
+**The opposite case — nothing is known.** When a print reaches `FINISHED` but its per-tray
+figure never arrived at all ([UC-04](04-use-cases.md) step 2), there is no amount to render:
+
+```
+│ ⚠  bracket_v4.3mf                          FINISHED            │
+│    Today, 16:20 · completed                                    │
+│                                                                │
+│    ⛔ No consumption data — the printer never reported it       │
+│       Nothing has been deducted for this print.                │
+│                                                                │
+│    ███ PLA Basic Black    Slot 1     [   0.0 ] g               │
+│    ███ PLA Matte Ivory    Slot 2     [   0.0 ] g               │
+│                                                                │
+│    ⚖ I weighed the spools:  [        ] g   [ Distribute ]      │
+```
+
+Every field starts at zero and the banner says why, because a zero the user was told about is
+a different object from a zero the system invented. The spools are known here — they were
+mounted — so the rows are attributed and only the amounts are missing. Weighing, or dismissing
+after a glance at the part, is one action either way.
+
+Distinguishing these two shapes matters: one is *"how much came off which spool?"*, the other
+is *"how much came off at all?"*. A single generic empty state would answer neither.
 
 ### Dismiss
 
@@ -203,7 +250,8 @@ A physical mirror of the machine. Answers "what is loaded right now?" at a glanc
 │  │   612 g    │ │   184 g    │ │   940 g    │ │            │        │
 │  │ ▓▓▓▓▓░░ 61%│ │ ▓▓░░░░░ 18%│ │ ▓▓▓▓▓▓ 94% │ │  [ Mount ] │        │
 │  │            │ │            │ │            │ │            │        │
-│  │ 🟢 printing│ │ 🔴 weigh   │ │ 🟡         │ │            │        │
+│  │ 🔴 low     │ │ 🔴 low     │ │ 🟡 medium  │ │            │        │
+│  │  printing  │ │  weigh it  │ │            │ │            │        │
 │  └────────────┘ └────────────┘ └────────────┘ └────────────┘        │
 │                                                                      │
 │  Current print ─────────────────────────────────────────────────     │
@@ -243,6 +291,34 @@ Tapping **Register** opens the new-spool form pre-filled with everything the RFI
 material, colour, vendor, tag — leaving only the opening weight to confirm. The system asks
 for the one number it cannot know, and fills in every number it can.
 
+### Ambiguous tag
+
+A Bambu tag identifies a batch, not a spool ([02 §2.3](02-domain-model.md)), so two registered
+spools can legitimately answer to the same RFID. The slot stays unmounted and asks:
+
+```
+┌────────────┐
+│  SLOT 2    │
+│            │
+│  ████████  │
+│    ⚠       │
+│            │
+│ Two spools │
+│ share this │
+│ tag        │
+│            │
+│ ○ 612 g    │
+│ ○ 1 000 g  │
+│            │
+│ [ Confirm ]│
+└────────────┘
+```
+
+Candidates are distinguished by the only thing that actually differs — their balance, and when
+each was last used. Picking wrong is not a cosmetic error: every subsequent print would drain
+a spool sitting on a shelf while the one in the machine runs out with no warning. So the system
+does not pick.
+
 ### Disconnected
 
 The grid dims, a banner reads *"Printer unreachable — showing last known state from 14:02"*,
@@ -267,7 +343,8 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 │  │  Bambu Lab · PLA Basic · #000000                               │  │
 │  │  AMS Slot 1 · active · tag A1B2C3D4                            │  │
 │  │                                                                │  │
-│  │  🟢 High confidence · weighed 3 days ago                       │  │
+│  │  🔴 Low confidence · an estimate was approved today             │  │
+│  │     Last weighed 3 days ago                                    │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
 │  [ ⚖ Weigh ]  [ ✎ Adjust ]  [ 🗑 Discard ]  [ ✎ Edit details ]      │
@@ -289,6 +366,9 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 │   6 days ago    Discard                    −  8.0 g     830 g       │
 │                 "tangled section" · confirmed by you                 │
 │                                                                      │
+│   7 days ago    Print                      −162.0 g     838 g       │
+│                 lamp_shade · automatic                               │
+│                                                                      │
 │   8 days ago    Opening balance          + 1 000.0 g  1 000 g       │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
@@ -297,8 +377,31 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 ### What the history must convey
 
 Each row shows the **running balance after that entry**, so the arithmetic is visible rather
-than asserted. Every row states its **source** — *automatic* or *confirmed by you* — which is
-the difference between a measurement and a decision.
+than asserted. Read bottom-up, this example is a closed sum:
+
+```
+1 000.0  − 162.0  −  8.0  − 112.0  +  6.2  −  84.1  −  28.4  =  611.7  →  612 g
+```
+
+That the example above adds up is not decoration. An earlier draft of this document had a
+history whose rows did not reconcile — 1 000 g minus 8 g reaching 830 g — in the one view
+whose entire purpose is to let a doubting user follow the balance to its origin. A worked
+example that does not work teaches the reader that the arithmetic is approximate, which is the
+opposite of what this product claims.
+
+Every row states its **source** — *automatic* or *confirmed by you* — which is the difference
+between a plan the printer carried out and a decision a person made.
+
+**The header's confidence follows from the rows below it.** This spool was reconciled three
+days ago and has since taken an approved `ESTIMATED_CONSUMPTION`, which
+[02 §2.6](02-domain-model.md) defines as `LOW` — so the header reads `🔴 Low confidence` and
+the same red dot appears on its inventory card and in the AMS view. It is not decorated as
+`HIGH` because it was weighed recently; being weighed recently stopped being enough the moment
+an estimate was applied on top.
+
+Worth stating because an earlier draft of this document showed exactly that spool as `🟢 High`
+while displaying the estimate that makes it `LOW`, three views apart. A specification whose
+examples contradict its own rules teaches the rules are negotiable.
 
 The list reads bottom-up as a derivation: opening balance, then every gram that left, arriving
 at the number in the header. A user who doubts the balance can follow it to its origin. That
@@ -348,8 +451,24 @@ form contains no balance field at all; that is not an omission but the point.
 **Colour is the primary identifier.** Every reference to a spool anywhere shows its swatch.
 Text labels are secondary because the user's mental model is visual.
 
-**Grams everywhere, one decimal.** No switching between grams, metres and percentages between
-views. Percentage is always secondary to the absolute figure.
+**Grams everywhere.** No switching between grams, metres and percentages between views.
+Percentage is always secondary to the absolute figure.
+
+Precision follows what the number can actually support:
+
+- **Balances — whole grams.** `612 g`, not `611.7 g`. The tenth is arithmetically real and
+  physically meaningless; a kitchen scale reads to the gram, and displaying a decimal claims a
+  precision the system cannot back up.
+- **Movement amounts — one decimal.** `− 28.4 g`. A single movement *is* known to that
+  precision, and hiding it would make the history stop reconciling on screen.
+- **Percentages — whole numbers, rounded to nearest.** 4 of 60 layers is 7%, not 6%.
+- **One exception: the reconciliation difference, one decimal.** `2.3%`, not `2%`. That figure
+  is not a progress indicator — it is the system's error signal ([UC-08](04-use-cases.md)),
+  the only honest measure of how wrong the estimates have been. Rounding away its tenths is
+  rounding away the thing being measured.
+
+Internally everything stays in integer milligrams regardless ([08 §8.1](08-data-model.md)).
+Rounding is a display concern and it never touches stored values.
 
 **Confidence is never hidden.** Any surface showing a balance shows its confidence alongside.
 A number presented without its reliability invites false trust.

@@ -92,6 +92,7 @@ filament_ledger.register_spool:
     core_weight:     {required: false, selector: {number: {min: 0, max: 2000, unit_of_measurement: g}}}
     label:           {required: false, selector: {text: {}}}
     tag_uid:         {required: false, selector: {text: {}}}
+    confirm_duplicate_tag: {required: false, selector: {boolean: {}}, default: false}
 
 filament_ledger.mount_spool:
   fields:
@@ -105,7 +106,8 @@ filament_ledger.unmount_spool:
 filament_ledger.approve_review:
   fields:
     review_id: {required: true}
-    amounts:   {required: false, selector: {object: {}}}   # {spool_id: grams} — overrides estimate
+    amounts:   {required: false, selector: {object: {}}}   # {slot: grams}    — overrides estimate
+    assign:    {required: false, selector: {object: {}}}   # {slot: spool_id} — resolves unresolved slots
     note:      {required: false}
 
 filament_ledger.dismiss_review:
@@ -136,6 +138,17 @@ filament_ledger.adjust_spool:
 `reason` is required on discard and adjust, matching UC-09 and UC-10. The requirement is
 enforced in the domain as well — a service definition is a UI convenience, not a guarantee.
 
+`core_weight` is optional **in the service**, not in the domain. When it is omitted the
+service layer substitutes the configured default from §5.2 before calling
+[UC-01](04-use-cases.md); the use case itself refuses a missing value. The substitution
+happens in exactly one place, and the SQLite column carries no default of its own
+([08 §8.1](08-data-model.md)) so a bug in that path fails loudly instead of quietly writing a
+zero into the arithmetic behind every future reconciliation.
+
+`approve_review` keys both `amounts` and `assign` by **slot index**, matching
+[02 §2.3](02-domain-model.md). `assign` is how a caller resolves a slot the review recorded as
+having consumed filament with no spool mounted in it.
+
 ## 5.5 Events
 
 Domain events, bridged onto the HA event bus with a `filament_ledger_` prefix. The domain
@@ -143,13 +156,19 @@ raises them without knowing HA exists; `event_bridge.py` performs the translatio
 
 | HA event | Payload |
 |---|---|
-| `filament_ledger_review_opened` | `review_id`, `job_name`, `reason`, `estimated_total_g`, `spools` |
+| `filament_ledger_review_opened` | `review_id`, `job_name`, `reason`, `estimated_total_g`, `slots` |
 | `filament_ledger_review_resolved` | `review_id`, `resolution`, `applied_total_g` |
 | `filament_ledger_movement_recorded` | `spool_id`, `type`, `amount_g`, `new_balance_g` |
 | `filament_ledger_spool_depleted` | `spool_id`, `label` |
 | `filament_ledger_confidence_degraded` | `spool_id`, `from`, `to` |
 | `filament_ledger_anomaly_detected` | `spool_id`, `kind`, `detail` |
 | `filament_ledger_unknown_spool_detected` | `tag_uid`, `slot`, `material`, `colour_hex` |
+| `filament_ledger_ambiguous_tag_detected` | `tag_uid`, `slot`, `candidate_spool_ids` |
+
+`slots` is a list of `{slot, estimated_g, spool_id}`, where `spool_id` is **null** for a slot
+the review could not attribute. It is keyed by slot rather than by spool because a review can
+legitimately contain a slot with no spool at all ([02 §2.3](02-domain-model.md)) — a payload
+listing spools could not carry that row, which is the row most worth notifying about.
 
 These make the interesting automations trivial for the user to write:
 
@@ -214,3 +233,44 @@ async_register_built_in_panel(
 
 A badge on the sidebar icon reflects `sensor.fl_pending_reviews`, so pending approvals are
 visible without opening the panel. The queue only works if the user knows it has items.
+
+## 5.8 The `ha-bambulab` contract
+
+`BambuLabGateway` is the only place in this project that touches another integration, so what
+it is allowed to touch is written down rather than discovered during implementation.
+
+**Permitted — the public surface.**
+
+| What | How |
+|---|---|
+| Job lifecycle | `bambu_lab_event` on the HA bus, `type` ∈ `event_print_started`, `event_print_finished`, `event_print_canceled`, `event_print_failed`, `event_print_error` |
+| Per-tray consumption | Attributes of the printer's `print_weight` sensor, keyed `AMS <n> Tray <m>` and `External Spool` |
+| Job progress | The `print_progress`, `current_layer` and `total_layers` sensors |
+| Raw state | The `print_status` sensor (a lowercased `gcode_state`) and the `print_error` sensor |
+| Tray identity | Attributes of the AMS tray sensors: `tag_uid`, `type`, `color`, `tray_uuid`, `remain` |
+| Connectivity | The printer device's availability |
+
+Read through `async_track_state_change_event` and `hass.bus.async_listen`. Nothing else.
+
+**Forbidden.** Importing anything from `custom_components.bambu_lab`, reaching into
+`coordinator.get_model()`, or reading its config entry data. Those are internals. They change
+without notice, they are not covered by any compatibility promise, and depending on them turns
+an upstream refactor into a corrupted ledger.
+
+**Consequences that have to be designed for, not discovered.**
+
+- The per-tray attribute keys are **strings in an attribute dictionary**, with no schema and
+  no version. Parsing them is a boundary concern and it is fixture-tested against payloads
+  captured from a real printer ([09 §9.4](09-testing-strategy.md)) rather than against
+  payloads someone believed were correct.
+- Slot numbering is *ours* to define. `AMS 1 Tray 1` maps to `AmsSlot(1)` and
+  `External Spool` maps to `ExternalSpool()`. The translation lives in the gateway and
+  nowhere else.
+- Every one of these values can be absent. The gateway returns "unknown", never a zero. See
+  [03 §3.8](03-architecture.md).
+
+This section is the price of [ADR-0002](adr/0002-reject-spoolman-as-foundation.md) and
+[ADR-0003](adr/0003-custom-integration-over-addon.md) being right: the integration is small
+because it consumes `ha-bambulab` instead of reimplementing MQTT, and the cost of that is one
+carefully drawn boundary. Drawing it here, once, is cheaper than drawing it accidentally in
+nine places.
