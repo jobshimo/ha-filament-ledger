@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node (panel)
+node_modules/
+ui/dist/
+
+# Local data — never commit a ledger
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Captured printer fixtures may contain serial numbers and access codes.
+# Anonymise before committing, then force-add deliberately.
+tests/fixtures/captured/
+
+# Local agent tooling
+.atl/
+.agentboard/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
