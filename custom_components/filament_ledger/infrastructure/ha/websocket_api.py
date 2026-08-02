@@ -24,6 +24,7 @@ from ...application.adjust_spool import (
 from ...application.errors import ApplicationError
 from ...application.reconcile_spool import ReconcileSpoolCommand
 from ...application.register_spool import RegisterSpoolCommand
+from ...application.review_queue import ApproveReviewCommand, DismissReviewCommand
 from ...const import DOMAIN
 from ...domain.error import DomainError
 from ...domain.value.colour import Colour
@@ -31,13 +32,20 @@ from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
     MAX_AMS_SLOT,
     MIN_AMS_SLOT,
+    ReviewId,
     SlotIndex,
     SpoolId,
     TagUid,
 )
 from ...domain.value.material import Material, MaterialKind
 from .runtime import LedgerRuntime, runtimes
-from .serialisers import spool_detail, spool_summary, whole_grams
+from .serialisers import pending_review, spool_detail, spool_summary, whole_grams
+
+# A slot key as it crosses the wire. JSON object keys are strings, so `Coerce(int)` is
+# what reads `"2"` — and the range is bounded here as well as in the domain, for the same
+# reason the mount command bounds it: `SlotIndex` raises on garbage, and an unvalidated
+# adapter would turn a typo into a stack trace instead of a message.
+_SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
 
 
 def async_register_commands(hass: HomeAssistant) -> None:
@@ -52,6 +60,9 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_adjust,
         handle_mount,
         handle_unmount,
+        handle_reviews_list,
+        handle_reviews_approve,
+        handle_reviews_dismiss,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -334,6 +345,79 @@ async def handle_unmount(
 ) -> None:
     runtime = _runtime(hass)
     await runtime.use_cases.unmount_spool.execute(SpoolId(msg["spool_id"]))
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/reviews/list"})
+@websocket_api.async_response
+@guarded
+async def handle_reviews_list(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The open queue, oldest first — decisions in the order the doubts arose."""
+    runtime = _runtime(hass)
+    details = await runtime.use_cases.queries.pending_reviews()
+    connection.send_result(msg["id"], [pending_review(detail) for detail in details])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reviews/approve",
+        vol.Required("review_id"): str,
+        # Both maps are keyed by slot index, matching docs/02 §2.3: `amounts` overrides
+        # the frozen estimates, `assign` resolves slots the review froze without a spool.
+        # Amounts are bounded non-negative here as well as in the domain — a negative
+        # confirmation has no physical reading.
+        vol.Optional("amounts"): {_SLOT_KEY: vol.All(vol.Coerce(float), vol.Range(min=0))},
+        vol.Optional("assign"): {_SLOT_KEY: str},
+        vol.Optional("note"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_reviews_approve(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    runtime = _runtime(hass)
+    amounts = msg.get("amounts")
+    assign = msg.get("assign")
+    await runtime.use_cases.approve_review.execute(
+        ApproveReviewCommand(
+            review_id=ReviewId(msg["review_id"]),
+            amounts=(
+                {SlotIndex(slot): Grams.of(value) for slot, value in amounts.items()}
+                if amounts is not None
+                else None
+            ),
+            assignments=(
+                {SlotIndex(slot): SpoolId(spool_id) for slot, spool_id in assign.items()}
+                if assign is not None
+                else None
+            ),
+            note=msg.get("note") or None,
+        )
+    )
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/reviews/dismiss",
+        vol.Required("review_id"): str,
+        vol.Optional("note"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_reviews_dismiss(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    runtime = _runtime(hass)
+    await runtime.use_cases.dismiss_review.execute(
+        DismissReviewCommand(review_id=ReviewId(msg["review_id"]), note=msg.get("note") or None)
+    )
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"ok": True})
 

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+    from .domain.value.print_event import PrintEvent
     from .domain.value.tray_reading import TrayReading
     from .infrastructure.ha.runtime import LedgerConfigEntry
 
@@ -48,6 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .application.reconcile_spool import ReconcileSpool
     from .application.register_spool import RegisterSpool
     from .application.review_queue import ApproveReview, DismissReview, OpenPendingReview
+    from .application.track_print_job import TrackPrintJob
     from .application.use_cases import UseCases
     from .const import (
         CONF_ANOMALY_THRESHOLD,
@@ -98,8 +100,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     queries = Queries(
         spools=spools,
         movements=movements,
+        reviews=reviews,
+        jobs=jobs,
         confidence=ConfidenceEvaluator(),
         anomalies=anomalies,
+    )
+
+    # Built once, used twice: the websocket approves against it indirectly, and
+    # `TrackPrintJob` opens through it when the gateway reports an interrupted job.
+    # `LinearProgressEstimator` stands alone until Phase 4 brings the G-code strategy
+    # and a composite to choose between them.
+    open_pending_review = OpenPendingReview(
+        jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
     )
 
     # `database` is passed where a `UnitOfWork` is expected: the connection is the thing
@@ -121,14 +133,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             auto_mount=bool(settings.get(CONF_AUTO_MOUNT_ON_RFID, DEFAULT_AUTO_MOUNT_ON_RFID)),
         ),
         edit_spool_details=EditSpoolDetails(spools, database),
-        # The review queue, constructed and wired even though nothing drives it yet: the
-        # printer gateway learns to classify job endings in the next work unit, exactly as
-        # `DetectSpool` sat here one phase before the gateway learned to report trays.
-        # `LinearProgressEstimator` stands alone until Phase 4 brings the G-code strategy
-        # and a composite to choose between them.
-        open_pending_review=OpenPendingReview(
-            jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
+        # What the gateway's job events drive: starts become RUNNING rows, endings become
+        # reviews. Classification arrives on the event itself (Q1); UC-04's automatic
+        # deduction is deliberately not built until Q4 closes — see track_print_job.py.
+        track_print_job=TrackPrintJob(
+            jobs=jobs, open_pending_review=open_pending_review, clock=clock, uow=database
         ),
+        open_pending_review=open_pending_review,
         approve_review=ApproveReview(
             reviews, spools, movements, clock, events, database, anomalies
         ),
@@ -142,7 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         config_entry=entry,
         name=DOMAIN,
         update_interval=SCAN_INTERVAL,
-        update_method=queries.overview,
+        update_method=queries.snapshot,
     )
 
     # The inbound half of the printer boundary (docs/05 §5.8). Subscribed before the
@@ -167,7 +178,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         # commands do it explicitly, and a physical tray change is a mutation path too.
         await coordinator.async_request_refresh()
 
+    async def _print_event(event: PrintEvent) -> None:
+        await use_cases.track_print_job.execute(event)
+        # A job ending can open a review, and the pending-reviews sensor rides the same
+        # snapshot as the spools — so a job event is a mutation path too.
+        await coordinator.async_request_refresh()
+
     gateway.subscribe(_tray_changed)
+    gateway.subscribe_jobs(_print_event)
     # The safety net for setup-failure paths: an exception below this line still detaches.
     # A clean unload detaches earlier — see `async_unload_entry` — and `detach` is
     # idempotent, so this registration running afterwards is a no-op.

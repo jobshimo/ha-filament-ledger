@@ -3,48 +3,91 @@
     "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_1",
     "platform": "bambu_lab",
     "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_1",
-    "translation_key": "tray"
+    "translation_key": "tray",
+    "device_id": "00000000000000000000000000testams"
   },
   {
     "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_2",
     "platform": "bambu_lab",
     "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_2",
-    "translation_key": "tray"
+    "translation_key": "tray",
+    "device_id": "00000000000000000000000000testams"
   },
   {
     "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_3",
     "platform": "bambu_lab",
     "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_3",
-    "translation_key": "tray"
+    "translation_key": "tray",
+    "device_id": "00000000000000000000000000testams"
   },
   {
     "entity_id": "sensor.a1_00000000testser_ams_1_bandeja_4",
     "platform": "bambu_lab",
     "unique_id": "A1_00000000TESTSER_AMS_00000000TESTAMS_tray_4",
-    "translation_key": "tray"
+    "translation_key": "tray",
+    "device_id": "00000000000000000000000000testams"
   },
   {
     "entity_id": "sensor.a1_00000000testser_peso_de_la_impresion",
     "platform": "bambu_lab",
     "unique_id": "00000000TESTSER_print_weight",
-    "translation_key": "print_weight"
+    "translation_key": "print_weight",
+    "device_id": "00000000000000000000000000testprn"
   },
   {
     "entity_id": "sensor.a1_00000000testser_estado_de_la_impresion",
     "platform": "bambu_lab",
     "unique_id": "00000000TESTSER_print_status",
-    "translation_key": "print_status"
+    "translation_key": "print_status",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_capa_actual",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_current_layer",
+    "translation_key": "current_layer",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_cantidad_total_de_capas",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_total_layers",
+    "translation_key": "total_layers",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_progreso_de_la_impresion",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_print_progress",
+    "translation_key": "print_progress",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_archivo_gcode_descargado",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_gcode_file_downloaded",
+    "translation_key": "gcode_file_downloaded",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "binary_sensor.a1_00000000testser_error_de_la_impresion",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_print_error",
+    "translation_key": "print_error",
+    "device_id": "00000000000000000000000000testprn"
   },
   {
     "entity_id": "sensor.a1_00000000testser_bandeja_activa",
     "platform": "bambu_lab",
     "unique_id": "00000000TESTSER_active_tray",
-    "translation_key": "active_tray"
+    "translation_key": "active_tray",
+    "device_id": "00000000000000000000000000testprn"
   },
   {
     "entity_id": "binary_sensor.a1_00000000testser_en_linea",
     "platform": "bambu_lab",
     "unique_id": "00000000TESTSER_online",
-    "translation_key": "online"
+    "translation_key": "online",
+    "device_id": "00000000000000000000000000testprn"
   }
 ]

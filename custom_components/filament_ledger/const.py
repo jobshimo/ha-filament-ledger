@@ -43,6 +43,8 @@ SERVICE_DISCARD_FILAMENT: Final = "discard_filament"
 SERVICE_ADJUST_SPOOL: Final = "adjust_spool"
 SERVICE_MOUNT_SPOOL: Final = "mount_spool"
 SERVICE_UNMOUNT_SPOOL: Final = "unmount_spool"
+SERVICE_APPROVE_REVIEW: Final = "approve_review"
+SERVICE_DISMISS_REVIEW: Final = "dismiss_review"
 
 # Events on the Home Assistant bus, prefixed so they never collide with another integration.
 EVENT_PREFIX: Final = f"{DOMAIN}_"

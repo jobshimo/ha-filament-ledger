@@ -15,6 +15,7 @@ from .query import Queries
 from .reconcile_spool import ReconcileSpool
 from .register_spool import RegisterSpool
 from .review_queue import ApproveReview, DismissReview, OpenPendingReview
+from .track_print_job import TrackPrintJob
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +28,7 @@ class UseCases:
     unmount_spool: UnmountSpool
     detect_spool: DetectSpool
     edit_spool_details: EditSpoolDetails
+    track_print_job: TrackPrintJob
     open_pending_review: OpenPendingReview
     approve_review: ApproveReview
     dismiss_review: DismissReview

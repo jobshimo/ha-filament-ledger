@@ -18,18 +18,31 @@ from custom_components.filament_ledger.application.adjust_spool import (
     DiscardFilamentCommand,
     DiscardMode,
 )
-from custom_components.filament_ledger.application.query import SpoolSummary
+from custom_components.filament_ledger.application.query import LedgerSnapshot, SpoolSummary
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
+from custom_components.filament_ledger.application.review_queue import (
+    DismissReviewCommand,
+    OpenPendingReviewCommand,
+)
+from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.model.spool import register
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
+from custom_components.filament_ledger.domain.value.identifiers import (
+    PrintJobId,
+    ReviewId,
+    SlotIndex,
+)
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
+from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
+from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
 from custom_components.filament_ledger.infrastructure.ha.runtime import LedgerConfigEntry
 from custom_components.filament_ledger.infrastructure.ha.serialisers import spool_summary
 from custom_components.filament_ledger.sensor import (
     NeedsWeighingSensor,
+    PendingReviewsSensor,
     SpoolCountSensor,
     SpoolSensor,
     TotalStockSensor,
@@ -63,6 +76,22 @@ async def set_up_sensors(harness: Harness) -> EntitySink:
 def only[T: Entity](sink: EntitySink, kind: type[T]) -> T:
     (entity,) = [e for e in sink.entities if isinstance(e, kind)]
     return entity
+
+
+async def a_review(ledger: Ledger, job_id: str) -> ReviewId:
+    """Open a review through the real use case, the way a cancelled print would."""
+    job = PrintJob(
+        id=PrintJobId(job_id),
+        name=f"{job_id}.3mf",
+        state=PrintJobState.CANCELLED,
+        started_at=EPOCH,
+        layer_reached=71,
+        total_layers=209,
+        reported_usage={SlotIndex(1): Grams.of(209)},
+    )
+    return await ledger.use_cases.open_pending_review.execute(
+        OpenPendingReviewCommand(job=job, reason=ReviewReason.CANCELLED)
+    )
 
 
 async def a_tiny_spool(ledger: Ledger, label: str, kind: MaterialKind) -> None:
@@ -119,7 +148,8 @@ class TestSpoolSensor:
         sink = await set_up_sensors(harness)
 
         sensor = only(sink, SpoolSensor)
-        (summary,) = harness.coordinator.data or []
+        assert harness.coordinator.data is not None
+        (summary,) = harness.coordinator.data.spools
         # 862.5 g rounds half-up to 863 — the same discipline as every other surface.
         assert sensor.native_value == 863
         assert sensor.available is True
@@ -171,7 +201,8 @@ class TestAggregates:
         there."""
         await a_spool(harness.ledger, label="trusted")
         await harness.coordinator.async_request_refresh()
-        trusted_summaries = list(harness.coordinator.data or [])
+        assert harness.coordinator.data is not None
+        trusted_summaries = list(harness.coordinator.data.spools)
 
         drifting = SpoolSummary(
             spool=register(
@@ -189,7 +220,9 @@ class TestAggregates:
             last_movement_at=EPOCH,
             has_anomaly=False,
         )
-        harness.coordinator.data = [*trusted_summaries, drifting]
+        harness.coordinator.data = LedgerSnapshot(
+            spools=[*trusted_summaries, drifting], pending_review_count=0
+        )
         sink = await set_up_sensors(harness)
 
         needs = only(sink, NeedsWeighingSensor)
@@ -197,6 +230,34 @@ class TestAggregates:
         assert needs.extra_state_attributes == {
             "spools": [{"id": drifting.spool.id, "name": "drifting"}]
         }
+
+
+class TestPendingReviews:
+    async def test_the_count_follows_the_queue_through_the_coordinator(
+        self, harness: Harness
+    ) -> None:
+        """The number behind the sidebar badge (docs/05 §5.7): it rises when a review
+        opens and falls the moment one resolves — on the same refresh every mutation
+        path already performs, so the badge can never lag the queue."""
+        sink = await set_up_sensors(harness)
+        pending = only(sink, PendingReviewsSensor)
+        await harness.coordinator.async_request_refresh()
+        assert pending.native_value == 0
+
+        first = await a_review(harness.ledger, "job-1")
+        await a_review(harness.ledger, "job-2")
+        await harness.coordinator.async_request_refresh()
+        assert pending.native_value == 2
+
+        await harness.ledger.use_cases.dismiss_review.execute(DismissReviewCommand(review_id=first))
+        await harness.coordinator.async_request_refresh()
+        assert pending.native_value == 1
+
+    async def test_before_the_first_refresh_the_count_reads_zero(self, harness: Harness) -> None:
+        """No data yet is an empty queue, not an unavailable sensor — the badge has
+        nothing honest to show but zero until the first snapshot lands."""
+        sink = await set_up_sensors(harness)
+        assert only(sink, PendingReviewsSensor).native_value == 0
 
 
 class TestNewSpoolsGetEntitiesImmediately:
@@ -211,6 +272,7 @@ class TestNewSpoolsGetEntitiesImmediately:
             "TotalStockSensor",
             "SpoolCountSensor",
             "NeedsWeighingSensor",
+            "PendingReviewsSensor",
         ]
         # The listener is registered and bound to the entry's lifecycle.
         assert harness.coordinator.listeners

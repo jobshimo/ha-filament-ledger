@@ -14,8 +14,16 @@ from datetime import datetime
 from decimal import Decimal
 
 from ..domain.model.movement import Movement
+from ..domain.model.pending_review import PendingReview
+from ..domain.model.print_job import PrintJob
 from ..domain.model.spool import Spool
-from ..domain.port.repositories import MovementRepository, SpoolFilter, SpoolRepository
+from ..domain.port.repositories import (
+    MovementRepository,
+    PrintJobRepository,
+    ReviewRepository,
+    SpoolFilter,
+    SpoolRepository,
+)
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance, running_balances
 from ..domain.service.confidence_evaluator import ConfidenceEvaluator
@@ -74,9 +82,37 @@ class StockTotals:
 
 
 @dataclass(frozen=True, slots=True)
+class PendingReviewDetail:
+    """One queue item joined to the job it questions — the shape the review card renders.
+
+    The review freezes the estimate and the slot→spool resolution; the job carries the
+    name, the raw state strings and the progress figures. The card needs both halves, so
+    the read model serves them together rather than making the panel re-join them.
+    """
+
+    review: PendingReview
+    job: PrintJob
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerSnapshot:
+    """What one coordinator refresh distributes: the overview plus the queue's size.
+
+    The count rides along with the spools because they change on the same occasions —
+    every mutation path refreshes the coordinator — and a badge that lags the queue would
+    defeat the queue (docs/05-ha-integration.md §5.7).
+    """
+
+    spools: list[SpoolSummary]
+    pending_review_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class Queries:
     spools: SpoolRepository
     movements: MovementRepository
+    reviews: ReviewRepository
+    jobs: PrintJobRepository
     confidence: ConfidenceEvaluator = field(default_factory=ConfidenceEvaluator)
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
 
@@ -122,6 +158,29 @@ class Queries:
                 HistoryLine(movement=line.movement, balance_after=line.balance_after)
                 for line in reversed(running_balances(history))
             ],
+        )
+
+    async def pending_reviews(self) -> list[PendingReviewDetail]:
+        """The open queue, oldest first, each review joined to its job.
+
+        Order comes from the repository: decisions are asked for in the order the doubts
+        arose. A pending review whose job row is missing cannot be built by any use case —
+        UC-05 saves the job before the review inside one unit, and the schema's foreign
+        key backs it — so such a row is skipped rather than crashing the whole queue.
+        """
+        details: list[PendingReviewDetail] = []
+        for review in await self.reviews.list_pending():
+            job = await self.jobs.get(review.job_id)
+            if job is None:
+                continue
+            details.append(PendingReviewDetail(review=review, job=job))
+        return details
+
+    async def snapshot(self) -> LedgerSnapshot:
+        """One coordinator refresh: everything the entities read, in one pass."""
+        return LedgerSnapshot(
+            spools=await self.overview(),
+            pending_review_count=len(await self.reviews.list_pending()),
         )
 
     async def stock(self) -> StockTotals:

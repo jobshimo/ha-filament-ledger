@@ -94,6 +94,24 @@
       "fields": {
         "spool_id": { "name": "Spool", "description": "Which spool." }
       }
+    },
+    "approve_review": {
+      "name": "Approve review",
+      "description": "Confirm what an interrupted print consumed. Only approval writes to the ledger — your numbers always win over the estimate.",
+      "fields": {
+        "review_id": { "name": "Review", "description": "Which pending review." },
+        "amounts": { "name": "Corrected amounts", "description": "Grams per slot, like {\"1\": 28.4}. Overrides the estimate for the slots you name." },
+        "assign": { "name": "Spool assignments", "description": "Spool per slot, like {\"3\": \"spool-id\"}. Resolves a slot the review recorded without a spool." },
+        "note": { "name": "Note", "description": "Anything worth remembering about the decision." }
+      }
+    },
+    "dismiss_review": {
+      "name": "Dismiss review",
+      "description": "Resolve a review without recording consumption. A recorded decision, not a deletion.",
+      "fields": {
+        "review_id": { "name": "Review", "description": "Which pending review." },
+        "note": { "name": "Note", "description": "Why nothing is recorded — a first-layer failure, a false positive." }
+      }
     }
   }
 }

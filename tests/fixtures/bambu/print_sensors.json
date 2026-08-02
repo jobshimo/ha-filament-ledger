@@ -1,0 +1,30 @@
+{
+  "sensor.a1_00000000testser_peso_de_la_impresion": {
+    "state": "40.51",
+    "attributes": {}
+  },
+  "sensor.a1_00000000testser_estado_de_la_impresion": {
+    "state": "finish",
+    "attributes": {}
+  },
+  "sensor.a1_00000000testser_capa_actual": {
+    "state": "71",
+    "attributes": {}
+  },
+  "sensor.a1_00000000testser_cantidad_total_de_capas": {
+    "state": "209",
+    "attributes": {}
+  },
+  "sensor.a1_00000000testser_progreso_de_la_impresion": {
+    "state": "34",
+    "attributes": {}
+  },
+  "sensor.a1_00000000testser_archivo_gcode_descargado": {
+    "state": "381189-Rails for a shelf v2.gcode",
+    "attributes": {}
+  },
+  "binary_sensor.a1_00000000testser_error_de_la_impresion": {
+    "state": "off",
+    "attributes": {}
+  }
+}

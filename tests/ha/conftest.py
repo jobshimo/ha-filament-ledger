@@ -25,7 +25,7 @@ from homeassistant.core import Event, HassJob, HomeAssistant, ServiceCall, State
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.hass_dict import HassDict
 
-from custom_components.filament_ledger.application.query import SpoolSummary
+from custom_components.filament_ledger.application.query import LedgerSnapshot
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
@@ -240,8 +240,8 @@ class StubCoordinator:
     produces and who hears about it.
     """
 
-    update: Callable[[], Awaitable[list[SpoolSummary]]]
-    data: list[SpoolSummary] | None = None
+    update: Callable[[], Awaitable[LedgerSnapshot]]
+    data: LedgerSnapshot | None = None
     last_update_success: bool = True
     refresh_count: int = 0
     listeners: list[Callable[[], None]] = field(default_factory=list)
@@ -277,11 +277,11 @@ class Harness:
 @pytest.fixture
 async def harness(tmp_path: Path) -> AsyncIterator[Harness]:
     ledger = await build_ledger(tmp_path, run_inline)
-    coordinator = StubCoordinator(update=ledger.use_cases.queries.overview)
+    coordinator = StubCoordinator(update=ledger.use_cases.queries.snapshot)
     runtime = LedgerRuntime(
         database=ledger.database,
         use_cases=ledger.use_cases,
-        coordinator=cast(DataUpdateCoordinator[list[SpoolSummary]], coordinator),
+        coordinator=cast(DataUpdateCoordinator[LedgerSnapshot], coordinator),
         # No printer gateway in the harness by default; tests that wire one replace this.
         detach_printer=lambda: None,
         default_opening_weight_g=1000,

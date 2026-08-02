@@ -25,13 +25,35 @@ from homeassistant.core import State
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.filament_ledger import async_unload_entry
-from custom_components.filament_ledger.domain.event import SpoolMounted, UnknownSpoolDetected
+from custom_components.filament_ledger.domain.event import (
+    ReviewOpened,
+    SpoolMounted,
+    UnknownSpoolDetected,
+)
 from custom_components.filament_ledger.domain.value.colour import Colour
+from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId, TagUid
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location
+from custom_components.filament_ledger.domain.value.percentage import Percentage
+from custom_components.filament_ledger.domain.value.print_event import (
+    PrintEnded,
+    PrintEvent,
+    PrintStarted,
+)
+from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
+from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.tray_reading import TrayReading
-from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
+from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import (
+    UNKNOWN_JOB_NAME,
+    BambuLabGateway,
+)
 from custom_components.filament_ledger.infrastructure.ha.runtime import LedgerConfigEntry
+from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
+    SqlitePrintJobRepository,
+)
+from custom_components.filament_ledger.infrastructure.persistence.review_repository import (
+    SqliteReviewRepository,
+)
 
 from ..application.conftest import Ledger
 from .conftest import FakeHass, Harness, a_spool, as_hass
@@ -44,6 +66,9 @@ REGISTRY_ROWS: list[dict[str, str]] = json.loads(
 TRAY_ATTRIBUTES: dict[str, dict[str, object]] = json.loads(
     (FIXTURES / "tray_attributes.json").read_text(encoding="utf-8")
 )
+PRINT_SENSORS: dict[str, dict[str, object]] = json.loads(
+    (FIXTURES / "print_sensors.json").read_text(encoding="utf-8")
+)
 
 TRAY_1 = "sensor.a1_00000000testser_ams_1_bandeja_1"
 TRAY_2 = "sensor.a1_00000000testser_ams_1_bandeja_2"
@@ -52,6 +77,21 @@ TRAY_4 = "sensor.a1_00000000testser_ams_1_bandeja_4"
 TRAY_1_TAG = TagUid("3C45C3DB00000100")
 TRAY_2_TAG = TagUid("3CDDA20200000100")
 TRAY_4_TAG = TagUid("4289A97100000100")
+
+WEIGHT = "sensor.a1_00000000testser_peso_de_la_impresion"
+STATUS = "sensor.a1_00000000testser_estado_de_la_impresion"
+CURRENT_LAYER = "sensor.a1_00000000testser_capa_actual"
+TOTAL_LAYERS = "sensor.a1_00000000testser_cantidad_total_de_capas"
+PROGRESS = "sensor.a1_00000000testser_progreso_de_la_impresion"
+GCODE_FILE = "sensor.a1_00000000testser_archivo_gcode_descargado"
+PRINT_ERROR = "binary_sensor.a1_00000000testser_error_de_la_impresion"
+
+# The device ids the fixture registry carries: job events name the printer; the trays
+# hang off the AMS device, which fires no job events.
+PRINTER_DEVICE = "00000000000000000000000000testprn"
+AMS_DEVICE = "00000000000000000000000000testams"
+
+JOB_NAME = "381189-Rails for a shelf v2.gcode"
 
 
 @dataclass(frozen=True)
@@ -62,6 +102,7 @@ class FakeRegistryEntry:
     platform: str
     unique_id: str
     translation_key: str
+    device_id: str | None = None
 
 
 class FakeEntityRegistry:
@@ -80,6 +121,14 @@ class RecordingListener:
         self.received.append(reading)
 
 
+@dataclass
+class RecordingPrintListener:
+    received: list[PrintEvent] = field(default_factory=list)
+
+    async def __call__(self, event: PrintEvent) -> None:
+        self.received.append(event)
+
+
 def plant_registry(hass: FakeHass, rows: list[dict[str, str]]) -> None:
     registry = FakeEntityRegistry([FakeRegistryEntry(**row) for row in rows])
     hass.data[er.DATA_REGISTRY] = cast(er.EntityRegistry, registry)
@@ -92,12 +141,26 @@ def tray_state(entity_id: str, attributes: dict[str, object] | None = None) -> S
     return State(entity_id, str(payload.get("name", "loaded")), payload)
 
 
+def print_sensor_state(
+    entity_id: str, state: str | None = None, attributes: dict[str, object] | None = None
+) -> State:
+    """One of the printer's job sensors, defaulting to the captured fixture shape."""
+    shape = PRINT_SENSORS[entity_id]
+    return State(
+        entity_id,
+        str(shape["state"]) if state is None else state,
+        cast("dict[str, object]", shape["attributes"]) if attributes is None else attributes,
+    )
+
+
 def bambu_hass(rows: list[dict[str, str]] | None = None) -> FakeHass:
-    """A hass holding the reference instance: registry rows planted, tray states loaded."""
+    """A hass holding the reference instance: registry rows planted, states loaded."""
     hass = FakeHass()
     plant_registry(hass, REGISTRY_ROWS if rows is None else rows)
     for entity_id in TRAY_ATTRIBUTES:
         hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+    for entity_id in PRINT_SENSORS:
+        hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
     return hass
 
 
@@ -109,6 +172,14 @@ def fire_tray_change(hass: FakeHass, entity_id: str, new_state: State | None) ->
     hass.bus.async_fire(
         "state_changed",
         {"entity_id": entity_id, "old_state": old_state, "new_state": new_state},
+    )
+
+
+def fire_job_event(hass: FakeHass, event_type: str, device_id: str = PRINTER_DEVICE) -> None:
+    """What upstream fires: `bambu_lab_event` naming the device, the entry, the type —
+    the verified v2.2.22 payload shape."""
+    hass.bus.async_fire(
+        "bambu_lab_event", {"device_id": device_id, "name": "A1", "type": event_type}
     )
 
 
@@ -400,6 +471,313 @@ class TestEndToEnd:
         assert await harness.ledger.use_cases.queries.overview() == []
         [event] = harness.ledger.events.of(UnknownSpoolDetected)
         assert event == UnknownSpoolDetected(tag_uid=TRAY_4_TAG, slot=SlotIndex(4))
+
+
+class TestJobEventTranslation:
+    """`bambu_lab_event` into domain terms, reading the moment's sensors.
+
+    Every figure is captured off the fixture-shaped states from the reference instance;
+    the per-tray attribute dialect (`AMS 1 Tray n`, `External Spool`) comes from the
+    installed upstream source, since Q4 has not yet produced a live capture of it.
+    """
+
+    def subscribed(self, hass: FakeHass) -> RecordingPrintListener:
+        listener = RecordingPrintListener()
+        BambuLabGateway(as_hass(hass)).subscribe_jobs(listener)
+        return listener
+
+    async def test_a_start_carries_the_name_and_no_plan_when_attributes_are_empty(self) -> None:
+        """The Q4-open shape, exactly as captured: the weight sensor's state populates,
+        its attributes do not. The plan is `None` — never a zero."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        assert listener.received == [PrintStarted(name=JOB_NAME, plan=None)]
+
+    async def test_a_start_translates_the_per_tray_plan_when_upstream_carries_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`AMS 1 Tray n` becomes `SlotIndex(n)` here and nowhere else (docs/05 §5.8).
+        The external-spool figure has no AMS slot to land in, so it is dropped loudly."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
+            WEIGHT,
+            attributes={"AMS 1 Tray 1": 28.4, "AMS 1 Tray 2": 6.1, "External Spool": 1.2},
+        )
+        listener = self.subscribed(hass)
+
+        with caplog.at_level(logging.WARNING):
+            fire_job_event(hass, "event_print_started")
+            await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintStarted)
+        assert event.plan == {SlotIndex(1): Grams.of("28.4"), SlotIndex(2): Grams.of("6.1")}
+        assert "external spool" in caplog.text
+
+    async def test_malformed_per_tray_figures_are_skipped_not_invented(self) -> None:
+        """Strings in an attribute dictionary, no schema, no version: a textual figure, a
+        negative one and a second AMS are all noise — only honest rows survive."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
+            WEIGHT,
+            attributes={
+                "AMS 1 Tray 1": "lots",
+                "AMS 1 Tray 2": -3,
+                "AMS 2 Tray 1": 7.5,
+                "AMS 1 Tray 3": 5.0,
+            },
+        )
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintStarted)
+        assert event.plan == {SlotIndex(3): Grams.of(5)}
+
+    async def test_a_cancellation_captures_the_moments_figures(self) -> None:
+        """Layers, progress and the raw state, read at the moment the event fires —
+        the counters reset when the next print starts."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[STATUS] = print_sensor_state(STATUS, state="pause")
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_canceled")
+        await hass.drain()
+
+        assert listener.received == [
+            PrintEnded(
+                outcome=PrintJobState.CANCELLED,
+                name=JOB_NAME,
+                layer_reached=71,
+                total_layers=209,
+                progress=Percentage.of(34),
+                reported_usage=None,
+                raw_gcode_state="pause",
+                raw_print_error=None,
+            )
+        ]
+
+    async def test_a_failure_carries_the_verbatim_error_code(self) -> None:
+        """The classification is the event type; the code rides along verbatim so a wrong
+        classification stays recoverable (docs/07 §7.7)."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[PRINT_ERROR] = print_sensor_state(
+            PRINT_ERROR, state="on", attributes={"code": 50348044}
+        )
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_failed")
+        await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintEnded)
+        assert event.outcome is PrintJobState.FAILED
+        assert event.raw_print_error == 50348044
+
+    async def test_a_finish_captures_the_final_per_tray_figures(self) -> None:
+        hass = bambu_hass()
+        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
+            WEIGHT, attributes={"AMS 1 Tray 1": 38.2, "AMS 1 Tray 2": 9.4}
+        )
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintEnded)
+        assert event.outcome is PrintJobState.FINISHED
+        assert event.reported_usage == {
+            SlotIndex(1): Grams.of("38.2"),
+            SlotIndex(2): Grams.of("9.4"),
+        }
+
+    async def test_unavailable_sensors_become_unknown_never_zero(self) -> None:
+        """Every reader is total: a blinked sensor is an absent figure, and the event
+        still crosses the boundary carrying the honest unknowns (docs/03 §3.8)."""
+        hass = bambu_hass()
+        for entity_id in PRINT_SENSORS:
+            hass.states.by_entity_id[entity_id] = State(entity_id, "unavailable")
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_canceled")
+        await hass.drain()
+
+        assert listener.received == [
+            PrintEnded(outcome=PrintJobState.CANCELLED, name=UNKNOWN_JOB_NAME)
+        ]
+
+    async def test_an_event_for_another_device_never_arrives(self) -> None:
+        """The bus carries every machine's events; only the printer whose sensors were
+        discovered may drive this ledger. The AMS device stands in for a second printer."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_started", device_id=AMS_DEVICE)
+        await hass.drain()
+
+        assert listener.received == []
+
+    async def test_a_mid_print_error_event_is_not_a_lifecycle_edge(self) -> None:
+        """`event_print_error` fires while the job keeps running; the code it announces
+        is read off the error sensor when the ending arrives."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_error")
+        await hass.drain()
+
+        assert listener.received == []
+
+    async def test_without_print_sensors_job_events_stay_dormant(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Same policy as the trays: nothing discovered, nothing watched, one debug line.
+        Reloading the entry after `ha-bambulab` appears re-runs discovery."""
+        hass = FakeHass()
+        plant_registry(hass, [row for row in REGISTRY_ROWS if row["translation_key"] == "tray"])
+        gateway = BambuLabGateway(as_hass(hass))
+        listener = RecordingPrintListener()
+
+        with caplog.at_level(logging.DEBUG):
+            gateway.subscribe_jobs(listener)
+
+        assert hass.bus.listeners == []
+        assert "dormant" in caplog.text
+
+    async def test_detach_unsubscribes_job_events_too(self) -> None:
+        hass = bambu_hass()
+        gateway = BambuLabGateway(as_hass(hass))
+        listener = RecordingPrintListener()
+        gateway.subscribe_jobs(listener)
+
+        gateway.detach()
+        gateway.detach()  # idempotent, same as the tray half
+
+        assert hass.bus.listeners == []
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+        assert listener.received == []
+
+
+class TestPrintLifecycleEndToEnd:
+    """The gateway feeding `TrackPrintJob` and the review queue, as the composition root
+    wires it: fake bus events in, real rows and reviews out."""
+
+    def wire(self, harness: Harness) -> BambuLabGateway:
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        for entity_id in PRINT_SENSORS:
+            harness.hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
+        gateway = BambuLabGateway(as_hass(harness.hass))
+
+        async def deliver(event: PrintEvent) -> None:
+            # The same shim the composition root installs: the listener's contract is
+            # fire-and-forget, and the job id the use case returns is nobody's business.
+            await harness.ledger.use_cases.track_print_job.execute(event)
+
+        gateway.subscribe_jobs(deliver)
+        return gateway
+
+    async def test_a_start_becomes_a_running_job(self, harness: Harness) -> None:
+        self.wire(harness)
+
+        fire_job_event(harness.hass, "event_print_started")
+        await harness.hass.drain()
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.name == JOB_NAME
+        assert job.state is PrintJobState.RUNNING
+        assert job.reported_usage is None  # the reference machine's Q4-open shape
+
+    async def test_a_cancelled_print_lands_in_the_review_queue(self, harness: Harness) -> None:
+        """Start to review, end to end: the plan captured at start, scaled by the layers
+        reached, frozen to the spool that was mounted — and no balance touched."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        self.wire(harness)
+        harness.hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "40.51", {"AMS 1 Tray 1": 209.0})
+
+        fire_job_event(harness.hass, "event_print_started")
+        await harness.hass.drain()
+        fire_job_event(harness.hass, "event_print_canceled")
+        await harness.hass.drain()
+
+        [review] = await SqliteReviewRepository(harness.ledger.database).list_pending()
+        assert review.reason is ReviewReason.CANCELLED
+        assert review.estimated_usage == {SlotIndex(1): Grams.of(71)}
+        assert review.slot_resolution == {SlotIndex(1): spool_id}
+        [event] = harness.ledger.events.of(ReviewOpened)
+        assert isinstance(event, ReviewOpened)
+        assert event.job_name == JOB_NAME
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of(1000)
+
+    async def test_a_terminal_event_after_a_restart_still_opens_a_review(
+        self, harness: Harness
+    ) -> None:
+        """The integration restarted mid-print, so no row exists when the failure fires.
+        The review must never be lost to a restart."""
+        self.wire(harness)  # no started event was ever seen
+
+        fire_job_event(harness.hass, "event_print_failed")
+        await harness.hass.drain()
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.FAILED
+        [review] = await SqliteReviewRepository(harness.ledger.database).list_pending()
+        assert review.job_id == job.id
+        assert review.reason is ReviewReason.FAILED
+
+    async def test_a_finished_print_keeps_its_figures_and_opens_no_review(
+        self, harness: Harness
+    ) -> None:
+        """The UC-04 seam, observed from the outside: the figures land on the job, the
+        idempotency guard stays unset, and the queue stays empty — nothing is deducted
+        until Q4 closes and `RecordPrintConsumption` exists."""
+        self.wire(harness)
+        fire_job_event(harness.hass, "event_print_started")
+        await harness.hass.drain()
+        harness.hass.states.by_entity_id[WEIGHT] = State(
+            WEIGHT, "47.6", {"AMS 1 Tray 1": 38.2, "AMS 1 Tray 2": 9.4}
+        )
+
+        fire_job_event(harness.hass, "event_print_finished")
+        await harness.hass.drain()
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.FINISHED
+        assert job.reported_usage == {
+            SlotIndex(1): Grams.of("38.2"),
+            SlotIndex(2): Grams.of("9.4"),
+        }
+        assert job.consumption_recorded is False
+        assert await SqliteReviewRepository(harness.ledger.database).list_pending() == []
+        assert harness.ledger.events.of(ReviewOpened) == []
+
+    async def test_a_finish_without_per_tray_attributes_records_the_absence(
+        self, harness: Harness
+    ) -> None:
+        """The Q4-open path end to end: the weight total populates, the breakdown does
+        not, and the job records `None` — a missing figure is not a figure of zero."""
+        self.wire(harness)
+        fire_job_event(harness.hass, "event_print_started")
+        await harness.hass.drain()
+
+        fire_job_event(harness.hass, "event_print_finished")
+        await harness.hass.drain()
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.FINISHED
+        assert job.reported_usage is None
+        assert await SqliteReviewRepository(harness.ledger.database).list_pending() == []
 
 
 class TestUnload:

@@ -24,10 +24,13 @@ from ...application.adjust_spool import (
 from ...application.errors import ApplicationError
 from ...application.reconcile_spool import ReconcileSpoolCommand
 from ...application.register_spool import RegisterSpoolCommand
+from ...application.review_queue import ApproveReviewCommand, DismissReviewCommand
 from ...const import (
     DOMAIN,
     SERVICE_ADJUST_SPOOL,
+    SERVICE_APPROVE_REVIEW,
     SERVICE_DISCARD_FILAMENT,
+    SERVICE_DISMISS_REVIEW,
     SERVICE_MOUNT_SPOOL,
     SERVICE_RECONCILE_SPOOL,
     SERVICE_REGISTER_SPOOL,
@@ -39,12 +42,18 @@ from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
     MAX_AMS_SLOT,
     MIN_AMS_SLOT,
+    ReviewId,
     SlotIndex,
     SpoolId,
     TagUid,
 )
 from ...domain.value.material import Material, MaterialKind
 from .runtime import LedgerRuntime, runtimes
+
+# A slot key as it arrives in service data. YAML gives integers, the UI's object
+# selector gives strings; `Coerce(int)` reads both, and the range is bounded here as
+# well as in the domain so a typo becomes a message rather than a stack trace.
+_SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
 
 REGISTER_SCHEMA = vol.Schema(
     {
@@ -96,6 +105,25 @@ MOUNT_SCHEMA = vol.Schema(
 )
 
 UNMOUNT_SCHEMA = vol.Schema({vol.Required("spool_id"): cv.string})
+
+APPROVE_REVIEW_SCHEMA = vol.Schema(
+    {
+        vol.Required("review_id"): cv.string,
+        # Keyed by slot index, matching docs/05 §5.4: `amounts` overrides the frozen
+        # estimates, `assign` resolves slots the review froze without a spool. A negative
+        # confirmation has no physical reading, so it is refused at the schema too.
+        vol.Optional("amounts"): {_SLOT_KEY: vol.All(vol.Coerce(float), vol.Range(min=0))},
+        vol.Optional("assign"): {_SLOT_KEY: cv.string},
+        vol.Optional("note"): cv.string,
+    }
+)
+
+DISMISS_REVIEW_SCHEMA = vol.Schema(
+    {
+        vol.Required("review_id"): cv.string,
+        vol.Optional("note"): cv.string,
+    }
+)
 
 
 def _runtime(hass: HomeAssistant) -> LedgerRuntime:
@@ -191,6 +219,39 @@ def async_register_services(hass: HomeAssistant) -> None:
             await runtime.use_cases.unmount_spool.execute(SpoolId(call.data["spool_id"]))
         await runtime.async_refresh()
 
+    async def approve_review(call: ServiceCall) -> None:
+        runtime = _runtime(hass)
+        amounts = call.data.get("amounts")
+        assign = call.data.get("assign")
+        async with _translated_errors():
+            await runtime.use_cases.approve_review.execute(
+                ApproveReviewCommand(
+                    review_id=ReviewId(call.data["review_id"]),
+                    amounts=(
+                        {SlotIndex(slot): Grams.of(value) for slot, value in amounts.items()}
+                        if amounts is not None
+                        else None
+                    ),
+                    assignments=(
+                        {SlotIndex(slot): SpoolId(spool_id) for slot, spool_id in assign.items()}
+                        if assign is not None
+                        else None
+                    ),
+                    note=call.data.get("note"),
+                )
+            )
+        await runtime.async_refresh()
+
+    async def dismiss_review(call: ServiceCall) -> None:
+        runtime = _runtime(hass)
+        async with _translated_errors():
+            await runtime.use_cases.dismiss_review.execute(
+                DismissReviewCommand(
+                    review_id=ReviewId(call.data["review_id"]), note=call.data.get("note")
+                )
+            )
+        await runtime.async_refresh()
+
     for name, handler, schema in (
         (SERVICE_REGISTER_SPOOL, register_spool, REGISTER_SCHEMA),
         (SERVICE_RECONCILE_SPOOL, reconcile_spool, RECONCILE_SCHEMA),
@@ -198,6 +259,8 @@ def async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_ADJUST_SPOOL, adjust_spool, ADJUST_SCHEMA),
         (SERVICE_MOUNT_SPOOL, mount_spool, MOUNT_SCHEMA),
         (SERVICE_UNMOUNT_SPOOL, unmount_spool, UNMOUNT_SCHEMA),
+        (SERVICE_APPROVE_REVIEW, approve_review, APPROVE_REVIEW_SCHEMA),
+        (SERVICE_DISMISS_REVIEW, dismiss_review, DISMISS_REVIEW_SCHEMA),
     ):
         hass.services.async_register(DOMAIN, name, handler, schema=schema)
 

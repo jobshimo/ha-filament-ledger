@@ -97,3 +97,29 @@ unmount_spool:
     spool_id:
       required: true
       selector: { text: }
+
+approve_review:
+  fields:
+    review_id:
+      required: true
+      selector: { text: }
+    amounts:
+      required: false
+      example: '{"1": 28.4}'
+      selector: { object: }
+    assign:
+      required: false
+      example: '{"3": "spool-id"}'
+      selector: { object: }
+    note:
+      required: false
+      selector: { text: }
+
+dismiss_review:
+  fields:
+    review_id:
+      required: true
+      selector: { text: }
+    note:
+      required: false
+      selector: { text: }

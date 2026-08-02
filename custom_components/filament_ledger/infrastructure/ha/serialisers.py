@@ -13,6 +13,7 @@ from typing import Any
 
 from ...application.query import (
     HistoryLine,
+    PendingReviewDetail,
     SpoolDetail,
     SpoolSummary,
     describe_location,
@@ -109,4 +110,41 @@ def spool_detail(detail: SpoolDetail) -> dict[str, Any]:
     return {
         **spool_summary(detail.summary),
         "history": [history_line(line) for line in detail.lines],
+    }
+
+
+def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
+    """One queue item, as the review card renders it (docs/06 §6.3).
+
+    Estimates carry one decimal, like movement amounts — an estimate is a proposed
+    movement. The total accumulates exact grams and rounds once, per this module's rule.
+    `raw_print_error` travels as the verbatim integer: formatting it into the searchable
+    HMS quad is the card's display work, not a fact about the job. A line's `spool_id` is
+    the *frozen* resolution — `null` says no spool was mounted when the review opened,
+    which is the row the approval flow asks the user to complete.
+    """
+    review = detail.review
+    job = detail.job
+    return {
+        "id": review.id,
+        "job_id": review.job_id,
+        "job_name": job.name,
+        "job_state": job.state.value,
+        "reason": review.reason.value,
+        "estimator": review.estimator_used.value,
+        "opened_at": review.opened_at.isoformat(),
+        "layer_reached": job.layer_reached,
+        "total_layers": job.total_layers,
+        "progress_pct": job.progress.rounded if job.progress is not None else None,
+        "raw_gcode_state": job.raw_gcode_state,
+        "raw_print_error": job.raw_print_error,
+        "estimated_total_g": grams(total([line.estimated for line in review.lines])),
+        "lines": [
+            {
+                "slot": line.slot.value,
+                "estimated_g": grams(line.estimated),
+                "spool_id": line.spool_id,
+            }
+            for line in review.lines
+        ],
     }

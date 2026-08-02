@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from ...application.query import SpoolSummary
+from ...application.query import LedgerSnapshot
 from ...application.use_cases import UseCases
 from ...const import DOMAIN
 from ..persistence.database import Database
@@ -23,7 +23,7 @@ from ..persistence.database import Database
 class LedgerRuntime:
     database: Database
     use_cases: UseCases
-    coordinator: DataUpdateCoordinator[list[SpoolSummary]]
+    coordinator: DataUpdateCoordinator[LedgerSnapshot]
     # The printer gateway's `detach`, held here so `async_unload_entry` can stop tray
     # events *before* it closes the database below them — `async_on_unload` callbacks run
     # only after unload returns, which is too late for that ordering.

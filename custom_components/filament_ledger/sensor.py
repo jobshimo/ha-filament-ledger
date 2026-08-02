@@ -23,7 +23,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .application.query import SpoolSummary
+from .application.query import LedgerSnapshot, SpoolSummary
 from .const import DOMAIN
 from .infrastructure.ha.runtime import LedgerConfigEntry, LedgerRuntime
 from .infrastructure.ha.serialisers import (
@@ -46,6 +46,7 @@ async def async_setup_entry(
             TotalStockSensor(runtime, entry),
             SpoolCountSensor(runtime, entry),
             NeedsWeighingSensor(runtime, entry),
+            PendingReviewsSensor(runtime, entry),
         ]
     )
 
@@ -57,7 +58,8 @@ async def async_setup_entry(
         exactly the kind of "works, but not until later" behaviour that makes people stop
         trusting an integration.
         """
-        summaries = runtime.coordinator.data or []
+        snapshot = runtime.coordinator.data
+        summaries = snapshot.spools if snapshot else []
         fresh = [s for s in summaries if s.spool.id not in runtime.known_spool_ids]
         if not fresh:
             return
@@ -77,8 +79,14 @@ class LedgerEntity(CoordinatorEntity[Any]):
         self._entry = entry
 
     @property
+    def snapshot(self) -> LedgerSnapshot | None:
+        data: LedgerSnapshot | None = self.coordinator.data
+        return data
+
+    @property
     def summaries(self) -> list[SpoolSummary]:
-        return list(self.coordinator.data or [])
+        snapshot = self.snapshot
+        return list(snapshot.spools) if snapshot else []
 
 
 class SpoolSensor(LedgerEntity, SensorEntity):
@@ -140,7 +148,7 @@ class LedgerAggregateSensor(LedgerEntity, SensorEntity):
         key: str,
         name: str,
         icon: str,
-        value: Callable[[list[SpoolSummary]], int],
+        value: Callable[[LedgerSnapshot], int],
     ) -> None:
         super().__init__(runtime, entry)
         self._value = value
@@ -159,7 +167,8 @@ class LedgerAggregateSensor(LedgerEntity, SensorEntity):
 
     @property
     def native_value(self) -> int:
-        return self._value(self.summaries)
+        snapshot = self.snapshot
+        return self._value(snapshot) if snapshot else 0
 
 
 class TotalStockSensor(LedgerAggregateSensor):
@@ -177,7 +186,7 @@ class TotalStockSensor(LedgerAggregateSensor):
             # The exact balances are summed and rounded once, exactly as `Queries.stock()`
             # does for the websocket — summing per-spool roundings would let the sensor
             # and the panel disagree about the same ledger.
-            value=stock_grams,
+            value=lambda snapshot: stock_grams(snapshot.spools),
         )
 
     @property
@@ -193,7 +202,7 @@ class SpoolCountSensor(LedgerAggregateSensor):
             key="spool_count",
             name="Spools",
             icon="mdi:database",
-            value=lambda summaries: len([s for s in summaries if s.state.counts_as_stock]),
+            value=lambda snapshot: len([s for s in snapshot.spools if s.state.counts_as_stock]),
         )
 
 
@@ -208,8 +217,12 @@ class NeedsWeighingSensor(LedgerAggregateSensor):
             key="needs_weighing",
             name="Needs weighing",
             icon="mdi:scale-balance",
-            value=lambda summaries: len(
-                [s for s in summaries if s.confidence.needs_weighing and s.state.counts_as_stock]
+            value=lambda snapshot: len(
+                [
+                    s
+                    for s in snapshot.spools
+                    if s.confidence.needs_weighing and s.state.counts_as_stock
+                ]
             ),
         )
 
@@ -222,3 +235,22 @@ class NeedsWeighingSensor(LedgerAggregateSensor):
                 if s.confidence.needs_weighing and s.state.counts_as_stock
             ]
         }
+
+
+class PendingReviewsSensor(LedgerAggregateSensor):
+    """Count of PENDING reviews — the number behind the sidebar badge (docs/05 §5.7).
+
+    The queue only works if the user knows it has items, and this sensor is how they know
+    without opening the panel: the badge, a notification trigger, a history graph of how
+    often prints get interrupted — all read this one number.
+    """
+
+    def __init__(self, runtime: LedgerRuntime, entry: LedgerConfigEntry) -> None:
+        super().__init__(
+            runtime,
+            entry,
+            key="pending_reviews",
+            name="Pending reviews",
+            icon="mdi:clipboard-alert",
+            value=lambda snapshot: snapshot.pending_review_count,
+        )

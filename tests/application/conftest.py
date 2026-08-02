@@ -36,6 +36,7 @@ from custom_components.filament_ledger.application.review_queue import (
     DismissReview,
     OpenPendingReview,
 )
+from custom_components.filament_ledger.application.track_print_job import TrackPrintJob
 from custom_components.filament_ledger.application.use_cases import UseCases
 from custom_components.filament_ledger.domain.event import DomainEvent
 from custom_components.filament_ledger.infrastructure.estimation.linear_progress_estimator import (
@@ -118,6 +119,12 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
     clock = FakeClock()
     events = RecordingEventBus()
 
+    # The production estimator, not a fake: it is pure arithmetic over the job the
+    # test itself constructs, so faking it would only test the fake.
+    open_pending_review = OpenPendingReview(
+        jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
+    )
+
     return Ledger(
         use_cases=UseCases(
             register_spool=RegisterSpool(spools, movements, clock, events, database),
@@ -131,14 +138,13 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             # `RegisterSpool` — the fixture stays one honest wiring, not a matrix.
             detect_spool=DetectSpool(spools, events, database, auto_mount=True),
             edit_spool_details=EditSpoolDetails(spools, database),
-            # The production estimator, not a fake: it is pure arithmetic over the job the
-            # test itself constructs, so faking it would only test the fake.
-            open_pending_review=OpenPendingReview(
-                jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
+            track_print_job=TrackPrintJob(
+                jobs=jobs, open_pending_review=open_pending_review, clock=clock, uow=database
             ),
+            open_pending_review=open_pending_review,
             approve_review=ApproveReview(reviews, spools, movements, clock, events, database),
             dismiss_review=DismissReview(reviews, clock, events, database),
-            queries=Queries(spools=spools, movements=movements),
+            queries=Queries(spools=spools, movements=movements, reviews=reviews, jobs=jobs),
         ),
         clock=clock,
         events=events,

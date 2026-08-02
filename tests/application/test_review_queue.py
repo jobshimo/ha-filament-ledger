@@ -8,6 +8,8 @@ runs on, exactly as `test_detection.py` did for trays.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from custom_components.filament_ledger.application.adjust_spool import (
@@ -427,6 +429,70 @@ class TestFrozenResolution:
         assert friday.summary.balance == Grams.of(1000)
 
 
+class TestConcurrency:
+    """These run on `interleaved_ledger`, whose executor yields to the event loop before
+    every statement — `run_inline` never yields, so a race could not be observed with it."""
+
+    async def test_approval_and_dismissal_racing_resolve_exactly_once(
+        self, interleaved_ledger: Ledger
+    ) -> None:
+        """A double-decision race: the panel approves while an automation dismisses.
+
+        Unserialised, both would read PENDING, one would deduct and the other would mark
+        dismissed — a review claiming both outcomes, or a deduction a dismissal then
+        disowns. One decision must win and the other must be refused; which one wins is
+        scheduling, so the assertion is the invariant, not the winner."""
+        ledger = interleaved_ledger
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+
+        outcomes = await asyncio.gather(
+            ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id)),
+            ledger.use_cases.dismiss_review.execute(DismissReviewCommand(review_id=review_id)),
+            return_exceptions=True,
+        )
+
+        refusals = [o for o in outcomes if isinstance(o, ReviewAlreadyResolvedError)]
+        assert len(refusals) == 1
+        review = await stored_review(ledger, review_id)
+        rows = await estimated_consumption_rows(ledger)
+        # The ledger agrees with whichever decision landed: an approval deducted exactly
+        # once, a dismissal deducted nothing at all.
+        if review.state is ReviewState.APPROVED:
+            assert len(rows) == 1
+            expected = Grams.of(929)
+        else:
+            assert review.state is ReviewState.DISMISSED
+            assert rows == []
+            expected = Grams.of(1000)
+        assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == expected
+        assert len(ledger.events.of(ReviewResolved)) == 1
+
+    async def test_two_opens_for_one_job_racing_yield_one_review(
+        self, interleaved_ledger: Ledger
+    ) -> None:
+        """Two `OpenPendingReview` for the same job, racing — the gateway can deliver one
+        ending twice. The one-pending-per-job rule must hold under interleaving, and the
+        loser must be told in the language of the problem, not with a constraint name."""
+        ledger = interleaved_ledger
+        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+
+        outcomes = await asyncio.gather(
+            opened(ledger, job),
+            opened(ledger, job),
+            return_exceptions=True,
+        )
+
+        winners = [o for o in outcomes if isinstance(o, str)]
+        refusals = [o for o in outcomes if isinstance(o, ReviewAlreadyPendingError)]
+        assert len(winners) == 1
+        assert len(refusals) == 1
+        pending = await SqliteReviewRepository(ledger.database).list_pending()
+        assert [review.id for review in pending] == winners
+        assert len(ledger.events.of(ReviewOpened)) == 1
+
+
 class TestDismissingAReview:
     async def test_dismissal_records_the_decision_and_moves_nothing(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
@@ -486,6 +552,27 @@ class TestPersistedRoundTrip:
         await repository.save(job)
 
         assert await repository.get(job.id) == job
+
+    async def test_an_empty_usage_report_survives_distinct_from_no_report(
+        self, ledger: Ledger
+    ) -> None:
+        """`None` and `{}` are different facts — a figure that never materialised versus a
+        printer that reported and named no trays — and the nullable column keeps them
+        apart through a round trip. Collapsing them would turn a retrieval failure into a
+        silent claim that nothing was consumed (docs/04-use-cases.md UC-04)."""
+        repository = SqlitePrintJobRepository(ledger.database)
+        silent = a_job("job-silent", state=PrintJobState.FINISHED, reported_usage=None)
+        empty = a_job("job-empty", state=PrintJobState.FINISHED, reported_usage={})
+        await repository.save(silent)
+        await repository.save(empty)
+
+        reloaded_silent = await repository.get(silent.id)
+        reloaded_empty = await repository.get(empty.id)
+
+        assert reloaded_silent is not None
+        assert reloaded_silent.reported_usage is None
+        assert reloaded_empty is not None
+        assert reloaded_empty.reported_usage == {}
 
     async def test_saving_again_updates_the_same_row(self, ledger: Ledger) -> None:
         """A job's state evolves as the printer reports; the record follows the claim."""

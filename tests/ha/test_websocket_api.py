@@ -17,14 +17,25 @@ import voluptuous as vol
 from homeassistant.components.websocket_api import DOMAIN as WEBSOCKET_DOMAIN
 from homeassistant.core import HomeAssistant
 
+from custom_components.filament_ledger.application.review_queue import OpenPendingReviewCommand
+from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SpoolId
+from custom_components.filament_ledger.domain.value.identifiers import (
+    PrintJobId,
+    ReviewId,
+    SlotIndex,
+    SpoolId,
+)
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
+from custom_components.filament_ledger.domain.value.percentage import Percentage
+from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
+from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.infrastructure.ha.websocket_api import (
     async_register_commands,
 )
 
+from ..application.conftest import EPOCH
 from .conftest import FakeHass, Harness, as_hass
 
 LIST = "filament_ledger/spools/list"
@@ -37,6 +48,9 @@ DISCARD = "filament_ledger/spools/discard"
 ADJUST = "filament_ledger/spools/adjust"
 MOUNT = "filament_ledger/spools/mount"
 UNMOUNT = "filament_ledger/spools/unmount"
+REVIEWS_LIST = "filament_ledger/reviews/list"
+REVIEWS_APPROVE = "filament_ledger/reviews/approve"
+REVIEWS_DISMISS = "filament_ledger/reviews/dismiss"
 
 
 @dataclass
@@ -135,6 +149,29 @@ async def a_created_spool(ws: WsClient, **overrides: object) -> str:
     return cast(str, result["spool_id"])
 
 
+async def an_open_review(harness: Harness, job_id: str = "job-1") -> ReviewId:
+    """A pending review for a cancelled print, opened through the real use case.
+
+    The websocket deliberately has no command that opens a review — opening is the
+    gateway's job — so the queue is seeded the way the gateway seeds it.
+    """
+    job = PrintJob(
+        id=PrintJobId(job_id),
+        name="bracket_v3.gcode.3mf",
+        state=PrintJobState.CANCELLED,
+        started_at=EPOCH,
+        layer_reached=71,
+        total_layers=209,
+        progress=Percentage.of(34),
+        reported_usage={SlotIndex(1): Grams.of(209)},
+        raw_gcode_state="pause",
+        raw_print_error=50348044,
+    )
+    return await harness.ledger.use_cases.open_pending_review.execute(
+        OpenPendingReviewCommand(job=job, reason=ReviewReason.CANCELLED)
+    )
+
+
 class TestSchemasRejectMalformedMessages:
     """The adapter validates before the domain is reached, so a typo in the panel becomes
     a `vol.Invalid` the frontend can render — never a stack trace from a value object."""
@@ -190,6 +227,29 @@ class TestSchemasRejectMalformedMessages:
             pytest.param(UNMOUNT, {}, id="unmount-without-a-spool-id"),
             pytest.param(LIST, {"surprise": 1}, id="list-accepts-no-fields-at-all"),
             pytest.param(STOCK, {"surprise": 1}, id="stock-accepts-no-fields-at-all"),
+            pytest.param(REVIEWS_LIST, {"surprise": 1}, id="reviews-list-accepts-no-fields-at-all"),
+            pytest.param(REVIEWS_APPROVE, {}, id="approve-without-a-review-id"),
+            pytest.param(
+                REVIEWS_APPROVE,
+                {"review_id": "r", "amounts": {"9": 10}},
+                id="approve-with-a-slot-past-the-last",
+            ),
+            pytest.param(
+                REVIEWS_APPROVE,
+                {"review_id": "r", "amounts": {"1": -5}},
+                id="approve-with-a-negative-amount",
+            ),
+            pytest.param(
+                REVIEWS_APPROVE,
+                {"review_id": "r", "amounts": {"1": "much"}},
+                id="approve-with-a-textual-amount",
+            ),
+            pytest.param(
+                REVIEWS_APPROVE,
+                {"review_id": "r", "assign": {"0": "spool"}},
+                id="approve-assigning-below-the-first-slot",
+            ),
+            pytest.param(REVIEWS_DISMISS, {}, id="dismiss-without-a-review-id"),
         ],
     )
     def test_the_message_never_reaches_a_handler(
@@ -282,7 +342,8 @@ class TestCreate:
         assert [line.movement.type.value for line in detail.lines] == ["OPENING_BALANCE"]
         # And the entities heard about it without waiting for the next poll.
         assert harness.coordinator.refresh_count == 1
-        assert [s.spool.id for s in harness.coordinator.data or []] == [spool_id]
+        assert harness.coordinator.data is not None
+        assert [s.spool.id for s in harness.coordinator.data.spools] == [spool_id]
 
     async def test_the_configured_core_weight_fills_in_when_the_panel_omits_it(
         self, ws: WsClient
@@ -481,3 +542,149 @@ class TestMountAndUnmount:
         await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
         await ws.result_dict(UNMOUNT, spool_id=spool_id)
         assert harness.coordinator.refresh_count == 3
+
+
+class TestReviewsList:
+    async def test_an_empty_queue_is_an_empty_list(self, ws: WsClient) -> None:
+        assert await ws.result_list(REVIEWS_LIST) == []
+
+    async def test_the_panel_sees_the_documented_review_card_shape(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Everything the card in docs/06 §6.3 renders, in one payload: the job's name
+        and raw error, the named estimator, the frozen per-line facts."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        review_id = await an_open_review(harness)
+
+        (payload,) = await ws.result_list(REVIEWS_LIST)
+
+        assert payload == {
+            "id": review_id,
+            "job_id": "job-1",
+            "job_name": "bracket_v3.gcode.3mf",
+            "job_state": "CANCELLED",
+            "reason": "CANCELLED",
+            "estimator": "LINEAR_PROGRESS",
+            "opened_at": EPOCH.isoformat(),
+            "layer_reached": 71,
+            "total_layers": 209,
+            "progress_pct": 34,
+            "raw_gcode_state": "pause",
+            "raw_print_error": 50348044,
+            # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool.
+            "estimated_total_g": 71.0,
+            "lines": [{"slot": 1, "estimated_g": 71.0, "spool_id": spool_id}],
+        }
+
+    async def test_an_unattributed_slot_travels_with_a_null_spool(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The row most worth showing: nothing was mounted when the review froze, and the
+        panel renders the spool picker off exactly this null."""
+        await an_open_review(harness)
+
+        (payload,) = await ws.result_list(REVIEWS_LIST)
+
+        assert payload["lines"] == [{"slot": 1, "estimated_g": 71.0, "spool_id": None}]
+
+
+class TestReviewsApprove:
+    async def test_approval_deducts_and_refreshes(self, ws: WsClient, harness: Harness) -> None:
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        review_id = await an_open_review(harness)
+        refreshes = harness.coordinator.refresh_count
+
+        result = await ws.result_dict(REVIEWS_APPROVE, review_id=review_id)
+
+        assert result == {"ok": True}
+        (payload,) = await ws.result_list(LIST)
+        assert payload["balance_g"] == 929
+        assert await ws.result_list(REVIEWS_LIST) == []
+        assert harness.coordinator.refresh_count == refreshes + 1
+
+    async def test_the_users_numbers_override_and_assignments_resolve(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """JSON object keys arrive as strings; the schema reads them as slot indices."""
+        spool_id = await a_created_spool(ws)
+        await an_open_review(harness)
+        (pending,) = await ws.result_list(REVIEWS_LIST)
+
+        await ws.result_dict(
+            REVIEWS_APPROVE,
+            review_id=pending["id"],
+            amounts={"1": 12.5},
+            assign={"1": spool_id},
+            note="weighed the waste",
+        )
+
+        (payload,) = await ws.result_list(LIST)
+        assert payload["balance_g"] == 988  # 1000 − 12.5, rounded once
+        history = cast(
+            "list[dict[str, object]]",
+            (await ws.result_dict(GET, spool_id=spool_id))["history"],
+        )
+        assert history[0]["type"] == "ESTIMATED_CONSUMPTION"
+        assert history[0]["amount_g"] == -12.5
+
+    async def test_an_unresolved_slot_is_an_error_reply_not_a_crash(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        review_id = await an_open_review(harness)
+
+        code, message = await ws.error(REVIEWS_APPROVE, review_id=review_id)
+
+        assert code == "UnresolvedSlotError"
+        assert "no spool" in message
+        assert (await ws.result_list(REVIEWS_LIST)) != []  # still pending, nothing written
+
+    async def test_a_double_approval_is_refused_with_the_domains_words(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        review_id = await an_open_review(harness)
+        await ws.result_dict(REVIEWS_APPROVE, review_id=review_id)
+
+        code, _message = await ws.error(REVIEWS_APPROVE, review_id=review_id)
+
+        assert code == "ReviewAlreadyResolvedError"
+        (payload,) = await ws.result_list(LIST)
+        assert payload["balance_g"] == 929  # deducted exactly once
+
+    async def test_an_unknown_review_is_reported_not_invented(self, ws: WsClient) -> None:
+        code, message = await ws.error(REVIEWS_APPROVE, review_id="nope")
+        assert code == "ReviewNotFoundError"
+        assert "nope" in message
+
+
+class TestReviewsDismiss:
+    async def test_dismissal_resolves_without_touching_a_balance(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        review_id = await an_open_review(harness)
+
+        result = await ws.result_dict(
+            REVIEWS_DISMISS, review_id=review_id, note="failed on the first layer"
+        )
+
+        assert result == {"ok": True}
+        assert await ws.result_list(REVIEWS_LIST) == []
+        (payload,) = await ws.result_list(LIST)
+        assert payload["balance_g"] == 1000
+
+    async def test_a_dismissed_review_stays_dismissed(self, ws: WsClient, harness: Harness) -> None:
+        review_id = await an_open_review(harness)
+        await ws.result_dict(REVIEWS_DISMISS, review_id=review_id)
+
+        code, _message = await ws.error(REVIEWS_DISMISS, review_id=review_id)
+
+        assert code == "ReviewAlreadyResolvedError"
+
+    async def test_an_unknown_review_cannot_be_dismissed(self, ws: WsClient) -> None:
+        code, _message = await ws.error(REVIEWS_DISMISS, review_id="nope")
+        assert code == "ReviewNotFoundError"
