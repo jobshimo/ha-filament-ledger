@@ -158,13 +158,44 @@ harness, so the checklist *is* the panel's test suite.
 
 ---
 
-## Phase 6 — Public release (v1.1)
+## Phase 6 — The visual system (v1.1)
+
+The panel stops following the Home Assistant theme and takes an identity of its own, on a
+design that exists rather than one assembled from defaults. Specified in
+[16 — The Visual System](16-visual-system.md); the reversal it performs is recorded in
+[ADR-0008](adr/0008-panel-visual-identity.md).
+
+It arrives before the release features because it is the only phase that touches nothing but
+appearance — no schema, no websocket command, no accounting. A phase that cannot corrupt a
+ledger is the cheapest one to ship first, and the panel is what a stranger sees before they
+see anything else.
+
+- Self-hosted typefaces, injected at document level, served with cache headers
+- A styleguide page — the panel's missing test surface
+- Tokens on `:host`, container queries against the panel rather than the window
+- The four designed surfaces, then the four undesigned ones and the dialogs
+
+**Usable outcome:** the same integration, recognisable as a product.
+
+**Exit criteria:** [16 §16.8](16-visual-system.md)'s hand-verification checklist executed on
+the owner's instance, including the sidebar pinned-then-collapsed pass that is the whole
+reason container queries were chosen.
+
+---
+
+## Phase 7 — Public release (v1.2)
 
 What was "Phase 5 — Release" before v1.0 existed, renumbered and widened: the owner's
 corrections ship before the world's features, because a published defect is a support
 burden and an unpublished one is a chore. Earlier documents that say "Phase 5" about
 release-era features ([08 §8.6](08-data-model.md), [ADR-0002](adr/0002-reject-spoolman-as-foundation.md))
 mean this phase; they are left unedited because a renumbering is not a change of intent.
+
+It moved again, from Phase 6 to Phase 7 and from v1.1 to v1.2, when the visual system took
+the slot above. The same rule applies: [14](14-corrections-and-trash.md),
+[ADR-0007](adr/0007-corrections-are-more-history.md) and the panel's own comments still say
+"v1.1" about actor attribution, and they are left alone, because what they name is this set
+of features and not a number.
 
 Specified to contract level in [15 — Public Release](15-public-release.md), every item
 flagged for final scoping before implementation:
@@ -217,7 +248,8 @@ only to serve a hypothesis.
 Every phase ends with something that works.
 
 Phase 1 alone is a usable manual inventory. Phase 2 makes it automatic. Phase 3 makes it
-pleasant. Phase 4 makes it precise. Phase 5 makes it correctable. Phase 6 makes it public.
+pleasant. Phase 4 makes it precise. Phase 5 makes it correctable. Phase 6 makes it look like
+something. Phase 7 makes it public.
 
 If the project stopped after any phase, what exists would still be worth having. That is the
 test a phase boundary has to pass.

@@ -82,8 +82,8 @@ The layering, in one line: `domain/` knows nothing, `application/` knows the dom
 
 ## docs/ is the contract
 
-The design is written down **before** it is built. [docs/](docs/) — fifteen numbered documents
-and seven ADRs — is where behaviour is decided; the code is the consequence.
+The design is written down **before** it is built. [docs/](docs/) — sixteen numbered documents
+and eight ADRs — is where behaviour is decided; the code is the consequence.
 
 - Changing behaviour means amending the document that specifies it, **in the same pull request**
   as the code. A change that contradicts its own spec is a defect even when the tests pass.

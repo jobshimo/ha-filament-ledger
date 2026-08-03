@@ -1,8 +1,11 @@
 # 06 — UI Specification
 
-The panel is a sidebar entry in Home Assistant. It follows HA's own design language — same
-cards, same typography, same theme variables — so it reads as part of Home Assistant rather
-than a foreign application embedded in it.
+The panel is a sidebar entry in Home Assistant, and it has a visual identity of its own — its
+own palette, typefaces, spacing and motion, on a fixed dark surface that does not follow the
+user's theme. [16 — The Visual System](16-visual-system.md) specifies it and
+[ADR-0008](adr/0008-panel-visual-identity.md) records why the earlier theme-native position was
+reversed. Everything below describes what the panel shows and why; the visual system describes
+what it looks like.
 
 Six views, and every one of them earns its tab. Every additional screen is a place the user
 has to learn, so a new one arrives only when an existing view would have to lie to hold it.
@@ -661,12 +664,23 @@ A number presented without its reliability invites false trust.
 **Destructive actions confirm; corrective ones do not.** Discard confirms. Reconciliation does
 not — it only ever adds a compensating entry, and nothing is lost.
 
-**Theme-native.** HA CSS custom properties throughout, so light, dark, and custom themes work
-without any per-theme code.
+**One appearance.** The panel renders its own fixed dark identity rather than the user's Home
+Assistant theme ([ADR-0008](adr/0008-panel-visual-identity.md)). Light, dark and custom themes
+all produce the same panel. Every value comes from a token declared once on `:host`
+([16 §16.3](16-visual-system.md)); nothing downstream hard-codes a colour, a radius or a
+duration.
 
-**Responsive.** Cards reflow to a single column on narrow screens. The review queue is
-routinely used on a phone, standing at the printer with the failed part in hand — that is the
-layout to get right first.
+**Responsive to the panel, not to the window.** Cards reflow to a single column when the panel
+is narrow — which is not the same as the window being narrow, because Home Assistant's sidebar
+takes its width from the same viewport. Every responsive rule is a container query against the
+host ([16 §16.2](16-visual-system.md)), so pinning or collapsing the sidebar reflows the panel
+without a reload. The review queue is routinely used on a phone, standing at the printer with
+the failed part in hand — that is the layout to get right first.
 
 **Accessible.** Confidence is never conveyed by colour alone; the dot always carries a text
-label. All interactive elements are keyboard reachable, all inputs are labelled.
+label. All interactive elements are keyboard reachable, all inputs are labelled. Anything
+tappable is at least 44 px tall — the panel is used one-handed, at a printer. Motion is
+decoration: under `prefers-reduced-motion` the decorative animation stops and transitions
+collapse to near zero. Because the panel no longer inherits a theme, a user cannot fix our
+contrast from their side, which makes the palette's contrast our obligation rather than
+theirs.

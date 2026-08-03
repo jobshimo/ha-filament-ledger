@@ -1,13 +1,20 @@
-# 15 — Public Release (v1.1)
+# 15 — Public Release (v1.2)
 
 The path from the owner's printer to anybody's. v1.0
 ([14 — Corrections & Trash](14-corrections-and-trash.md)) makes the ledger correctable;
-v1.1 makes it publishable: money, alerts, multi-user attribution, packaging, export,
-statistics, and the lifted single-printer assumption.
+v1.1 ([16 — The Visual System](16-visual-system.md)) makes it look like a product; v1.2
+makes it publishable: money, alerts, multi-user attribution, packaging, export, statistics,
+and the lifted single-printer assumption.
+
+**This set was v1.1 until the visual system took that number** ([10 — Roadmap](10-roadmap.md),
+Phase 7). Only the number moved. Documents written earlier — [14](14-corrections-and-trash.md),
+[ADR-0007](adr/0007-corrections-are-more-history.md), and the panel's own comments — still say
+"v1.1" about features specified here, and they are left unedited, because what they name is
+this contract rather than a version string.
 
 **Status of this document.** Every item below is specified to contract level — schema
 shapes, API surfaces, the rules and their whys — but each is **flagged for final scoping
-before implementation**: v1.1 is the first release whose features were not demanded by
+before implementation**: this is the first release whose features were not demanded by
 daily use, and the cheapest time to cut one is before it is built
 ([10 — Roadmap](10-roadmap.md), sequencing principle). An implementer picks an item,
 confirms its scope with the owner, then builds against this contract. Nothing here may
@@ -333,8 +340,8 @@ design ready than to grow it under pressure.
   the migration is additive in the schema.
 
 **Acceptance shape** (for the eventual implementation, after its design doc): two
-printers deduct into one inventory with correct attribution; a v1.1 database migrates
-with every existing movement and review mapped to the original printer; a
+printers deduct into one inventory with correct attribution; a pre-multi-printer database
+migrates with every existing movement and review mapped to the original printer; a
 single-printer instance's UI is pixel-identical to before.
 
 ---
@@ -346,7 +353,7 @@ uow non-reentrancy (`application/review_queue.py:109-128` precedent), the hassfe
 brace rule (`5e0073b`), PEP 758 as formatter canon (`bambu_gateway.py:318-323`),
 string-keyed JSON maps (`websocket_api.py:52-56`), focus-stealing re-renders
 (`www/filament-ledger-panel.js:124-126`), `esc()` discipline, registry-based
-discovery. Three additions specific to v1.1:
+discovery. Three additions specific to this set:
 
 **Money is integer minor units end to end.** The first `float` price that enters the
 system is the last trustworthy cost report it produces. The `Grams` discipline
@@ -364,7 +371,7 @@ against it and fails on divergence; no other file may carry a version.
 
 ## 15.9 Sequencing
 
-Within v1.1, order by dependency and cuttability: **15.4 HACS packaging** first (brands
+Within v1.2, order by dependency and cuttability: **15.4 HACS packaging** first (brands
 review has lead time, and everything else benefits from release automation) — its
 documentation and contribution surface is done, and the icon, brands PR, release
 workflow and default-store submission remain, marked item by item in §15.4 — then
