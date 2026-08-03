@@ -17,7 +17,13 @@ from ...domain.value.identifiers import MovementId, PrintJobId, ReviewId, SpoolI
 from ...domain.value.movement_type import MovementSource, MovementType
 from .database import Database
 
-COLUMNS = "id, spool_id, type, amount_mg, source, occurred_at, recorded_at, job_id, review_id, note"
+COLUMNS = (
+    "id, spool_id, type, amount_mg, source, occurred_at, recorded_at, job_id, review_id, note, "
+    # Migration 0003's link columns. Written here at INSERT and nowhere else, ever — which
+    # is what keeps the immutability triggers from ever being confronted by a correction
+    # (docs/14 §14.7, docs/adr/0007).
+    "reassigns_movement_id, reinstates_movement_id"
+)
 
 
 def _iso(moment: datetime) -> str:
@@ -36,6 +42,12 @@ def _to_movement(row: sqlite3.Row) -> Movement:
         note=row["note"],
         job_id=PrintJobId(row["job_id"]) if row["job_id"] else None,
         review_id=ReviewId(row["review_id"]) if row["review_id"] else None,
+        reassigns_movement_id=(
+            MovementId(row["reassigns_movement_id"]) if row["reassigns_movement_id"] else None
+        ),
+        reinstates_movement_id=(
+            MovementId(row["reinstates_movement_id"]) if row["reinstates_movement_id"] else None
+        ),
     )
 
 
@@ -45,7 +57,7 @@ class SqliteMovementRepository:
 
     async def append(self, movement: Movement) -> None:
         await self.database.execute(
-            f"INSERT INTO movement ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO movement ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 movement.id,
                 movement.spool_id,
@@ -57,8 +69,16 @@ class SqliteMovementRepository:
                 movement.job_id,
                 movement.review_id,
                 movement.note,
+                movement.reassigns_movement_id,
+                movement.reinstates_movement_id,
             ),
         )
+
+    async def get(self, movement_id: MovementId) -> Movement | None:
+        row = await self.database.fetch_one(
+            f"SELECT {COLUMNS} FROM movement WHERE id = ?", (movement_id,)
+        )
+        return _to_movement(row) if row else None
 
     async def list_for_spool(self, spool_id: SpoolId) -> list[Movement]:
         """Oldest first — the order the running balance is derived in."""

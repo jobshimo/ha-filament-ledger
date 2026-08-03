@@ -17,13 +17,18 @@ from ...domain.event import (
     AnomalyDetected,
     ConfidenceDegraded,
     DomainEvent,
+    MovementReassigned,
     MovementRecorded,
+    MovementReinstated,
+    MovementVoided,
     ReviewOpened,
     ReviewResolved,
+    SpoolDeleted,
     SpoolDepleted,
     SpoolDetected,
     SpoolMounted,
     SpoolRegistered,
+    SpoolRestored,
     SpoolUnmounted,
     UnknownSpoolDetected,
 )
@@ -66,6 +71,32 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
                 "amount_g": float(amount.as_decimal),
                 "new_balance_g": float(new_balance.as_decimal),
             }
+        case MovementVoided(movement_id, spool_id, returned):
+            # `returned_g` is null for a void without restitution: nothing came back, and
+            # an automation that read a zero would be wrong in exactly the case that
+            # matters (docs/14 §14.4.1).
+            return event_name("movement_voided"), {
+                "movement_id": movement_id,
+                "spool_id": spool_id,
+                "returned_g": float(returned.as_decimal) if returned is not None else None,
+            }
+        case MovementReinstated(movement_id, spool_id, deducted):
+            return event_name("movement_reinstated"), {
+                "movement_id": movement_id,
+                "spool_id": spool_id,
+                "deducted_g": float(deducted.as_decimal),
+            }
+        case MovementReassigned(movement_id, from_spool_id, to_spool_id, amount):
+            return event_name("movement_reassigned"), {
+                "movement_id": movement_id,
+                "from_spool_id": from_spool_id,
+                "to_spool_id": to_spool_id,
+                "amount_g": float(amount.as_decimal),
+            }
+        case SpoolDeleted(spool_id, display_name):
+            return event_name("spool_deleted"), {"spool_id": spool_id, "name": display_name}
+        case SpoolRestored(spool_id, display_name):
+            return event_name("spool_restored"), {"spool_id": spool_id, "name": display_name}
         case SpoolDepleted(spool_id, display_name):
             return event_name("spool_depleted"), {"spool_id": spool_id, "name": display_name}
         case ConfidenceDegraded(spool_id, previous, current):

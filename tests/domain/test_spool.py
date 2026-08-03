@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.filament_ledger.domain.error import (
     InvalidValueError,
+    SpoolDeletedError,
     SpoolDiscardedError,
     TagNotEditableError,
 )
@@ -131,6 +132,63 @@ class TestDiscard:
     def test_discarding_returns_the_spool_to_storage(self) -> None:
         spool = a_spool().mounted_in(SlotIndex(3)).discarded(at(days=1))
         assert spool.location == Storage()
+
+
+class TestDeletionIsNotDiscarding:
+    """docs/14 §14.4.3. The intent modal's two answers must stay two facts."""
+
+    def test_deleting_retracts_the_registration_and_frees_the_slot(self) -> None:
+        spool = a_spool().mounted_in(SlotIndex(3)).deleted(at(days=1))
+
+        assert spool.is_deleted
+        assert not spool.is_discarded
+        assert not spool.is_in_inventory
+        # Cleared in the same transition: a spool that was never here cannot be occupying
+        # a tray, and the partial unique index has stopped watching it.
+        assert spool.location == Storage()
+        assert spool.state(balance=Grams.of(612), movement_count=4) is SpoolState.DELETED
+
+    def test_a_deleted_spool_accepts_no_ordinary_transition(self) -> None:
+        spool = a_spool().deleted(at(days=1))
+
+        with pytest.raises(SpoolDeletedError):
+            spool.mounted_in(SlotIndex(1))
+        with pytest.raises(SpoolDeletedError):
+            spool.with_details(label="renamed")
+        with pytest.raises(SpoolDeletedError):
+            spool.with_tag(TagUid("A1B2C3D4"), TagSource.MANUAL)
+        with pytest.raises(SpoolDeletedError):
+            spool.discarded(at(days=2))
+        with pytest.raises(SpoolDeletedError):
+            spool.deleted(at(days=2))
+
+    def test_a_discarded_spool_cannot_also_be_deleted(self) -> None:
+        spool = a_spool().discarded(at(days=1))
+        with pytest.raises(SpoolDiscardedError):
+            spool.deleted(at(days=2))
+
+    def test_restoring_clears_the_retraction_but_not_the_slot(self) -> None:
+        spool = a_spool().mounted_in(SlotIndex(3)).deleted(at(days=1)).restored()
+
+        assert not spool.is_deleted
+        assert spool.is_in_inventory
+        # Storage, not slot 3: the slot was freed and something else may be in it, and
+        # displacing that spool would be a physical claim the ledger cannot check.
+        assert spool.location == Storage()
+
+    def test_restoring_a_spool_that_is_not_deleted_is_refused(self) -> None:
+        with pytest.raises(InvalidValueError, match="not deleted"):
+            a_spool().restored()
+
+    def test_the_un_discard_is_a_separate_transition(self) -> None:
+        """Used only by the void of a whole-spool DISCARD, and refusing everything else:
+        it is not an operation the user is ever offered directly (docs/14 §14.4.1)."""
+        spool = a_spool().discarded(at(days=1)).restored_from_discard()
+
+        assert not spool.is_discarded
+        assert spool.is_in_inventory
+        with pytest.raises(InvalidValueError, match="not discarded"):
+            spool.restored_from_discard()
 
 
 class TestReconciliationArithmetic:

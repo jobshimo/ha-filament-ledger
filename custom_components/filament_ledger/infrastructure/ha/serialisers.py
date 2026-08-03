@@ -8,6 +8,7 @@ surfaces can disagree about what 611.7 g looks like.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -17,10 +18,13 @@ from ...application.query import (
     PendingReviewDetail,
     SpoolDetail,
     SpoolSummary,
+    TrashedMovement,
+    TrashView,
     describe_location,
     movement_label,
     source_label,
 )
+from ...domain.model.movement import Movement
 from ...domain.value.grams import Grams, total
 
 if TYPE_CHECKING:
@@ -100,10 +104,34 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
     }
 
 
+def entry_direction(movement: Movement) -> str:
+    """Which way **this entry** went — read off its sign, not off its type.
+
+    `MovementType.direction` answers a question about the *type*, and for the three
+    correction types the answer is `EITHER`: a `REASSIGNMENT` is one type for both legs of
+    a compensating pair, and a `VOID_REVERSAL` negates whatever it undoes. A row's actions
+    turn on which way that particular row went — docs/14 §14.3 offers **[ Reassign… ]**
+    only where there is a charge to move, and calls a reassignment's *debit leg*
+    reassignable again — so the wire carries the entry's direction rather than its type's.
+    For every fixed-direction type the two agree, because `Movement` refuses an amount its
+    type does not permit.
+    """
+    return "DECREASE" if movement.amount.is_negative else "INCREASE"
+
+
 def history_line(line: HistoryLine) -> dict[str, Any]:
+    """One row of the spool detail table — the derivation surface, where nothing is hidden.
+
+    `voided` is what the strike-through and the chip turn on; the two link fields are what
+    a reassignment or a reinstatement row names. The rows stay in the table either way, so
+    the visible sum still closes (docs/14 §14.4.5).
+    """
     movement = line.movement
     return {
         "id": movement.id,
+        # The same value under the name the row actions use, so the detail table and the
+        # global table can share one dispatch path in the panel.
+        "movement_id": movement.id,
         "type": movement.type.value,
         "label": movement_label(movement),
         "amount_g": grams(movement.amount),
@@ -113,6 +141,10 @@ def history_line(line: HistoryLine) -> dict[str, Any]:
         "source_label": source_label(movement.source),
         "occurred_at": movement.occurred_at.isoformat(),
         "note": movement.note,
+        "direction": entry_direction(movement),
+        "voided": line.voided,
+        "reassigns_movement_id": movement.reassigns_movement_id,
+        "reinstates_movement_id": movement.reinstates_movement_id,
     }
 
 
@@ -122,19 +154,79 @@ def movement_line(line: GlobalHistoryLine) -> dict[str, Any]:
     Amounts carry one decimal and their sign, per this module's rule — the direction is
     data, not decoration. `job_name`, `review_id` and `note` are nullable: most rows have
     none of the three, and the table renders their absence rather than inventing filler.
+
+    `movement_id`, `spool_id`, `direction` and `voided` ride along so a row can offer the
+    right actions without a second query (docs/14 §14.4): Delete and Reassign both name a
+    movement, Reassign needs to know a charge is what it is moving, and neither is offered
+    on a row that is already out of the ledger's default view.
     """
     movement = line.movement
     return {
         "occurred_at": movement.occurred_at.isoformat(),
+        "movement_id": movement.id,
+        "spool_id": movement.spool_id,
         "spool_name": line.spool_name,
         "spool_colour": line.spool_colour.display_hex,
         "type": movement.type.value,
         "amount_g": grams(movement.amount),
+        "direction": entry_direction(movement),
+        "voided": line.voided,
         "source": movement.source.value,
         "job_name": line.job_name,
         "review_id": movement.review_id,
         "note": movement.note,
     }
+
+
+def trash_result(view: TrashView) -> dict[str, Any]:
+    """The Trash tab's two sections (docs/14 §14.4.4).
+
+    Spools reuse the ordinary summary shape — the tab renders the same swatch, name,
+    material and balance the inventory does, because a retracted spool is still the same
+    object — plus the one fact that puts it here.
+    """
+    return {
+        "spools": [
+            {**spool_summary(summary), "deleted_at": _iso_or_none(summary.spool.deleted_at)}
+            for summary in view.spools
+        ],
+        "movements": [_trashed_movement(entry) for entry in view.movements],
+    }
+
+
+def _trashed_movement(entry: TrashedMovement) -> dict[str, Any]:
+    """One open void chapter.
+
+    `restorable` is computed server-side, deliberately: it is the conjunction of two rules
+    the use case also enforces — the void returned something, and the spool is in
+    inventory — and a rule that lives only in panel JavaScript is a rule in the one
+    untestable layer (docs/14 §14.8).
+    """
+    movement = entry.movement
+    return {
+        "movement_id": movement.id,
+        "spool_id": entry.spool.id,
+        "spool_name": entry.spool.display_name,
+        "spool_colour": entry.spool.colour.display_hex,
+        # The two retirement facts, not the derived `SpoolState`. A trash row never shows
+        # SEALED or ACTIVE, and deriving those would cost a balance read per row to
+        # produce a word nobody renders — while these two are what the explanatory line
+        # under a missing [ Restore ] button has to choose between.
+        "spool_deleted": entry.spool.is_deleted,
+        "spool_discarded": entry.spool.is_discarded,
+        "type": movement.type.value,
+        "label": movement_label(movement),
+        "amount_g": grams(movement.amount),
+        "occurred_at": movement.occurred_at.isoformat(),
+        "voided_at": entry.void.voided_at.isoformat(),
+        "reason": entry.void.reason,
+        "had_restitution": entry.void.had_restitution,
+        "restorable": entry.restorable,
+    }
+
+
+def _iso_or_none(moment: datetime | None) -> str | None:
+    return moment.isoformat() if moment is not None else None
 
 
 def tray_sync_result(result: TraySyncResult) -> dict[str, Any]:

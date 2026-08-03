@@ -23,11 +23,13 @@ def derive(
     discarded_at: datetime | None = None,
     balance_g: float = 1000,
     movement_count: int = 1,
+    deleted_at: datetime | None = None,
 ) -> SpoolState:
     return SpoolState.derive(
         discarded_at=discarded_at,
         balance=Grams.of(balance_g),
         movement_count=movement_count,
+        deleted_at=deleted_at,
     )
 
 
@@ -56,6 +58,17 @@ class TestDerivation:
         assert derive(discarded_at=EPOCH, balance_g=612, movement_count=4) is SpoolState.DISCARDED
         assert derive(discarded_at=EPOCH, balance_g=0, movement_count=9) is SpoolState.DISCARDED
         assert derive(discarded_at=EPOCH, movement_count=1) is SpoolState.DISCARDED
+
+    def test_deleted_wins_over_everything_including_discarded(self) -> None:
+        """docs/14 §14.4.3 names the winner rather than leaving it to branch order.
+
+        The two stored facts are mutually exclusive by flow — the intent modal is the only
+        entry point and a discarded spool never offers the delete affordance — so this is
+        the answer to a state that should not exist, written down before it does.
+        """
+        assert derive(deleted_at=EPOCH, balance_g=612, movement_count=4) is SpoolState.DELETED
+        assert derive(deleted_at=EPOCH, balance_g=0, movement_count=9) is SpoolState.DELETED
+        assert derive(deleted_at=EPOCH, discarded_at=EPOCH) is SpoolState.DELETED
 
 
 class TestReversibility:
@@ -127,6 +140,7 @@ class TestTotality:
         """A branch nothing can reach is a branch that will rot unnoticed."""
         reached = {
             derive(discarded_at=EPOCH),
+            derive(deleted_at=EPOCH),
             derive(balance_g=0, movement_count=5),
             derive(movement_count=1),
             derive(balance_g=612, movement_count=4),
@@ -142,10 +156,12 @@ class TestStock:
             (SpoolState.ACTIVE, True),
             (SpoolState.DEPLETED, True),
             (SpoolState.DISCARDED, False),
+            (SpoolState.DELETED, False),
         ],
     )
-    def test_only_discarded_leaves_the_stock_figure(
+    def test_only_the_retired_states_leave_the_stock_figure(
         self, state: SpoolState, *, counts: bool
     ) -> None:
-        """A depleted spool is still a real object until it is thrown away."""
+        """A depleted spool is still a real object until it is thrown away — or until the
+        registration that claimed it is retracted (docs/14 §14.4.5)."""
         assert state.counts_as_stock is counts

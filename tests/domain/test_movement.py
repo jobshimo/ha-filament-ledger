@@ -64,11 +64,23 @@ class TestAmount:
 
 
 class TestDirections:
-    def test_only_two_types_are_bidirectional(self) -> None:
-        """The specification once listed OPENING_BALANCE as a third, contradicting both its
-        own sign table and the `opening_weight > 0` invariant."""
+    def test_exactly_the_corrections_and_the_scale_are_bidirectional(self) -> None:
+        """The specification once listed OPENING_BALANCE as bidirectional, contradicting
+        both its own sign table and the `opening_weight > 0` invariant.
+
+        The set grew by three in v1.0, and each one earns it (docs/14 §14.7): a
+        `VOID_REVERSAL` negates whatever it undoes, a `REINSTATEMENT` repeats it, and a
+        `REASSIGNMENT` is one type for both legs of a compensating pair. Nothing that
+        describes a physical direction of travel joined them.
+        """
         either = {kind for kind in MovementType if kind.direction is Direction.EITHER}
-        assert either == {MovementType.MANUAL_ADJUSTMENT, MovementType.RECONCILIATION}
+        assert either == {
+            MovementType.MANUAL_ADJUSTMENT,
+            MovementType.RECONCILIATION,
+            MovementType.VOID_REVERSAL,
+            MovementType.REINSTATEMENT,
+            MovementType.REASSIGNMENT,
+        }
 
     def test_every_type_declares_a_direction(self) -> None:
         for kind in MovementType:

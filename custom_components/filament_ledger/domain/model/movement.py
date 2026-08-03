@@ -29,6 +29,14 @@ class Movement:
     note: str | None = None
     job_id: PrintJobId | None = None
     review_id: ReviewId | None = None
+    # Correction provenance, on the entry itself (docs/14 §14.7). Written at INSERT and
+    # never after — which is why the immutability triggers are never confronted by the
+    # corrections this release adds. A `REASSIGNMENT` leg names the charge it moves; a
+    # `REINSTATEMENT` names the entry it brings back. The third link, void → reversal,
+    # lives on the `movement_void` row instead: it is a status record *about* a movement,
+    # and the movements it points at stay untouched (docs/adr/0007).
+    reassigns_movement_id: MovementId | None = None
+    reinstates_movement_id: MovementId | None = None
 
     def __post_init__(self) -> None:
         if self.amount.is_zero:
@@ -61,6 +69,8 @@ def record(
     note: str | None = None,
     job_id: PrintJobId | None = None,
     review_id: ReviewId | None = None,
+    reassigns_movement_id: MovementId | None = None,
+    reinstates_movement_id: MovementId | None = None,
 ) -> Movement:
     """Build a movement, generating its identity.
 
@@ -78,6 +88,8 @@ def record(
         note=note,
         job_id=job_id,
         review_id=review_id,
+        reassigns_movement_id=reassigns_movement_id,
+        reinstates_movement_id=reinstates_movement_id,
     )
 
 

@@ -47,7 +47,12 @@ from custom_components.filament_ledger.domain.model.movement import Movement
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId, TagUid
+from custom_components.filament_ledger.domain.value.identifiers import (
+    MovementId,
+    SlotIndex,
+    SpoolId,
+    TagUid,
+)
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
 from custom_components.filament_ledger.infrastructure.ha.serialisers import (
@@ -368,6 +373,9 @@ class UnappendableMovements:
     async def append(self, movement: Movement) -> None:
         msg = "the ledger is unavailable"
         raise RuntimeError(msg)
+
+    async def get(self, movement_id: MovementId) -> Movement | None:
+        return await self.inner.get(movement_id)
 
     async def list_for_spool(self, spool_id: SpoolId) -> list[Movement]:
         return await self.inner.list_for_spool(spool_id)

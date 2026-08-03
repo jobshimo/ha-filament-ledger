@@ -34,6 +34,8 @@ const TABS = [
   { id: "history", label: "History" },
   { id: "review", label: "Review" },
   { id: "ams", label: "AMS" },
+  // After AMS: the correction surfaces sit behind the daily ones (docs/14 §14.4.4).
+  { id: "trash", label: "Trash" },
 ];
 
 /**
@@ -50,7 +52,19 @@ const HISTORY_LABELS = {
   OPENING_BALANCE: "Opening balance",
   DISCARD: "Discard",
   PURGE_WASTE: "Purge",
+  // The corrections (docs/14 §14.3, §14.4). Both legs of a reassignment read
+  // "Reassigned"; the row's own note names the counterpart spool.
+  REASSIGNMENT: "Reassigned",
+  VOID_REVERSAL: "Deleted (returned)",
+  REINSTATEMENT: "Restored",
 };
+
+/**
+ * The two entry types that never leave the history the user sees (docs/14 §14.4.1), so
+ * the X is never offered on them. The backend refuses both anyway — this is the panel
+ * declining to ask a question it already knows the answer to.
+ */
+const NOT_VOIDABLE = new Set(["OPENING_BALANCE", "VOID_REVERSAL"]);
 
 /**
  * The note a weight correction made from the edit dialog carries into history. The dialog
@@ -104,6 +118,9 @@ class FilamentLedgerPanel extends HTMLElement {
     this._stock = null;
     this._reviews = [];
     this._movements = [];
+    // Deleted spools and open void chapters — a view over facts that already exist, not
+    // a holding pen for rows awaiting destruction (docs/adr/0007).
+    this._trash = null;
     this._detail = null;
     this._error = null;
     this._loading = true;
@@ -141,11 +158,12 @@ class FilamentLedgerPanel extends HTMLElement {
   async refresh() {
     try {
       this._error = null;
-      const [spools, stock, reviews, movements] = await Promise.all([
+      const [spools, stock, reviews, movements, trash] = await Promise.all([
         this.call("spools/list"),
         this.call("stock"),
         this.call("reviews/list"),
         this.call("movements"),
+        this.call("trash"),
       ]);
       this._spools = spools;
       this._stock = stock;
@@ -154,6 +172,10 @@ class FilamentLedgerPanel extends HTMLElement {
       this._reviews = reviews;
       // Already newest first from the backend, already joined to spool and job names.
       this._movements = movements;
+      // Fetched on every refresh rather than on opening the tab: a correction made in
+      // one view has to be visible in the other immediately, and the Trash is
+      // human-sized by construction.
+      this._trash = trash;
       if (this._detail) this._detail = await this.call("spools/get", { spool_id: this._detail.id });
     } catch (error) {
       this._error = error.message || String(error);
@@ -217,8 +239,48 @@ class FilamentLedgerPanel extends HTMLElement {
         this.render();
         break;
       case "dialog":
-        this._dialog = { kind: id, spool: this._detail };
+        // `spool_id` travels beside the loaded detail so a dialog can also be opened
+        // from a place that has no detail loaded — the intent modal's discard path is
+        // reached from an inventory card (docs/14 §14.4.3).
+        this._dialog = { kind: id, spool: this._detail, spool_id: this._detail?.id };
         this.render();
+        break;
+      case "reassign":
+        // Resolved at render time from `movement_id`, never from a snapshot taken now:
+        // a refresh between opening and confirming must change what the modal says.
+        this._dialog = { kind: "reassign", movement_id: id };
+        this.render();
+        break;
+      case "void-movement":
+        this._dialog = { kind: "void-movement", movement_id: id };
+        this.render();
+        break;
+      case "restore-movement":
+        this._dialog = { kind: "restore-movement", movement_id: id };
+        this.render();
+        break;
+      case "spool-intent":
+        // The X on a spool asks what actually happened, and the two answers are
+        // different facts about the world (docs/14 §14.4.3).
+        this._dialog = { kind: "spool-intent", spool_id: id };
+        this.render();
+        break;
+      case "intent-discard":
+        // "Thrown away" hands over to the existing DISCARD flow, unchanged — pre-set to
+        // the whole spool, because that is the question the X asked.
+        this._dialog = { kind: "discard", spool_id: id, mode: "whole_spool" };
+        this.render();
+        break;
+      case "intent-delete":
+        this.guarded(() => this.call("spools/delete", { spool_id: id }));
+        break;
+      case "restore-spool":
+        this.guarded(() => this.call("spools/restore", { spool_id: id }));
+        break;
+      case "void-restore-spool":
+        // "Restore the spool first" — the branch offered when the grams have nowhere to
+        // return to. The modal reopens on the same entry, now able to give them back.
+        this._restoreSpoolThenVoid(id);
         break;
       case "close-dialog":
         // The scrim carries `close-dialog` so the dark area closes the dialog. A click
@@ -275,6 +337,67 @@ class FilamentLedgerPanel extends HTMLElement {
     }
   }
 
+  /**
+   * Restore the spool, then reopen the void modal on the same entry.
+   *
+   * The two are separate commands and the API has no transaction spanning them, so the
+   * panel does not pretend otherwise — but the user asked one question, and landing them
+   * back on the modal they came from with the restitution branch now available is what
+   * answering it looks like.
+   */
+  async _restoreSpoolThenVoid(spoolId) {
+    const movementId = this._dialog?.movement_id;
+    try {
+      await this.call("spools/restore", { spool_id: spoolId });
+    } catch (error) {
+      this._error = error.message || String(error);
+      this.render();
+      return;
+    }
+    await this.refresh();
+    if (movementId) this._dialog = { kind: "void-movement", movement_id: movementId };
+    this.render();
+  }
+
+  /**
+   * Everything a correction modal needs about one entry, from whichever table it was
+   * clicked in. Resolved fresh on every render, so a modal left open across a refresh
+   * states the current figures rather than the ones it was born with.
+   *
+   * `retirement` is how the void modal picks its branch (docs/14 §14.4.1). In the global
+   * table it is derived from the spool's absence from the overview: that list carries
+   * neither discarded nor deleted spools, and a deleted spool's movements are hidden from
+   * the global history entirely — so an absent spool there is a discarded one. In the
+   * detail view the loaded state says it outright.
+   */
+  _movementSubject(movementId) {
+    const row = this._movements.find((m) => m.movement_id === movementId);
+    if (row) {
+      const spool = this._spools.find((s) => s.id === row.spool_id);
+      return {
+        movement_id: row.movement_id,
+        amount_g: row.amount_g,
+        label: HISTORY_LABELS[row.type] ?? row.type,
+        type: row.type,
+        spool_id: row.spool_id,
+        spool_name: row.spool_name,
+        retirement: spool ? null : "DISCARDED",
+      };
+    }
+    const line = (this._detail?.history ?? []).find((l) => l.movement_id === movementId);
+    if (!line) return null;
+    const state = this._detail.state;
+    return {
+      movement_id: line.movement_id,
+      amount_g: line.amount_g,
+      label: line.label,
+      type: line.type,
+      spool_id: this._detail.id,
+      spool_name: this._detail.name,
+      retirement: state === "DELETED" || state === "DISCARDED" ? state : null,
+    };
+  }
+
   _onInput(event) {
     const card = event.target.closest(".rv-card");
     if (card) {
@@ -291,7 +414,9 @@ class FilamentLedgerPanel extends HTMLElement {
     event.preventDefault();
     const form = event.target;
     const data = Object.fromEntries(new FormData(form).entries());
-    const spoolId = this._detail?.id;
+    // The dialog's own subject wins over the loaded detail: the discard flow is now also
+    // reachable from an inventory card, where no detail is loaded (docs/14 §14.4.3).
+    const spoolId = this._dialog?.spool_id ?? this._detail?.id;
 
     switch (form.dataset.form) {
       case "new-spool": {
@@ -391,6 +516,34 @@ class FilamentLedgerPanel extends HTMLElement {
           }),
         );
         break;
+      case "reassign":
+        this.guarded(() =>
+          this.call("movements/reassign", {
+            movement_id: this._dialog.movement_id,
+            to_spool_id: data.to_spool_id,
+            note: data.note || null,
+          }),
+        );
+        break;
+      case "void-movement":
+        this.guarded(() =>
+          this.call("movements/void", {
+            movement_id: this._dialog.movement_id,
+            reason: data.reason || null,
+            // Only ever sent as an explicit true, and only from the branch that renders
+            // it: the server refuses a restitution void on a retired spool rather than
+            // downgrading one silently, so the panel must never guess this flag.
+            without_restitution: data.without_restitution === "1" ? true : undefined,
+          }),
+        );
+        break;
+      case "restore-movement":
+        this.guarded(() =>
+          this.call("movements/restore", { movement_id: this._dialog.movement_id }),
+        );
+        break;
+      // Restoring a *spool* needs no form: the Trash row and the deleted spool's detail
+      // both carry the whole question in one button, so it dispatches through `_onClick`.
       default:
         break;
     }
@@ -553,6 +706,7 @@ class FilamentLedgerPanel extends HTMLElement {
     if (this._tab === "history") return this.historyView();
     if (this._tab === "review") return this.reviewView();
     if (this._tab === "ams") return this.amsView();
+    if (this._tab === "trash") return this.trashView();
     return this.inventoryView();
   }
 
@@ -679,6 +833,8 @@ class FilamentLedgerPanel extends HTMLElement {
       <article class="card spool ${spool.has_anomaly ? "anomaly" : ""}" data-action="open" data-id="${esc(spool.id)}">
         <div class="swatch" style="background:${esc(spool.colour)}"></div>
         <div class="spool-body">
+          <button class="card-x" data-action="spool-intent" data-id="${esc(spool.id)}"
+            title="Remove this spool">×</button>
           <div class="name">${esc(spool.name)}</div>
           <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
           <div class="big">${spool.balance_g}<small> g</small></div>
@@ -759,6 +915,7 @@ class FilamentLedgerPanel extends HTMLElement {
             <table class="ledger">
               <thead><tr>
                 <th>When</th><th>Spool</th><th>Entry</th><th class="r">Amount</th><th>Source</th>
+                <th class="r">Correct</th>
               </tr></thead>
               <tbody>${rows}</tbody>
             </table>
@@ -783,7 +940,43 @@ class FilamentLedgerPanel extends HTMLElement {
         </td>
         <td class="amt ${m.amount_g < 0 ? "minus" : "plus"}">${signed(m.amount_g)}</td>
         <td class="src"><span class="badge ${m.source === "USER_CONFIRMED" ? "user" : "auto"}">${m.source === "USER_CONFIRMED" ? "confirmed" : "auto"}</span></td>
+        <td class="acts">${this.rowActions(m)}</td>
       </tr>`;
+  }
+
+  /**
+   * The two corrections a history row offers, and when (docs/14 §14.3, §14.4).
+   *
+   * **[ ⇄ ]** moves a charge to the spool that actually fed the print, so it is offered
+   * only where there is a charge — the entry's own direction, which for the correction
+   * types is its sign rather than its type's `EITHER`. **[ × ]** deletes the entry from
+   * the history the user sees; it is withheld from the two types the backend refuses, so
+   * the panel never asks a question whose answer it already knows.
+   *
+   * A voided row offers neither. Both would be refused, and both would be nonsense: its
+   * grams have already gone back.
+   *
+   * A row on a *retired* spool offers only the X. The ⇄ is withheld rather than given a
+   * retired branch of its own, because unlike the X there is no without-restitution
+   * variant to offer: a reassignment is a pair, and half a pair is filament invented.
+   */
+  rowActions(m) {
+    if (m.voided) return `<span class="muted small">deleted</span>`;
+    const buttons = [];
+    const retired = this._movementSubject(m.movement_id)?.retirement;
+    if (m.direction === "DECREASE" && !retired) {
+      buttons.push(
+        `<button class="rowact" data-action="reassign" data-id="${esc(m.movement_id)}"
+          title="Move this charge to another spool">⇄</button>`,
+      );
+    }
+    if (!NOT_VOIDABLE.has(m.type)) {
+      buttons.push(
+        `<button class="rowact danger" data-action="void-movement" data-id="${esc(m.movement_id)}"
+          title="Delete this entry and return the grams">×</button>`,
+      );
+    }
+    return buttons.join("");
   }
 
   // -- review ------------------------------------------------------------------------
@@ -917,9 +1110,11 @@ class FilamentLedgerPanel extends HTMLElement {
 
     // A slot the review froze without a spool is shown, never hidden (docs/06 §6.3): the
     // amount is known, the spool is not, and the user is the one who knows which it was.
-    // Discarded spools stay out of the picker — charging one is refused by the domain.
+    // Retired spools stay out of the picker, by either route — charging one is refused by
+    // the domain (docs/14 §14.4.5). The overview already omits them; the filter is stated
+    // so the rule is visible where the picker is read.
     const options = this._spools
-      .filter((s) => s.state !== "DISCARDED")
+      .filter((s) => s.state !== "DISCARDED" && s.state !== "DELETED")
       .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`)
       .join("");
     return `
@@ -1049,16 +1244,23 @@ class FilamentLedgerPanel extends HTMLElement {
   detailView() {
     const spool = this._detail;
     const conf = CONFIDENCE[spool.confidence];
+    const deleted = spool.state === "DELETED";
     const rows = spool.history
       .map(
         (line) => `
-        <tr>
+        <tr class="${line.voided ? "voided" : ""}">
           <td class="when">${when(line.occurred_at)}</td>
-          <td class="what">${esc(line.label)}
+          <td class="what">${esc(line.label)}${line.voided ? `<b class="chip-void">deleted</b>` : ""}
             <span>${line.note ? `${esc(line.note)} · ` : ""}${esc(line.source_label)}</span>
           </td>
           <td class="amt ${line.amount_g < 0 ? "minus" : "plus"}">${signed(line.amount_g)}</td>
           <td class="bal">${line.balance_after_g}</td>
+          <!-- The X is offered even on a retired spool: it is how a whole-spool discard
+               is undone, and how an entry on a deleted spool is voided without
+               restitution (docs/14 §14.4.1). The modal is where the branch is taken.
+               The reassign arrow is not — see rowActions for why it has no such
+               branch. -->
+          <td class="acts">${this.rowActions(line)}</td>
         </tr>`,
       )
       .join("");
@@ -1088,28 +1290,135 @@ class FilamentLedgerPanel extends HTMLElement {
           </div>
         </div>
 
-        <div class="bar">
-          <button class="primary" data-action="dialog" data-id="weigh">Weigh</button>
-          <button data-action="dialog" data-id="adjust">Adjust</button>
-          <button data-action="dialog" data-id="discard">Discard</button>
-          <button data-action="dialog" data-id="edit-spool">Edit</button>
-        </div>
+        ${
+          deleted
+            ? `<div class="note">
+                 This spool is in the trash — treated as never registered, counted in
+                 nothing. Its history is below, whole and unchanged, and restoring brings
+                 both back.
+                 <div class="bar" style="margin-top:10px">
+                   <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">Restore this spool</button>
+                 </div>
+               </div>`
+            : `<div class="bar">
+                 <button class="primary" data-action="dialog" data-id="weigh">Weigh</button>
+                 <button data-action="dialog" data-id="adjust">Adjust</button>
+                 <button data-action="dialog" data-id="discard">Discard</button>
+                 <button data-action="dialog" data-id="edit-spool">Edit</button>
+                 <button data-action="spool-intent" data-id="${esc(spool.id)}">Remove…</button>
+               </div>`
+        }
 
         <div class="card ledger-wrap">
           <h3>Movement history</h3>
           <div class="scroll">
             <table class="ledger">
-              <thead><tr><th>When</th><th>Entry</th><th class="r">Amount</th><th class="r">Balance</th></tr></thead>
+              <thead><tr><th>When</th><th>Entry</th><th class="r">Amount</th><th class="r">Balance</th><th class="r">Correct</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
           </div>
           <div class="checksum">${esc(sum)} = <b>${spool.balance_exact_g.toFixed(1)} g</b></div>
           <p class="muted small">
             Read bottom-up it is a derivation, not an assertion. Nothing above can be edited —
-            a correction is a new row.
+            a correction is a new row. Deleted entries stay here, struck through, with the
+            row that returned their grams beside them: this is the one view that hides
+            nothing, because it is the view that proves the total.
           </p>
         </div>
       </section>`;
+  }
+
+  // -- trash -------------------------------------------------------------------------
+
+  trashView() {
+    const trash = this._trash;
+    const spools = trash?.spools ?? [];
+    const movements = trash?.movements ?? [];
+    if (!spools.length && !movements.length) {
+      return `
+      <div class="empty teach">
+        <h2>The trash is empty.</h2>
+        <p>
+          Deleted spools and deleted history entries wait here, and everything can be
+          restored. Nothing in the ledger is ever truly gone — a deletion is one more
+          entry, not one less.
+        </p>
+      </div>`;
+    }
+
+    return `
+      <section class="stack">
+        ${spools.length ? this.trashSpools(spools) : ""}
+        ${movements.length ? this.trashMovements(movements) : ""}
+      </section>`;
+  }
+
+  trashSpools(spools) {
+    const rows = spools
+      .map(
+        (spool) => `
+      <div class="trash-row">
+        <span class="hist-dot" style="background:${esc(spool.colour)}"></span>
+        <span class="trash-name">${esc(spool.name)}</span>
+        <span class="muted small">${esc(spool.material)} · ${spool.balance_g} g ·
+          ${esc(spool.movement_count)} entries · deleted ${esc(when(spool.deleted_at))}</span>
+        <span class="trash-acts">
+          <button data-action="open" data-id="${esc(spool.id)}">Open</button>
+          <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">Restore</button>
+        </span>
+      </div>`,
+      )
+      .join("");
+    return `
+      <div class="card trash-card">
+        <h3>Spools</h3>
+        <p class="muted small">Registered by mistake, so counted in nothing. Restoring
+          returns each one to storage — its old slot was freed and is not reclaimed — and
+          its history comes back with it.</p>
+        ${rows}
+      </div>`;
+  }
+
+  trashMovements(movements) {
+    const rows = movements.map((entry) => this.trashMovementRow(entry)).join("");
+    return `
+      <div class="card trash-card">
+        <h3>History entries</h3>
+        <p class="muted small">Deleted from the views you read every day, never from the
+          ledger. The entry and the row that returned its grams are both still there, in
+          the spool's own history.</p>
+        ${rows}
+      </div>`;
+  }
+
+  trashMovementRow(entry) {
+    const back = entry.amount_g < 0 ? "returned" : "removed";
+    const action = entry.restorable
+      ? `<button class="primary" data-action="restore-movement" data-id="${esc(entry.movement_id)}">Restore</button>`
+      : `<span class="muted small">${esc(this._notRestorable(entry))}</span>`;
+    return `
+      <div class="trash-row">
+        <span class="hist-dot" style="background:${esc(entry.spool_colour)}"></span>
+        <span class="trash-name">${esc(entry.spool_name)}</span>
+        <span class="muted small">${esc(entry.label)} ·
+          <b>${esc(Math.abs(entry.amount_g).toFixed(1))} g</b> ${back} ·
+          deleted ${esc(when(entry.voided_at))}${entry.reason ? ` · ${esc(entry.reason)}` : ""}</span>
+        <span class="trash-acts">${action}</span>
+      </div>`;
+  }
+
+  /**
+   * Why a chapter offers an explanation instead of a button (docs/14 §14.4.4).
+   *
+   * The server computes `restorable`; this only names which of the two rules said no, so
+   * the sentence and the decision can never disagree about a third case.
+   */
+  _notRestorable(entry) {
+    if (!entry.had_restitution) {
+      return "nothing was returned when this was deleted; the ledger still counts it";
+    }
+    if (entry.spool_deleted) return "restore this entry's spool first";
+    return "this entry's spool was discarded — there is nothing to deduct from";
   }
 
   // -- dialogs -----------------------------------------------------------------------
@@ -1127,6 +1436,10 @@ class FilamentLedgerPanel extends HTMLElement {
       mount: () => this.mountForm(),
       "dismiss-review": () => this.dismissReviewForm(),
       "edit-spool": () => this.editSpoolForm(),
+      reassign: () => this.reassignForm(),
+      "void-movement": () => this.voidMovementForm(),
+      "restore-movement": () => this.restoreMovementForm(),
+      "spool-intent": () => this.spoolIntentBody(),
     };
     const body = bodies[this._dialog.kind];
     return `
@@ -1299,13 +1612,174 @@ class FilamentLedgerPanel extends HTMLElement {
       </form>`;
   }
 
+  /**
+   * Move a charge to the spool that actually fed the print (docs/14 §14.3).
+   *
+   * **The modal states what will happen to the grams before anything is sent**, and the
+   * figures it prints are the ones the ledger will hold: both legs are |amount| of the
+   * entry named in `movement_id`, to one decimal, which is the precision a single
+   * movement is known to.
+   */
+  reassignForm() {
+    const subject = this._movementSubject(this._dialog.movement_id);
+    if (!subject) return this.staleSubject();
+    const moved = Math.abs(subject.amount_g).toFixed(1);
+    // The same filter the review card's picker applies: a spool that is out of inventory
+    // cannot be charged, and the backend refuses it (docs/14 §14.3).
+    const options = this._spools
+      .filter((s) => s.id !== subject.spool_id && s.state !== "DISCARDED" && s.state !== "DELETED")
+      .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`)
+      .join("");
+    if (!options) {
+      return `<h3>Reassign this charge</h3>
+        <p class="muted">There is no other spool in inventory to charge.</p>
+        ${this.formActions(null)}`;
+    }
+    return `
+      <form data-form="reassign">
+        <h3>Reassign this charge</h3>
+        <p class="cx-says">
+          Return <b>${esc(moved)} g</b> to <b>${esc(subject.spool_name)}</b>, and charge
+          <b>${esc(moved)} g</b> to the spool you choose. The original entry stays in
+          history, marked as reassigned.
+        </p>
+        <label>Charge it to<select name="to_spool_id">${options}</select></label>
+        <label>Note<input name="note" placeholder="optional"></label>
+        <p class="muted small">No reason is required: the pair names both spools and links
+          back to the entry it corrects, so it explains itself.</p>
+        ${this.formActions("Reassign")}
+      </form>`;
+  }
+
+  /**
+   * The X on a history row (docs/14 §14.4.1).
+   *
+   * Three branches, and the retired-spool ones are not a refusal dressed as a choice:
+   * grams only return to a spool that is in inventory, so the modal says which route back
+   * exists and offers the honest alternative — delete the entry without getting anything
+   * back, and say why.
+   */
+  voidMovementForm() {
+    const subject = this._movementSubject(this._dialog.movement_id);
+    if (!subject) return this.staleSubject();
+    const moved = Math.abs(subject.amount_g).toFixed(1);
+    const name = esc(subject.spool_name);
+    // The owner's sentence, and its honest inverse. Voiding an entry that *added*
+    // filament removes those grams again — saying "returns" there would be a lie in the
+    // one place the panel is promising exactly what will happen.
+    const promise =
+      subject.amount_g < 0
+        ? `This returns <b>${esc(moved)} g</b> to <b>${name}</b>.`
+        : `This removes <b>${esc(moved)} g</b> from <b>${name}</b>.`;
+
+    if (subject.retirement) {
+      return this.voidRetiredForm(subject, moved, name);
+    }
+    return `
+      <form data-form="void-movement">
+        <h3>Delete this entry?</h3>
+        <p class="cx-says">${promise}</p>
+        <label>Reason<input name="reason" placeholder="optional"></label>
+        <p class="muted small">Nothing is erased. The entry leaves the views you read
+          every day and waits in the trash; the ledger records the deletion and the grams
+          coming back as two more rows.</p>
+        ${this.formActions("Delete entry")}
+      </form>`;
+  }
+
+  voidRetiredForm(subject, moved, name) {
+    const deleted = subject.retirement === "DELETED";
+    const explain = deleted
+      ? `<b>${name}</b> is in the trash, so there is nowhere for
+         <b>${esc(moved)} g</b> to go back to.`
+      : `<b>${name}</b> was discarded, so there is nowhere for
+         <b>${esc(moved)} g</b> to go back to.`;
+    const route = deleted
+      ? `<button class="primary" type="button" data-action="void-restore-spool"
+          data-id="${esc(subject.spool_id)}">Restore the spool first</button>`
+      : `<p class="muted small">The way back for a discarded spool is to delete its
+          whole-spool discard entry: that returns the balance and the spool together, in
+          one operation.</p>`;
+    return `
+      <form data-form="void-movement">
+        <h3>Delete this entry?</h3>
+        <p class="cx-says">${explain}</p>
+        ${route}
+        <input type="hidden" name="without_restitution" value="1">
+        <label>Why nothing comes back<input name="reason" required placeholder="say what happened"></label>
+        <p class="muted small">Required here. The entry still counts toward its spool's
+          balance — only the views change — and a deletion with no explanation reads as a
+          bug six months later. This one cannot be restored afterwards.</p>
+        ${this.formActions("Delete without returning grams")}
+      </form>`;
+  }
+
+  restoreMovementForm() {
+    const entry = (this._trash?.movements ?? []).find(
+      (m) => m.movement_id === this._dialog.movement_id,
+    );
+    if (!entry) return this.staleSubject();
+    const moved = Math.abs(entry.amount_g).toFixed(1);
+    const name = esc(entry.spool_name);
+    const promise =
+      entry.amount_g < 0
+        ? `Deduct <b>${esc(moved)} g</b> from <b>${name}</b> again?`
+        : `Add <b>${esc(moved)} g</b> to <b>${name}</b> again?`;
+    return `
+      <form data-form="restore-movement">
+        <h3>Restore this entry?</h3>
+        <p class="cx-says">${promise}</p>
+        <p class="muted small">The entry returns to your history and the ledger records
+          the restoration as one more row. Nothing that happened is rewritten.</p>
+        ${this.formActions("Restore")}
+      </form>`;
+  }
+
+  /**
+   * The X on a spool asks what actually happened (docs/14 §14.4.3). Two answers, two
+   * different facts about the world, and one line each so neither is picked by accident.
+   */
+  spoolIntentBody() {
+    const spool =
+      this._spools.find((s) => s.id === this._dialog.spool_id) ??
+      (this._detail?.id === this._dialog.spool_id ? this._detail : null);
+    if (!spool) return this.staleSubject();
+    const id = esc(spool.id);
+    return `
+      <h3>Remove ${esc(spool.name)}</h3>
+      <p class="muted">What actually happened to it?</p>
+      <div class="intent">
+        <button data-action="intent-discard" data-id="${id}">I threw it away</button>
+        <small>A real event: the remaining ${spool.balance_g} g counts as waste in your
+          statistics, and the spool keeps its history.</small>
+      </div>
+      <div class="intent">
+        <button data-action="intent-delete" data-id="${id}">It was registered by mistake</button>
+        <small>Treats it as never registered — counted in nothing, anywhere, and
+          restorable from the Trash.</small>
+      </div>
+      ${this.formActions(null)}`;
+  }
+
+  /**
+   * A modal whose subject went away underneath it — a refresh landed while it was open.
+   * Says so instead of rendering a blank box or, worse, figures from a stale row.
+   */
+  staleSubject() {
+    return `<h3>That entry has moved on</h3>
+      <p class="muted">The ledger changed while this was open. Close this and try again —
+        nothing was sent.</p>
+      ${this.formActions(null)}`;
+  }
+
   discardForm() {
+    const whole = this._dialog?.mode === "whole_spool";
     return `
       <form data-form="discard">
         <h3>Discard</h3>
         <label>What<select name="mode">
-          <option value="partial">Part of this spool</option>
-          <option value="whole_spool">The whole spool</option>
+          <option value="partial" ${whole ? "" : "selected"}>Part of this spool</option>
+          <option value="whole_spool" ${whole ? "selected" : ""}>The whole spool</option>
         </select></label>
         <label>Amount (g), if partial<input name="amount_g" type="number" step="0.1" min="0"></label>
         <label>Reason<input name="reason" required placeholder="tangled section"></label>
@@ -1552,6 +2026,48 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
 .ed-corr { display: flex; flex-direction: column; gap: 12px; padding-top: 14px;
   border-top: 1px solid var(--divider-color, #e0e0e0); }
 .ed-corr p { margin: 0; }
+
+/* Corrections — docs/14 §14.3, §14.4. */
+.spool-body { position: relative; }
+.card-x { position: absolute; top: -4px; right: -6px; border: 0; background: none;
+  color: var(--secondary-text-color); font-size: 18px; line-height: 1; padding: 4px 7px;
+  border-radius: 8px; opacity: .55; }
+.card-x:hover { opacity: 1; color: var(--error-color, #c62828);
+  background: var(--secondary-background-color, #f5f5f5); }
+
+table.ledger td.acts { text-align: right; white-space: nowrap; padding-left: 10px; }
+.rowact { padding: 3px 9px; font-size: 13px; line-height: 1.3; margin-left: 4px;
+  color: var(--secondary-text-color); }
+.rowact:hover { color: var(--primary-text-color); }
+.rowact.danger:hover { color: var(--error-color, #c62828);
+  border-color: var(--error-color, #c62828); }
+
+/* A voided row is struck through, never omitted: the detail view is the derivation
+   surface, and hiding a row there would break the visible closed sum. */
+table.ledger tr.voided td.when, table.ledger tr.voided td.what,
+table.ledger tr.voided td.amt { text-decoration: line-through; opacity: .6; }
+table.ledger tr.voided td.what span { text-decoration: none; }
+.chip-void { display: inline-block; margin-left: 7px; font-size: 10px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; text-decoration: none;
+  border-radius: 999px; padding: 1px 8px; color: var(--error-color, #c62828);
+  border: 1px solid currentColor; vertical-align: 1px; }
+
+.trash-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 8px; }
+.trash-card h3 { margin: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--secondary-text-color); font-weight: 700; }
+.trash-card p { margin: 0 0 4px; }
+.trash-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 9px 0; border-top: 1px solid var(--divider-color, #f0f0f0); font-size: 13.5px; }
+.trash-name { font-weight: 500; }
+.trash-acts { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.trash-acts button { padding: 5px 12px; font-size: 12.5px; }
+
+/* The sentence a correction modal commits to before anything is sent. */
+.cx-says { margin: 0; line-height: 1.6; padding: 11px 13px; border-radius: 8px;
+  background: var(--secondary-background-color, #f5f5f5); font-size: 14px; }
+.intent { display: flex; flex-direction: column; gap: 5px; padding: 11px 0;
+  border-top: 1px solid var(--divider-color, #eee); }
+.intent button { align-self: flex-start; }
 
 @media (max-width: 600px) { main { padding: 12px; } .detail { gap: 12px; } }
 `;

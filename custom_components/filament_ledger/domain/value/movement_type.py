@@ -37,6 +37,11 @@ class MovementType(StrEnum):
     MANUAL_ADJUSTMENT = "MANUAL_ADJUSTMENT"
     RECONCILIATION = "RECONCILIATION"
     DISCARD = "DISCARD"
+    # The three correction types of docs/adr/0007. A correction is *more* history: each of
+    # these is a new, linked entry, and the entry it corrects is never touched.
+    VOID_REVERSAL = "VOID_REVERSAL"
+    REINSTATEMENT = "REINSTATEMENT"
+    REASSIGNMENT = "REASSIGNMENT"
 
     @property
     def direction(self) -> Direction:
@@ -54,7 +59,11 @@ class MovementType(StrEnum):
           them to approve it would be asking them to approve themselves.
 
         Everything else is either inferred, or a correction whose approval *is* the act of
-        entering it.
+        entering it. `VOID_REVERSAL`, `REINSTATEMENT` and `REASSIGNMENT` are the second
+        kind: none of them can reach the ledger except through a user pressing a button in
+        a modal that already stated the grams, so there is nothing left to approve
+        afterwards — and they are still not *unattended*, which is what this property
+        answers (docs/14 §14.3, §14.4).
         """
         return self not in (MovementType.PRINT_CONSUMPTION, MovementType.OPENING_BALANCE)
 
@@ -78,4 +87,16 @@ _DIRECTION: dict[MovementType, Direction] = {
     # A correction and a scale reading can both go either way.
     MovementType.MANUAL_ADJUSTMENT: Direction.EITHER,
     MovementType.RECONCILIATION: Direction.EITHER,
+    # The three correction types, all `EITHER`, each for its own reason (docs/14 §14.7):
+    #
+    # - `VOID_REVERSAL` is the exact negation of whatever was voided, so voiding a
+    #   +6.2 g reconciliation must be able to produce −6.2 g.
+    # - `REINSTATEMENT` repeats the original with the same sign, so it inherits the
+    #   original's freedom.
+    # - `REASSIGNMENT` is *one* type for both legs of a compensating pair, distinguished
+    #   by sign — splitting it into a credit type and a debit type would make every query
+    #   that asks "was this a reassignment?" ask twice.
+    MovementType.VOID_REVERSAL: Direction.EITHER,
+    MovementType.REINSTATEMENT: Direction.EITHER,
+    MovementType.REASSIGNMENT: Direction.EITHER,
 }

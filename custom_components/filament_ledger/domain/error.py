@@ -33,6 +33,17 @@ class SpoolDiscardedError(DomainError):
     """The spool has been thrown away. It accepts no movements and cannot move."""
 
 
+class SpoolDeletedError(DomainError):
+    """The spool's registration was retracted — it was never really here (docs/14 §14.4.3).
+
+    Distinct from `SpoolDiscardedError` because the two say opposite things about the
+    world: a discard is a real event that counts as waste, a deletion is a bookkeeping
+    correction that counts as nothing. They also differ in what the user should do next —
+    a discard is final, a deletion is undone from the Trash — and an error that cannot
+    tell the two apart cannot say so.
+    """
+
+
 class DuplicateTagNotConfirmedError(DomainError):
     """Registering a spool whose tag already belongs to another, without saying so.
 
@@ -89,6 +100,69 @@ class UnresolvedSlotError(DomainError):
 
 class NothingToRecordError(DomainError):
     """The requested operation would produce a zero movement, which records nothing."""
+
+
+class MovementNotVoidableError(DomainError):
+    """This kind of entry is never deleted from the history the user sees (docs/14 §14.4.1).
+
+    Two types refuse, each for its own reason, and the message says which:
+
+    - `OPENING_BALANCE` — a spool is born with a ledger entry (UC-01), so a spool whose
+      opening entry is voided has a balance with no origin. The operation that removes a
+      mistaken registration is *delete the spool*, which retires the whole story coherently.
+    - `VOID_REVERSAL` — a correction is corrected through its own flow, restore, never by
+      voiding the correction, which would fork the provenance chain into two competing
+      readings of the same grams.
+    """
+
+
+class MovementAlreadyVoidedError(DomainError):
+    """The entry already has an open void chapter.
+
+    A movement is voided at most once, ever: `movement_void`'s primary key enforces it and
+    the use case checks first so the refusal is a sentence rather than a constraint name.
+    Chains re-void the *reinstatement*, which is a different movement with a different id,
+    so the key never has to bend (docs/14 §14.4.2).
+    """
+
+
+class MovementNotVoidedError(DomainError):
+    """Nothing to restore: the entry has no void chapter, or its chapter is already closed.
+
+    Restoring twice would deduct the grams twice, and in a ledger a duplicate entry is
+    indistinguishable from a real one after the fact.
+    """
+
+
+class VoidNotReinstatableError(DomainError):
+    """The void returned nothing, so there is nothing to deduct again (docs/14 §14.4.1).
+
+    A without-restitution void is terminal by construction: the spool was out of inventory
+    when the entry was deleted, no reversal was written, and the movement still sums into
+    its balance. "Deduct it again" would double-charge. If the grams should move after all,
+    UC-10's free-form adjustment is the honest tool and the void row's reason is the
+    pointer to why.
+    """
+
+
+class RestitutionUnavailableError(DomainError):
+    """The grams have nowhere to go back to (docs/14 §14.4.1).
+
+    Filament only returns to a spool that is in inventory; a reversal landing on a
+    discarded or deleted spool would be a balance change nobody can see. Refused rather
+    than silently downgraded to a without-restitution void, because a silent downgrade is
+    a gram count that changed meaning without the user noticing.
+    """
+
+
+class MovementNotReassignableError(DomainError):
+    """Only a charge can be moved to another spool (docs/14 §14.3).
+
+    An entry that *added* filament has no charge to move. The rule is read off the entry's
+    own sign rather than off its type alone, because the correction types are
+    direction-`EITHER` and a reassignment's debit leg is itself reassignable — which is
+    exactly the chain the specification calls legal and honest.
+    """
 
 
 class EstimationUnavailableError(DomainError):

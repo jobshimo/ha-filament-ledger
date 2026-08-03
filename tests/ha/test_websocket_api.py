@@ -973,17 +973,27 @@ class TestMovements:
 
     async def test_the_panel_sees_the_documented_row_shape(self, ws: WsClient) -> None:
         """Everything the History table renders (docs/06 §6.6), in one payload, newest
-        first: amounts signed at one decimal, source verbatim, the nullable trio null."""
+        first: amounts signed at one decimal, source verbatim, the nullable trio null.
+
+        Since docs/14 §14.4 the row also names its own subject — `movement_id`,
+        `spool_id`, the entry's `direction` and whether it is `voided` — so a row action
+        can be offered or withheld without a second query.
+        """
         spool_id = await a_created_spool(ws, label="PLA Basic Black")
         await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-100, reason="lamp shade")
 
-        assert await ws.result_list(MOVEMENTS) == [
+        rows = await ws.result_list(MOVEMENTS)
+
+        assert [{k: v for k, v in row.items() if k != "movement_id"} for row in rows] == [
             {
                 "occurred_at": EPOCH.isoformat(),
+                "spool_id": spool_id,
                 "spool_name": "PLA Basic Black",
                 "spool_colour": "#000000",
                 "type": "MANUAL_ADJUSTMENT",
                 "amount_g": -100.0,
+                "direction": "DECREASE",
+                "voided": False,
                 "source": "USER_CONFIRMED",
                 "job_name": None,
                 "review_id": None,
@@ -991,16 +1001,25 @@ class TestMovements:
             },
             {
                 "occurred_at": EPOCH.isoformat(),
+                "spool_id": spool_id,
                 "spool_name": "PLA Basic Black",
                 "spool_colour": "#000000",
                 "type": "OPENING_BALANCE",
                 "amount_g": 1000.0,
+                # An opening balance is the one entry that only ever goes one way, and
+                # the row says so from its own sign rather than from its type.
+                "direction": "INCREASE",
+                "voided": False,
                 "source": "USER_CONFIRMED",
                 "job_name": None,
                 "review_id": None,
                 "note": "Registered",
             },
         ]
+        # Distinct, non-null, and the handle every correction command takes.
+        ids = [row["movement_id"] for row in rows]
+        assert all(ids)
+        assert len(set(ids)) == 2
 
     async def test_an_approved_estimate_carries_its_job_name_and_review_id(
         self, ws: WsClient, harness: Harness
@@ -1014,17 +1033,21 @@ class TestMovements:
 
         newest = (await ws.result_list(MOVEMENTS))[0]
 
-        assert newest == {
+        assert {k: v for k, v in newest.items() if k != "movement_id"} == {
             "occurred_at": EPOCH.isoformat(),
+            "spool_id": spool_id,
             "spool_name": "Bambu Lab PLA",
             "spool_colour": "#000000",
             "type": "ESTIMATED_CONSUMPTION",
             "amount_g": -71.0,
+            "direction": "DECREASE",
+            "voided": False,
             "source": "USER_CONFIRMED",
             "job_name": "bracket_v3.gcode.3mf",
             "review_id": review_id,
             "note": "Slot 1 of a reviewed print",
         }
+        assert newest["movement_id"]
 
     async def test_the_limit_caps_from_the_newest_end(self, ws: WsClient) -> None:
         spool_id = await a_created_spool(ws)

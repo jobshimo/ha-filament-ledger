@@ -12,7 +12,7 @@ from typing import Protocol
 from .service.anomaly_detector import Anomaly
 from .value.confidence import Confidence
 from .value.grams import Grams
-from .value.identifiers import PrintJobId, ReviewId, SlotIndex, SpoolId, TagUid
+from .value.identifiers import MovementId, PrintJobId, ReviewId, SlotIndex, SpoolId, TagUid
 from .value.movement_type import MovementType
 from .value.review import ReviewReason, ReviewState
 
@@ -45,6 +45,67 @@ class MovementRecorded(DomainEvent):
     movement_type: MovementType
     amount: Grams
     new_balance: Grams
+
+
+@dataclass(frozen=True, slots=True)
+class MovementVoided(DomainEvent):
+    """An entry left the history the user sees, and the grams came back (docs/14 §14.4.1).
+
+    `returned` is `None` for a void without restitution — the spool was out of inventory,
+    nothing was reversed, and the entry still sums into its balance. An automation that
+    treats a missing figure as zero would be wrong in exactly the case that matters, so
+    the absence travels as an absence.
+    """
+
+    movement_id: MovementId
+    spool_id: SpoolId
+    returned: Grams | None
+
+
+@dataclass(frozen=True, slots=True)
+class MovementReinstated(DomainEvent):
+    """A void chapter was closed: the entry is back and the grams went out again."""
+
+    movement_id: MovementId
+    spool_id: SpoolId
+    deducted: Grams
+
+
+@dataclass(frozen=True, slots=True)
+class MovementReassigned(DomainEvent):
+    """A charge moved to the spool that actually fed the print (docs/14 §14.3).
+
+    `amount` is the magnitude that moved, stated positive: it was credited to
+    `from_spool_id` and debited from `to_spool_id`, and naming it once with both spools
+    beside it is clearer than two signed figures a listener has to pair up.
+    """
+
+    movement_id: MovementId
+    from_spool_id: SpoolId
+    to_spool_id: SpoolId
+    amount: Grams
+
+
+@dataclass(frozen=True, slots=True)
+class SpoolDeleted(DomainEvent):
+    """A registration was retracted — the spool was never really here (docs/14 §14.4.3)."""
+
+    spool_id: SpoolId
+    display_name: str  # always Spool.display_name, which is never None
+
+
+@dataclass(frozen=True, slots=True)
+class SpoolRestored(DomainEvent):
+    """A spool came back to inventory, with its history intact.
+
+    Raised by both routes out of retirement: restoring a deleted spool from the Trash, and
+    the un-discard that voiding a whole-spool `DISCARD` performs. One fact — *this spool
+    counts again* — so one event, rather than two an automation would have to handle
+    identically.
+    """
+
+    spool_id: SpoolId
+    display_name: str  # always Spool.display_name, which is never None
 
 
 @dataclass(frozen=True, slots=True)

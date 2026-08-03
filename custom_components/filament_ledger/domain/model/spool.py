@@ -11,7 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from ..error import InvalidValueError, SpoolDiscardedError, TagNotEditableError
+from ..error import (
+    InvalidValueError,
+    SpoolDeletedError,
+    SpoolDiscardedError,
+    TagNotEditableError,
+)
 from ..value.colour import Colour
 from ..value.grams import Grams
 from ..value.identifiers import SlotIndex, SpoolId, TagSource, TagUid, new_spool_id
@@ -42,6 +47,11 @@ class Spool:
     tag_uid: TagUid | None = None
     tag_source: TagSource | None = None
     discarded_at: datetime | None = None
+    # The registration, retracted (docs/14 §14.4.3). Stored separately from
+    # `discarded_at` on purpose: a discard is a real-world event that counts as waste,
+    # a deletion is a bookkeeping statement that counts as nothing, anywhere — and only
+    # one of the two is meant to come back.
+    deleted_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.opening_weight.is_positive:
@@ -68,6 +78,21 @@ class Spool:
         return self.discarded_at is not None
 
     @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
+    @property
+    def is_in_inventory(self) -> bool:
+        """Neither thrown away nor retracted — the only state grams can return to.
+
+        The one question three separate rules ask (docs/14 §14.3, §14.4.1, §14.4.2), so
+        it is asked in one place: a reassignment target, a restitution and a
+        reinstatement all require it, and each for the same reason — a balance change on
+        a retired spool is a balance change nobody can see.
+        """
+        return not self.is_discarded and not self.is_deleted
+
+    @property
     def is_tag_editable(self) -> bool:
         """Everything except a tag the printer attached (docs/14 §14.2).
 
@@ -82,6 +107,7 @@ class Spool:
             discarded_at=self.discarded_at,
             balance=balance,
             movement_count=movement_count,
+            deleted_at=self.deleted_at,
         )
 
     def remaining_percentage(self, balance: Grams) -> Percentage:
@@ -109,13 +135,30 @@ class Spool:
             msg = f"spool {self.id} was discarded on {self.discarded_at:%Y-%m-%d}"
             raise SpoolDiscardedError(msg)
 
+    def _guard_in_inventory(self) -> None:
+        """Refuse every ordinary transition on a retired spool, by either route.
+
+        Deletion has to guard as tightly as discarding does, and one guard short is the
+        whole bug: the partial unique indexes learned to ignore deleted spools
+        (migration 0003), so a deleted spool mounted into a slot would sit there
+        *alongside* whatever the index still sees — two spools in slot 1, and the
+        invariant that says otherwise looking away.
+        """
+        self._guard_not_discarded()
+        if self.is_deleted:
+            msg = (
+                f"spool {self.id} was deleted on {self.deleted_at:%Y-%m-%d} — "
+                f"restore it from the trash first"
+            )
+            raise SpoolDeletedError(msg)
+
     def moved_to(self, location: Location) -> Spool:
         """Change location. Records no movement — moving a spool consumes no filament.
 
         Keeping *location change* and *quantity change* strictly separate is how an
         inventory system avoids starting to lie.
         """
-        self._guard_not_discarded()
+        self._guard_in_inventory()
         return replace(self, location=location)
 
     def mounted_in(self, slot: SlotIndex) -> Spool:
@@ -128,9 +171,55 @@ class Spool:
         return self.moved_to(Storage())
 
     def discarded(self, at: datetime) -> Spool:
-        """Terminal. Retained in full, with its history intact, but out of active stock."""
-        self._guard_not_discarded()
+        """Thrown away. Retained in full, with its history intact, but out of active stock.
+
+        Counts as waste in every statistic, which is the difference between this and
+        `deleted` below — the two answers to the intent modal's one question, *did you
+        throw it away, or was it registered by mistake?* (docs/14 §14.4.3).
+        """
+        self._guard_in_inventory()
         return replace(self, location=Storage(), discarded_at=at)
+
+    def deleted(self, at: datetime) -> Spool:
+        """Retract the registration: the spool was never really here (docs/14 §14.4.3).
+
+        **Frees the slot in the same breath.** Location is cleared to storage because a
+        spool that was never here cannot be occupying a tray, and because the partial
+        unique indexes now ignore deleted rows — leaving the slot recorded would keep a
+        ghost in an AMS position no index is watching any more.
+
+        Writes no movement. Deletion is a location-and-state change, and UC-03's strict
+        separation of location change from quantity change extends to it: the grams are
+        not consumed, they simply stop being counted, and the spool's whole history comes
+        back the moment it is restored.
+        """
+        self._guard_in_inventory()
+        return replace(self, location=Storage(), deleted_at=at)
+
+    def restored(self) -> Spool:
+        """Bring a deleted spool back — and its history with it.
+
+        The old slot is *not* reclaimed. It was freed on delete and something else may be
+        in it; silently displacing that spool would be the ledger making a physical claim
+        it has no way to check. The spool returns to storage, where the user puts it back.
+        """
+        if not self.is_deleted:
+            msg = f"spool {self.id} is not deleted, so there is nothing to restore"
+            raise InvalidValueError(msg)
+        return replace(self, deleted_at=None)
+
+    def restored_from_discard(self) -> Spool:
+        """The un-discard, used only by the void of a whole-spool `DISCARD`.
+
+        Not an operation of its own and not offered anywhere: voiding the discard entry
+        returns the entire balance, and leaving the spool `DISCARDED` would strand those
+        grams outside inventory. The void of the discard *is* the restore — one recorded
+        operation, not two (docs/14 §14.4.1).
+        """
+        if not self.is_discarded:
+            msg = f"spool {self.id} is not discarded, so there is no discard to undo"
+            raise InvalidValueError(msg)
+        return replace(self, discarded_at=None)
 
     def with_details(
         self,
@@ -143,7 +232,7 @@ class Spool:
     ) -> Spool:
         """Edit metadata. **Never the balance** — that requires a movement, and that is the
         whole design."""
-        self._guard_not_discarded()
+        self._guard_in_inventory()
         return replace(
             self,
             label=label if label is not None else self.label,
@@ -166,7 +255,7 @@ class Spool:
         next sync. The guard lives here rather than only in the use case so that no future
         caller can route around it.
         """
-        self._guard_not_discarded()
+        self._guard_in_inventory()
         if not self.is_tag_editable:
             msg = (
                 f"tag {self.tag_uid} on {self.display_name} was attached by the printer "

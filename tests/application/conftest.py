@@ -22,6 +22,10 @@ from custom_components.filament_ledger.application.adjust_spool import (
     AdjustSpool,
     DiscardFilament,
 )
+from custom_components.filament_ledger.application.delete_spool import (
+    DeleteSpool,
+    RestoreSpool,
+)
 from custom_components.filament_ledger.application.detect_spool import DetectSpool
 from custom_components.filament_ledger.application.move_spool import (
     EditSpoolDetails,
@@ -29,6 +33,7 @@ from custom_components.filament_ledger.application.move_spool import (
     UnmountSpool,
 )
 from custom_components.filament_ledger.application.query import Queries
+from custom_components.filament_ledger.application.reassign_movement import ReassignMovement
 from custom_components.filament_ledger.application.reconcile_spool import ReconcileSpool
 from custom_components.filament_ledger.application.record_print_consumption import (
     RecordPrintConsumption,
@@ -41,6 +46,10 @@ from custom_components.filament_ledger.application.review_queue import (
 )
 from custom_components.filament_ledger.application.track_print_job import TrackPrintJob
 from custom_components.filament_ledger.application.use_cases import UseCases
+from custom_components.filament_ledger.application.void_movement import (
+    RestoreMovement,
+    VoidMovement,
+)
 from custom_components.filament_ledger.domain.event import DomainEvent
 from custom_components.filament_ledger.infrastructure.estimation.linear_progress_estimator import (
     LinearProgressEstimator,
@@ -52,6 +61,9 @@ from custom_components.filament_ledger.infrastructure.persistence.database impor
 )
 from custom_components.filament_ledger.infrastructure.persistence.movement_repository import (
     SqliteMovementRepository,
+)
+from custom_components.filament_ledger.infrastructure.persistence.movement_void_repository import (
+    SqliteMovementVoidRepository,
 )
 from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
     SqlitePrintJobRepository,
@@ -97,7 +109,12 @@ class RecordingEventBus:
     async def publish(self, event: DomainEvent) -> None:
         self.published.append(event)
 
-    def of(self, kind: type[DomainEvent]) -> list[DomainEvent]:
+    def of[T: DomainEvent](self, kind: type[T]) -> list[T]:
+        """Generic in the event type, so a scenario can read the payload it filtered for.
+
+        The alternative is an `isinstance` assertion after every filter — ceremony that
+        says nothing a reader did not already know from the line above it.
+        """
         return [event for event in self.published if isinstance(event, kind)]
 
 
@@ -117,6 +134,7 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
 
     spools = SqliteSpoolRepository(database)
     movements = SqliteMovementRepository(database)
+    voids = SqliteMovementVoidRepository(database)
     jobs = SqlitePrintJobRepository(database)
     reviews = SqliteReviewRepository(database)
     clock = FakeClock()
@@ -155,7 +173,14 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             open_pending_review=open_pending_review,
             approve_review=ApproveReview(reviews, spools, movements, clock, events, database),
             dismiss_review=DismissReview(reviews, clock, events, database),
-            queries=Queries(spools=spools, movements=movements, reviews=reviews, jobs=jobs),
+            reassign_movement=ReassignMovement(spools, movements, voids, clock, events, database),
+            void_movement=VoidMovement(spools, movements, voids, clock, events, database),
+            restore_movement=RestoreMovement(spools, movements, voids, clock, events, database),
+            delete_spool=DeleteSpool(spools, clock, events, database),
+            restore_spool=RestoreSpool(spools, events, database),
+            queries=Queries(
+                spools=spools, movements=movements, reviews=reviews, jobs=jobs, voids=voids
+            ),
         ),
         clock=clock,
         events=events,

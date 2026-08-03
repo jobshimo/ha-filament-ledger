@@ -43,15 +43,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
     from .application.adjust_spool import AdjustSpool, DiscardFilament
+    from .application.delete_spool import DeleteSpool, RestoreSpool
     from .application.detect_spool import DetectSpool
     from .application.move_spool import EditSpoolDetails, MountSpool, UnmountSpool
     from .application.query import Queries
+    from .application.reassign_movement import ReassignMovement
     from .application.reconcile_spool import ReconcileSpool
     from .application.record_print_consumption import RecordPrintConsumption
     from .application.register_spool import RegisterSpool
     from .application.review_queue import ApproveReview, DismissReview, OpenPendingReview
     from .application.track_print_job import TrackPrintJob
     from .application.use_cases import UseCases
+    from .application.void_movement import RestoreMovement, VoidMovement
     from .const import (
         CONF_ANOMALY_THRESHOLD,
         CONF_AUTO_MOUNT_ON_RFID,
@@ -76,6 +79,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .infrastructure.ha.websocket_api import async_register_commands
     from .infrastructure.persistence.database import Database
     from .infrastructure.persistence.movement_repository import SqliteMovementRepository
+    from .infrastructure.persistence.movement_void_repository import (
+        SqliteMovementVoidRepository,
+    )
     from .infrastructure.persistence.print_job_repository import SqlitePrintJobRepository
     from .infrastructure.persistence.review_repository import SqliteReviewRepository
     from .infrastructure.persistence.spool_repository import SqliteSpoolRepository
@@ -89,6 +95,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
 
     spools = SqliteSpoolRepository(database)
     movements = SqliteMovementRepository(database)
+    # Its own repository because it is its own thing: a status record *about* a movement,
+    # never a movement. That separation is what lets `MovementRepository` go on exposing
+    # no update and no delete (docs/adr/0007).
+    voids = SqliteMovementVoidRepository(database)
     jobs = SqlitePrintJobRepository(database)
     reviews = SqliteReviewRepository(database)
     clock = SystemClock()
@@ -104,6 +114,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         movements=movements,
         reviews=reviews,
         jobs=jobs,
+        voids=voids,
         confidence=ConfidenceEvaluator(),
         anomalies=anomalies,
     )
@@ -158,6 +169,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             reviews, spools, movements, clock, events, database, anomalies
         ),
         dismiss_review=DismissReview(reviews, clock, events, database),
+        # v1.0's corrections. Each one brackets its read-compute-write in the same unit of
+        # work every other use case uses, and publishes after the commit.
+        reassign_movement=ReassignMovement(
+            spools, movements, voids, clock, events, database, anomalies
+        ),
+        void_movement=VoidMovement(spools, movements, voids, clock, events, database, anomalies),
+        restore_movement=RestoreMovement(
+            spools, movements, voids, clock, events, database, anomalies
+        ),
+        delete_spool=DeleteSpool(spools, clock, events, database),
+        restore_spool=RestoreSpool(spools, events, database),
         queries=queries,
     )
 

@@ -288,6 +288,78 @@ class TestMigration0003AddsCorrectionsProvenanceAndTheTrash:
         finally:
             await database.close()
 
+    async def test_the_new_link_columns_are_writable_at_insert(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The claim the whole release stands on, stated the other way round.
+
+        The immutability triggers fire `BEFORE UPDATE` and `BEFORE DELETE` — an INSERT is
+        free, whatever columns it fills. So a correction can name the entry it corrects on
+        the row itself without the triggers ever being confronted, let alone modified
+        (docs/14 §14.7). Checked at the SQL layer, because that is where a future
+        `UPDATE`-based shortcut would be tempting.
+        """
+        database, staged = await _staged_at_version_two(tmp_path, monkeypatch)
+        try:
+            await database.execute(LEGACY_SPOOL, ("spool", None))
+            await database.execute(LEGACY_MOVEMENT, ("original", "spool"))
+            _stage_0003(staged)
+            assert await database.migrate() == 3
+
+            await database.execute(
+                "INSERT INTO movement (id, spool_id, type, amount_mg, source, occurred_at, "
+                "recorded_at, reassigns_movement_id, reinstates_movement_id) "
+                "VALUES ('correction', 'spool', 'REASSIGNMENT', -1000, 'USER_CONFIRMED', "
+                "datetime('now'), datetime('now'), 'original', 'original')"
+            )
+
+            row = await database.fetch_one(
+                "SELECT reassigns_movement_id, reinstates_movement_id FROM movement "
+                "WHERE id = 'correction'"
+            )
+            assert row is not None
+            assert tuple(row) == ("original", "original")
+            # And the entry it points at is untouched, which is the point of doing it
+            # this way rather than with a flag.
+            untouched = await database.fetch_one(
+                "SELECT reassigns_movement_id FROM movement WHERE id = 'original'"
+            )
+            assert untouched is not None
+            assert untouched["reassigns_movement_id"] is None
+        finally:
+            await database.close()
+
+    async def test_the_void_table_accepts_a_chapter_and_enforces_its_checks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`movement_void` is the one table written after insert, so its two CHECK clauses
+        are the last line between a status record and a second source of truth."""
+        database, staged = await _staged_at_version_two(tmp_path, monkeypatch)
+        try:
+            await database.execute(LEGACY_SPOOL, ("spool", None))
+            await database.execute(LEGACY_MOVEMENT, ("original", "spool"))
+            _stage_0003(staged)
+            assert await database.migrate() == 3
+
+            await database.execute(
+                "INSERT INTO movement_void (movement_id, voided_at, reason) "
+                "VALUES ('original', datetime('now'), 'nothing came back')"
+            )
+            # A chapter is closed by both facts together or neither.
+            with pytest.raises(sqlite3.IntegrityError):
+                await database.execute(
+                    "UPDATE movement_void SET reinstated_at = datetime('now') "
+                    "WHERE movement_id = 'original'"
+                )
+            # And a void that returned nothing can never be reinstated at all.
+            with pytest.raises(sqlite3.IntegrityError):
+                await database.execute(
+                    "UPDATE movement_void SET reinstated_at = datetime('now'), "
+                    "reinstatement_movement_id = 'original' WHERE movement_id = 'original'"
+                )
+        finally:
+            await database.close()
+
     async def test_running_the_runner_again_changes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

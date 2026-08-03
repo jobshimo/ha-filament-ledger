@@ -24,8 +24,14 @@ from .database import Database
 COLUMNS = (
     "id, material, material_other, colour, vendor, label, opening_weight_mg, "
     "core_weight_mg, location_kind, location_slot, tag_uid, tag_source, registered_at, "
-    "discarded_at"
+    "discarded_at, deleted_at"
 )
+
+# Both retirements, in one predicate. Every read that means "in inventory" uses this
+# string rather than spelling the clause out again: docs/14 §14.4.5's visibility table
+# gives discarded and deleted spools the same answer in every row except the global
+# history, and one place to state that is one place to get it wrong.
+IN_INVENTORY = "discarded_at IS NULL AND deleted_at IS NULL"
 
 
 def _iso(moment: datetime) -> str:
@@ -103,6 +109,7 @@ def _to_spool(row: sqlite3.Row) -> Spool:
         tag_uid=tag,
         tag_source=_tag_source_from(row["tag_source"], tag),
         discarded_at=_parse(row["discarded_at"]),
+        deleted_at=_parse(row["deleted_at"]),
     )
 
 
@@ -111,21 +118,35 @@ class SqliteSpoolRepository:
     database: Database
 
     async def get(self, spool_id: SpoolId) -> Spool | None:
+        """Unfiltered on purpose — the Trash reaches a deleted spool's detail through here."""
         row = await self.database.fetch_one(
             f"SELECT {COLUMNS} FROM spool WHERE id = ?", (spool_id,)
         )
         return _to_spool(row) if row else None
 
     async def find_by_tag(self, tag: TagUid) -> list[Spool]:
-        """Every non-discarded spool carrying this tag — plural, because duplicates are
-        legal and the caller has to be told when the answer is ambiguous."""
+        """Every **in-inventory** spool carrying this tag — plural, because duplicates are
+        legal and the caller has to be told when the answer is ambiguous.
+
+        Deleted spools drop out alongside discarded ones (docs/14 §14.4). A spool
+        retracted as never-registered that went on matching its tag would demand a
+        duplicate-confirmation about a spool the user cannot see anywhere, and would keep
+        answering the printer's RFID reads with a reel that is out of the ledger.
+        """
         rows = await self.database.fetch_all(
-            f"SELECT {COLUMNS} FROM spool WHERE tag_uid = ? AND discarded_at IS NULL",
+            f"SELECT {COLUMNS} FROM spool WHERE tag_uid = ? AND {IN_INVENTORY}",
             (tag.value,),
         )
         return [_to_spool(row) for row in rows]
 
     async def find_by_location(self, location: Location) -> Spool | None:
+        """Who is in this position — and a retired spool is in none.
+
+        Deletion clears the location in the same transaction that sets `deleted_at`, so
+        this predicate is belt and braces; it is here because the partial unique indexes
+        stopped watching deleted rows in migration 0003, and a read that still saw one
+        would report an occupant no constraint is defending.
+        """
         kind, slot = _location_columns(location)
         if kind == "STORAGE":
             # Storage is not a unique position; "which spool is in storage" has no answer.
@@ -133,7 +154,7 @@ class SqliteSpoolRepository:
         row = await self.database.fetch_one(
             f"SELECT {COLUMNS} FROM spool "
             f"WHERE location_kind = ? AND (location_slot IS ? OR location_slot = ?) "
-            f"AND discarded_at IS NULL",
+            f"AND {IN_INVENTORY}",
             (kind, slot, slot),
         )
         return _to_spool(row) if row else None
@@ -141,8 +162,15 @@ class SqliteSpoolRepository:
     async def list(self, criteria: SpoolFilter) -> list[Spool]:
         clauses: list[str] = []
         params: list[object] = []
-        if not criteria.include_discarded:
-            clauses.append("discarded_at IS NULL")
+        if criteria.deleted_only:
+            # The Trash's query. It inverts rather than widens, so the include flags have
+            # nothing left to say and are deliberately not consulted.
+            clauses.append("deleted_at IS NOT NULL")
+        else:
+            if not criteria.include_discarded:
+                clauses.append("discarded_at IS NULL")
+            if not criteria.include_deleted:
+                clauses.append("deleted_at IS NULL")
         if criteria.mounted_only:
             clauses.append("location_kind != 'STORAGE'")
         if criteria.search:
@@ -162,8 +190,8 @@ class SqliteSpoolRepository:
             INSERT INTO spool (
                 id, material, material_other, colour, vendor, label,
                 opening_weight_mg, core_weight_mg, location_kind, location_slot,
-                tag_uid, tag_source, registered_at, discarded_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+                tag_uid, tag_source, registered_at, discarded_at, deleted_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 material = excluded.material,
                 material_other = excluded.material_other,
@@ -176,6 +204,7 @@ class SqliteSpoolRepository:
                 tag_uid = excluded.tag_uid,
                 tag_source = excluded.tag_source,
                 discarded_at = excluded.discarded_at,
+                deleted_at = excluded.deleted_at,
                 updated_at = datetime('now')
             """,
             (
@@ -193,5 +222,6 @@ class SqliteSpoolRepository:
                 spool.tag_source.value if spool.tag_source else None,
                 _iso(spool.registered_at),
                 _iso(spool.discarded_at) if spool.discarded_at else None,
+                _iso(spool.deleted_at) if spool.deleted_at else None,
             ),
         )

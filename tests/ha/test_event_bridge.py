@@ -14,13 +14,18 @@ from custom_components.filament_ledger.domain.event import (
     AnomalyDetected,
     ConfidenceDegraded,
     DomainEvent,
+    MovementReassigned,
     MovementRecorded,
+    MovementReinstated,
+    MovementVoided,
     ReviewOpened,
     ReviewResolved,
+    SpoolDeleted,
     SpoolDepleted,
     SpoolDetected,
     SpoolMounted,
     SpoolRegistered,
+    SpoolRestored,
     SpoolUnmounted,
     UnknownSpoolDetected,
 )
@@ -31,6 +36,7 @@ from custom_components.filament_ledger.domain.service.anomaly_detector import (
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    MovementId,
     PrintJobId,
     ReviewId,
     SlotIndex,
@@ -163,6 +169,61 @@ class TestTranslation:
                     "candidate_spool_ids": ["spool-1", "spool-2"],
                 },
                 id="a-tag-matches-two-spools",
+            ),
+            # The corrections of docs/14 §14.3-§14.4. Each one is a fact an automation
+            # can act on, and the linkage travels with it so a listener never has to
+            # re-derive which entry was corrected.
+            pytest.param(
+                MovementVoided(
+                    movement_id=MovementId("mv-1"), spool_id=SPOOL, returned=Grams.of("84.1")
+                ),
+                "filament_ledger_movement_voided",
+                {"movement_id": "mv-1", "spool_id": "spool-1", "returned_g": 84.1},
+                id="an-entry-is-deleted-and-the-grams-come-back",
+            ),
+            pytest.param(
+                MovementVoided(movement_id=MovementId("mv-1"), spool_id=SPOOL, returned=None),
+                "filament_ledger_movement_voided",
+                # Null, never zero: nothing came back, and a listener reading a zero
+                # would be wrong in exactly the case that matters.
+                {"movement_id": "mv-1", "spool_id": "spool-1", "returned_g": None},
+                id="an-entry-is-deleted-without-restitution",
+            ),
+            pytest.param(
+                MovementReinstated(
+                    movement_id=MovementId("mv-1"), spool_id=SPOOL, deducted=Grams.of("-84.1")
+                ),
+                "filament_ledger_movement_reinstated",
+                {"movement_id": "mv-1", "spool_id": "spool-1", "deducted_g": -84.1},
+                id="an-entry-is-restored",
+            ),
+            pytest.param(
+                MovementReassigned(
+                    movement_id=MovementId("mv-1"),
+                    from_spool_id=SPOOL,
+                    to_spool_id=SpoolId("spool-2"),
+                    amount=Grams.of("84.1"),
+                ),
+                "filament_ledger_movement_reassigned",
+                {
+                    "movement_id": "mv-1",
+                    "from_spool_id": "spool-1",
+                    "to_spool_id": "spool-2",
+                    "amount_g": 84.1,
+                },
+                id="a-charge-moves-to-the-spool-that-fed-the-print",
+            ),
+            pytest.param(
+                SpoolDeleted(spool_id=SPOOL, display_name="PLA Basic Black"),
+                "filament_ledger_spool_deleted",
+                {"spool_id": "spool-1", "name": "PLA Basic Black"},
+                id="a-registration-is-retracted",
+            ),
+            pytest.param(
+                SpoolRestored(spool_id=SPOOL, display_name="PLA Basic Black"),
+                "filament_ledger_spool_restored",
+                {"spool_id": "spool-1", "name": "PLA Basic Black"},
+                id="a-spool-comes-back-to-inventory",
             ),
         ],
     )

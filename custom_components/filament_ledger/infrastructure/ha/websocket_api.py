@@ -23,9 +23,11 @@ from ...application.adjust_spool import (
 )
 from ...application.errors import ApplicationError
 from ...application.move_spool import UNSET, TagEdit
+from ...application.reassign_movement import ReassignMovementCommand
 from ...application.reconcile_spool import ReconcileSpoolCommand
 from ...application.register_spool import RegisterSpoolCommand
 from ...application.review_queue import ApproveReviewCommand, DismissReviewCommand
+from ...application.void_movement import VoidMovementCommand
 from ...const import DOMAIN
 from ...domain.error import DomainError
 from ...domain.value.colour import Colour
@@ -33,6 +35,7 @@ from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
     MAX_AMS_SLOT,
     MIN_AMS_SLOT,
+    MovementId,
     ReviewId,
     SlotIndex,
     SpoolId,
@@ -46,6 +49,7 @@ from .serialisers import (
     pending_review,
     spool_detail,
     spool_summary,
+    trash_result,
     tray_sync_result,
     whole_grams,
 )
@@ -75,6 +79,12 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_reviews_dismiss,
         handle_trays_sync,
         handle_movements,
+        handle_movements_reassign,
+        handle_movements_void,
+        handle_movements_restore,
+        handle_spools_delete,
+        handle_spools_restore,
+        handle_trash,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -506,6 +516,141 @@ async def handle_movements(
     runtime = _runtime(hass)
     lines = await runtime.use_cases.queries.movement_history(limit=int(msg.get("limit", 100)))
     connection.send_result(msg["id"], [movement_line(line) for line in lines])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/movements/reassign",
+        vol.Required("movement_id"): str,
+        vol.Required("to_spool_id"): str,
+        # Optional, unlike UC-10's mandatory reason, and the difference is principled: a
+        # reassignment explains itself structurally — the link names the entry it corrects
+        # and the pair names both spools (docs/14 §14.3).
+        vol.Optional("note"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_movements_reassign(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Move a charge to the spool that actually fed the print.
+
+    No HA service mirrors this one. The correction surface is anchored in History rows
+    that the service grammar cannot reference usably, and the curated service list grows
+    only when an automation story exists (docs/14 §14.3).
+    """
+    runtime = _runtime(hass)
+    moved = await runtime.use_cases.reassign_movement.execute(
+        ReassignMovementCommand(
+            movement_id=MovementId(msg["movement_id"]),
+            to_spool_id=SpoolId(msg["to_spool_id"]),
+            note=msg.get("note") or None,
+        )
+    )
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True, "moved_g": float(moved.as_decimal)})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/movements/void",
+        vol.Required("movement_id"): str,
+        vol.Optional("reason"): vol.Any(str, None),
+        # **Must be explicitly true** for the no-return branch. The server refuses a
+        # restitution void on a retired spool rather than silently downgrading it: a
+        # silent downgrade is a gram count that changed meaning without the user
+        # noticing (docs/14 §14.4).
+        vol.Optional("without_restitution"): bool,
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_movements_void(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The X on a history row: the entry leaves the default views, the grams come back.
+
+    `returned_g` is **null** for a without-restitution void — nothing came back, and a
+    zero would say something different and false.
+    """
+    runtime = _runtime(hass)
+    returned = await runtime.use_cases.void_movement.execute(
+        VoidMovementCommand(
+            movement_id=MovementId(msg["movement_id"]),
+            reason=msg.get("reason") or None,
+            without_restitution=bool(msg.get("without_restitution", False)),
+        )
+    )
+    await runtime.async_refresh()
+    connection.send_result(
+        msg["id"],
+        {
+            "ok": True,
+            "returned_g": float(returned.as_decimal) if returned is not None else None,
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/movements/restore", vol.Required("movement_id"): str}
+)
+@websocket_api.async_response
+@guarded
+async def handle_movements_restore(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The symmetric question, answered: deduct those grams from the spool again."""
+    runtime = _runtime(hass)
+    deducted = await runtime.use_cases.restore_movement.execute(MovementId(msg["movement_id"]))
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True, "deducted_g": float(deducted.as_decimal)})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/spools/delete", vol.Required("spool_id"): str}
+)
+@websocket_api.async_response
+@guarded
+async def handle_spools_delete(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """*Registered by mistake* — the second answer of the intent modal (docs/14 §14.4.3).
+
+    The first answer, *thrown away*, calls the existing `spools/discard`. No command here
+    duplicates it: a discard is a real-world event that counts as waste, and giving it a
+    second entry point would eventually give it a second meaning.
+    """
+    runtime = _runtime(hass)
+    await runtime.use_cases.delete_spool.execute(SpoolId(msg["spool_id"]))
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/spools/restore", vol.Required("spool_id"): str}
+)
+@websocket_api.async_response
+@guarded
+async def handle_spools_restore(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Back to inventory, in storage, with its history — visibility was derived all along."""
+    runtime = _runtime(hass)
+    await runtime.use_cases.restore_spool.execute(SpoolId(msg["spool_id"]))
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/trash"})
+@websocket_api.async_response
+@guarded
+async def handle_trash(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Deleted spools and open void chapters — a view over facts, not a holding pen."""
+    runtime = _runtime(hass)
+    connection.send_result(msg["id"], trash_result(await runtime.use_cases.queries.trash()))
 
 
 @callback
