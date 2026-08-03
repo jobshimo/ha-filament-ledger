@@ -151,28 +151,59 @@ log.
 integration partly because HACS is its distribution channel. Publishing is mostly
 discipline, not code.
 
-**Contract.**
+**Contract**, with what the packaging pass delivered marked against each item.
 
-- `hacs.json` at the repository root (name, minimum HA version matching what CI tests
-  against).
-- `README.md` rewritten for users, not developers: what it does, screenshots of the
-  panel (inventory, review, history — the three views that tell the story), install
-  steps, the explicit **hybrid-mode warning** — never ask a user to enable LAN mode;
-  it is a cloud kill switch, not a transport setting
-  ([12 — Field Notes](12-field-notes.md)).
-- A submission to `home-assistant/brands` (domain `filament_ledger`, icon) — required
-  for the integration to render properly in the UI, and it has review lead time, so it
-  goes first.
-- **Semantic releases via GitHub Actions**: tag-driven; the workflow verifies the gate
-  suite (pytest, ruff, mypy, hassfest) on the tagged SHA, updates nothing by hand.
-- **Version discipline in `manifest.json`**: the `version` field
+- **✅ `hacs.json` at the repository root** (name, minimum HA version matching what CI
+  tests against). Verified rather than extended: `name`, `homeassistant: 2026.7.4` and
+  `render_readme: true` are the complete set this repository needs. `content_in_root`
+  stays absent because the integration lives under `custom_components/`, which is the
+  default; `zip_release` stays absent because releases ship repository contents rather
+  than an attached archive, and the key is only meaningful paired with `filename`. A
+  key added "for completeness" is a key that has to be kept true.
+- **✅ `README.md` rewritten for users, not developers**: hero, requirements, HACS and
+  manual install, the four config options in plain words, the first-run golden path, a
+  section per panel view, how the accounting works, and a troubleshooting section whose
+  entries are the questions the field notes predict. The explicit **hybrid-mode
+  warning** is a callout in Requirements — never ask a user to enable LAN mode; it is a
+  cloud kill switch, not a transport setting ([12 — Field Notes](12-field-notes.md)).
+  **Screenshots are commented-out placeholders** (`docs/img/*.png`, one per view) —
+  the markup is in place and the images are the owner's to capture from a real
+  instance; an invented screenshot would be the one lie the rest of this document
+  exists to prevent.
+- **✅ Contribution and release surface**: `CONTRIBUTING.md` (the four gates, the no-HA
+  subset, architecture tests as law, docs as the contract, and the §14.9
+  hand-verification obligation for any `www/` change — there is no JS harness, so the
+  checklist *is* the panel's test suite), `RELEASING.md` (the exact bump→tag→release
+  sequence), and `.github/ISSUE_TEMPLATE/` — the bug template asks for HA version,
+  `ha-bambulab` version, printer model, connection mode and **what History shows**,
+  because this is a ledger and almost every question about it is answered by the
+  entries.
+- **⬜ A submission to `home-assistant/brands`** (domain `filament_ledger`, icon) —
+  required for the integration to render properly in the UI, and it has review lead
+  time, so it goes first. Not done: it needs an icon asset that does not exist in this
+  repository yet. `RELEASING.md` carries the process and the 256×256/512×512
+  requirement.
+- **⬜ HACS default-store inclusion** (`hacs/default`) — blocked on brands and on a
+  first published release. Until then the README documents the custom-repository path,
+  which needs nothing from anybody else and is a normal way to ship.
+- **⬜ Semantic releases via GitHub Actions**: tag-driven; the workflow verifies the gate
+  suite (pytest, ruff, mypy, hassfest) on the tagged SHA, updates nothing by hand. Not
+  built — `ci.yml` runs on push and pull request only, nothing runs on a tag.
+  `RELEASING.md` documents the manual sequence and names this gap rather than implying
+  a safety net that is not there.
+- **⬜ Version discipline in `manifest.json`**: the `version` field
   (`manifest.json:13`, currently `0.2.0`) is the single version of record; the release
   tag must equal it, and the workflow fails the release when they diverge — two
-  versions that can disagree will.
+  versions that can disagree will. The *rule* is now written in `RELEASING.md` and
+  `CONTRIBUTING.md` (no pull request bumps the version; that is a release-time edit);
+  the *enforcement* waits on the workflow above.
 
 **Acceptance shape.** A clean HACS install on a fresh HA instance reaches a working
 panel with zero manual file operations; the release workflow refuses a tag whose
 manifest disagrees.
+
+**What remains, in order.** Icon asset → brands PR → first tagged release → release
+workflow → `hacs/default` submission. Only the first two have external lead time.
 
 ---
 
@@ -335,7 +366,9 @@ against it and fails on divergence; no other file may carry a version.
 ## 15.9 Sequencing
 
 Within v1.1, order by dependency and cuttability: **15.4 HACS packaging** first (brands
-review has lead time, and everything else benefits from release automation), then
+review has lead time, and everything else benefits from release automation) — its
+documentation and contribution surface is done, and the icon, brands PR, release
+workflow and default-store submission remain, marked item by item in §15.4 — then
 **15.3 attribution** and **15.2 alerts** (small, self-contained), then **15.1 cost**
 and **15.5 export**, then what remains of **15.6 statistics** — the view itself shipped
 early ([06 §6.7](06-ui-spec.md)), and only its cost figures still want §15.1 — and **15.7
