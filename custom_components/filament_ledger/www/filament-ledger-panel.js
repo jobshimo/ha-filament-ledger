@@ -197,6 +197,51 @@ function hms(code) {
   return `HMS ${quad.slice(0, 4)}-${quad.slice(4, 8)}-${quad.slice(8, 12)}-${quad.slice(12, 16)}`;
 }
 
+/**
+ * The three sizes the coil is drawn at, and the one place their geometry is written down.
+ *
+ * `box` is the SVG's own coordinate space and the element's rendered size in CSS pixels —
+ * the charts already work this way (`STATS_BAR_ROW`), and a viewBox that matches the pixel
+ * box means a stroke width is a real width rather than a number to be scaled in the head.
+ */
+const RING_SIZES = {
+  card: { box: 106, r: 46, w: 11 },
+  slot: { box: 130, r: 62, w: 5 },
+  hero: { box: 178, r: 85, w: 6 },
+};
+
+/**
+ * How much filament is left, drawn as an arc.
+ *
+ * Hand-rolled SVG, like every other chart in this panel ([ADR-0006](adr/0006-vanilla-panel.md)
+ * admits no library). Two circles: the track, and an arc whose `stroke-dashoffset` is the
+ * share of the circumference *not* filled. The arc carries the filament's own colour,
+ * because colour is the primary identifier ([06 §6.8](../../../docs/06-ui-spec.md)) and the
+ * ring is the largest surface on the card for it to occupy.
+ *
+ * **This is not the Ring/Profile/3D switcher** ([16 §16.6](../../../docs/16-visual-system.md)
+ * scopes that out as a new capability). It is how a spool is drawn, from percentage and
+ * colour — two values the ledger already holds.
+ *
+ * `aria-hidden`, deliberately: the percentage sits beside it as text, and a screen reader
+ * reading the same figure twice is worse than one that never saw the decoration.
+ */
+function spoolRing(size, percentage, colour) {
+  const { box, r, w } = RING_SIZES[size];
+  const mid = box / 2;
+  const circumference = Math.round(2 * Math.PI * r);
+  const filled = Math.max(0, Math.min(100, Number(percentage) || 0));
+  const offset = Math.round(circumference * (1 - filled / 100));
+  // `color` as well as `stroke`, so the glow can be `currentColor` and the two can never
+  // drift apart into a ring that shines a colour it is not drawn in.
+  return `<svg class="ring" viewBox="0 0 ${box} ${box}" aria-hidden="true"
+      style="--ring-circ:${circumference};color:${esc(colour)}">
+      <circle class="ring-track" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"></circle>
+      <circle class="ring-arc" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"
+        stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
+    </svg>`;
+}
+
 class FilamentLedgerPanel extends HTMLElement {
   constructor() {
     super();
@@ -1240,23 +1285,28 @@ class FilamentLedgerPanel extends HTMLElement {
   spoolCard(spool) {
     const t = this._t;
     const sealed = spool.state === "SEALED";
-    const bar = sealed
+    // A sealed spool is full by construction, so its ring is a closed circle and the word
+    // carries the fact instead of a percentage nobody needs to read.
+    const gauge = sealed
       ? `<span class="chip">${t("inv.sealed")}</span>`
-      : `<div class="barline">
-           <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
-           <span class="pct">${spool.percentage}%</span>
-         </div>`;
+      : `<span class="pct">${spool.percentage}%</span>`;
     return `
       <article class="card spool ${spool.has_anomaly ? "anomaly" : ""}" data-action="open" data-id="${esc(spool.id)}">
         <div class="swatch" style="background:${esc(spool.colour)}"></div>
+        <div class="spool-art">
+          ${spoolRing("card", sealed ? 100 : spool.percentage, spool.colour)}
+          <div class="ring-mid">
+            <span class="ring-pct">${sealed ? 100 : spool.percentage}<small>%</small></span>
+          </div>
+        </div>
         <div class="spool-body">
           <button class="card-x" data-action="spool-intent" data-id="${esc(spool.id)}"
             title="${t("inv.removeSpool")}">×</button>
           <div class="name">${esc(spool.name)}</div>
           <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
           <div class="big">${spool.balance_g}<small> g</small></div>
-          ${bar}
           <div class="foot">
+            ${gauge}
             ${this.confidenceChip(spool.confidence)}
             <span class="muted">· ${this.locationLabel(spool.location)}</span>
           </div>
@@ -1295,7 +1345,12 @@ class FilamentLedgerPanel extends HTMLElement {
       }
       return `<div class="card tray">
         <div class="n">${t("ams.slot", { slot })}</div>
-        <div class="reel" style="background:${esc(spool.colour)}"></div>
+        <div class="tray-art">
+          ${spoolRing("slot", spool.percentage, spool.colour)}
+          <div class="ring-mid">
+            <span class="ring-hub" style="background:${esc(spool.colour)}"></span>
+          </div>
+        </div>
         <div class="name">${esc(spool.name)}</div>
         <div class="big">${spool.balance_g}<small> g</small></div>
         <div class="barline">
@@ -1986,7 +2041,12 @@ class FilamentLedgerPanel extends HTMLElement {
       <section class="stack">
         <button class="link" data-action="back">${t("detail.back")}</button>
         <div class="card detail">
-          <div class="reel-big" style="background:${esc(spool.colour)}"></div>
+          <div class="detail-art">
+            ${spoolRing("hero", spool.percentage, spool.colour)}
+            <div class="ring-mid">
+              <span class="ring-hub hero" style="background:${esc(spool.colour)}"></span>
+            </div>
+          </div>
           <div class="meta">
             <h2>${esc(spool.name)}</h2>
             <div class="big">${spool.balance_g}<small> ${t("detail.ofOpening", {
@@ -2962,6 +3022,33 @@ button.link:hover { color: var(--fl-accent-bright); }
 /* The swatch is the primary identifier (06 §6.8), so it glows with its own colour rather
    than sitting as a flat strip: the filament colour is data, and it leads. */
 .swatch { width: 12px; flex: none; box-shadow: 0 0 18px -2px currentColor; }
+
+/* ---- The coil ---------------------------------------------------------------------
+   An arc of the filament's own colour, at three sizes. Geometry lives in RING_SIZES;
+   this is only how it is painted. Not the Ring/Profile/3D switcher — 16 §16.6 keeps that
+   out as a new capability; this is how a spool is drawn from data the ledger already has. */
+.spool-art { position: relative; width: 106px; height: 106px; flex: none; align-self: center;
+  margin: 16px 0 16px 16px; }
+.tray-art { position: relative; width: 130px; height: 130px; margin: 8px auto 4px; }
+.detail-art { position: relative; width: 178px; height: 178px; flex: none; }
+.ring { display: block; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.ring-track { fill: none; stroke: var(--fl-line); }
+.ring-arc { fill: none; stroke: currentColor; stroke-linecap: round;
+  filter: drop-shadow(0 0 7px currentColor);
+  animation: fl-arc 1.4s var(--fl-ease) both; }
+.ring-mid { position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 4px; pointer-events: none; }
+.ring-pct { font-family: var(--fl-font-mono); font-size: 21px; font-weight: 600;
+  color: var(--fl-ink-bright); letter-spacing: -.02em; }
+.ring-pct small { font-size: 11px; color: var(--fl-ink-faint); margin-left: 1px; }
+/* The hub: the physical core the filament is wound on, and a second place the colour
+   reads at a glance when the arc is nearly empty. */
+.ring-hub { width: 34px; height: 34px; border-radius: 50%; display: block;
+  box-shadow: 0 0 20px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
+  border: 2px solid var(--fl-surface); }
+.ring-hub.hero { width: 54px; height: 54px; border-radius: 50%; display: block;
+  box-shadow: 0 0 26px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
+  border: 3px solid var(--fl-surface); }
 .spool-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .name { font-weight: 600; letter-spacing: -.01em; }
 .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
@@ -3008,7 +3095,6 @@ button.link:hover { color: var(--fl-accent-bright); }
 .tray-actions button { padding: 6px 10px; font-size: 12.5px; flex: 1; }
 
 .detail { display: flex; gap: 16px; padding: 18px; flex-wrap: wrap; }
-.reel-big { width: 60px; height: 60px; border-radius: 10px; flex: none; }
 .detail .meta { flex: 1 1 220px; min-width: 0; }
 .detail h2 { margin: 0 0 4px; font-size: 19px; font-weight: 500; }
 .facts { font-size: 12.5px; color: var(--fl-ink-dim); }
@@ -3258,6 +3344,7 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
 @keyframes fl-pop { from { opacity: 0; transform: translateY(20px) scale(.97); } }
 @keyframes fl-bar { from { transform: scaleX(0); } }
 @keyframes fl-row { from { opacity: 0; transform: translateX(-14px); } }
+@keyframes fl-arc { from { stroke-dashoffset: var(--ring-circ); } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
