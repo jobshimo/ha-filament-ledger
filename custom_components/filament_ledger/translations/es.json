@@ -1,0 +1,121 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Filament Ledger",
+        "description": "Lleve la cuenta real del filamento que le queda, con contabilidad de partida doble en lugar de estimaciones. Todo lo que se elija aquí puede cambiarse después.",
+        "data": {
+          "default_opening_weight": "Peso inicial predeterminado (g)",
+          "default_core_weight": "Peso predeterminado de la bobina vacía (g)",
+          "anomaly_threshold": "Marcar una conciliación que se desvíe más de (%)",
+          "auto_mount_on_rfid": "Montar bobinas automáticamente al detectar el RFID"
+        },
+        "data_description": {
+          "default_opening_weight": "Lo que contiene una bobina nueva. Las de Bambu traen 1000 g.",
+          "default_core_weight": "El carrete desnudo, sin filamento. Una balanza de cocina pesa la bobina entera, así que el registro resta este valor por usted. Los carretes de Bambu rondan los 250 g.",
+          "anomaly_threshold": "Cuando la balanza discrepa del registro por más de esto, algo falla de forma sistemática más arriba y conviene revisarlo.",
+          "auto_mount_on_rfid": "Cuando la impresora lee una etiqueta conocida, registrar esa bobina como montada en esa bandeja. Desactívelo si carga bobinas ya registradas por poco tiempo y prefiere que su ubicación registrada no cambie."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Filament Ledger ya está configurado. Un único inventario es justamente el objetivo."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Filament Ledger",
+        "data": {
+          "default_opening_weight": "Peso inicial predeterminado (g)",
+          "default_core_weight": "Peso predeterminado de la bobina vacía (g)",
+          "anomaly_threshold": "Marcar una conciliación que se desvíe más de (%)",
+          "auto_mount_on_rfid": "Montar bobinas automáticamente al detectar el RFID"
+        }
+      }
+    }
+  },
+  "services": {
+    "register_spool": {
+      "name": "Registrar bobina",
+      "description": "Añade una bobina al inventario. Nace con un movimiento de saldo inicial: no existe un saldo sin una entrada que lo explique.",
+      "fields": {
+        "material": { "name": "Material", "description": "Tipo de filamento." },
+        "material_other": { "name": "Nombre del material", "description": "Solo cuando el material es OTHER." },
+        "colour": { "name": "Color", "description": "RRGGBB o RRGGBBAA, con o sin almohadilla inicial." },
+        "opening_weight": { "name": "Peso inicial", "description": "Filamento neto, sin contar el carrete." },
+        "core_weight": { "name": "Peso de la bobina vacía", "description": "El carrete desnudo. Sirve para convertir una lectura de balanza en masa de filamento." },
+        "vendor": { "name": "Fabricante", "description": "Quién la fabricó." },
+        "label": { "name": "Etiqueta", "description": "Su propio nombre para esta bobina." },
+        "tag_uid": { "name": "Etiqueta RFID", "description": "Opcional. Una etiqueta Bambu identifica un lote, no una bobina." },
+        "confirm_duplicate_tag": { "name": "Permitir etiqueta duplicada", "description": "Dos bobinas del mismo lote comparten etiqueta. Es legítimo, pero tiene que ser deliberado." }
+      }
+    },
+    "reconcile_spool": {
+      "name": "Pesar bobina",
+      "description": "Corrige un saldo contra una medición física. La diferencia queda registrada como movimiento, así la desviación permanece visible en lugar de absorberse en silencio.",
+      "fields": {
+        "spool_id": { "name": "Bobina", "description": "Qué bobina." },
+        "measured_g": { "name": "Peso medido", "description": "Lo que dice la balanza." },
+        "includes_core": { "name": "Incluye el carrete", "description": "Actívelo si pesó la bobina entera." },
+        "note": { "name": "Nota", "description": "Cualquier cosa que valga la pena recordar." }
+      }
+    },
+    "discard_filament": {
+      "name": "Descartar filamento",
+      "description": "Registra filamento tirado a la basura: una bobina entera o una parte de ella.",
+      "fields": {
+        "spool_id": { "name": "Bobina", "description": "Qué bobina." },
+        "mode": { "name": "Modo", "description": "La bobina entera o una cantidad parcial." },
+        "amount_g": { "name": "Cantidad", "description": "Obligatoria para un descarte parcial." },
+        "reason": { "name": "Motivo", "description": "Obligatorio. Dentro de seis meses nadie se acuerda." }
+      }
+    },
+    "adjust_spool": {
+      "name": "Ajustar bobina",
+      "description": "Una corrección libre para los casos que las operaciones específicas no cubren.",
+      "fields": {
+        "spool_id": { "name": "Bobina", "description": "Qué bobina." },
+        "amount_g": { "name": "Cantidad", "description": "En negativo resta, en positivo suma." },
+        "reason": { "name": "Motivo", "description": "Obligatorio. Un ajuste sin explicación es indistinguible de un error." }
+      }
+    },
+    "mount_spool": {
+      "name": "Montar bobina",
+      "description": "Coloca una bobina en una bandeja del AMS. No registra ningún movimiento: mover una bobina no consume filamento.",
+      "fields": {
+        "spool_id": { "name": "Bobina", "description": "Qué bobina." },
+        "slot": { "name": "Bandeja", "description": "Bandeja del AMS, de 1 a 4." }
+      }
+    },
+    "unmount_spool": {
+      "name": "Desmontar bobina",
+      "description": "Devuelve una bobina al almacenamiento. No registra ningún movimiento.",
+      "fields": {
+        "spool_id": { "name": "Bobina", "description": "Qué bobina." }
+      }
+    },
+    "approve_review": {
+      "name": "Aprobar revisión",
+      "description": "Confirma cuánto filamento consumió una impresión interrumpida. Solo la aprobación escribe en el registro: sus cifras siempre prevalecen sobre la estimación.",
+      "fields": {
+        "review_id": { "name": "Revisión", "description": "Qué revisión pendiente." },
+        "amounts": { "name": "Cantidades corregidas", "description": "Gramos indexados por número de bandeja; por ejemplo, la bandeja 1 con 28,4. Sustituye la estimación en las bandejas que se indiquen." },
+        "assign": { "name": "Asignación de bobinas", "description": "Identificador de bobina indexado por número de bandeja; por ejemplo, la bandeja 3 con un identificador de bobina. Resuelve una bandeja que la revisión registró sin bobina." },
+        "note": { "name": "Nota", "description": "Cualquier cosa que valga la pena recordar sobre la decisión." }
+      }
+    },
+    "dismiss_review": {
+      "name": "Descartar revisión",
+      "description": "Resuelve una revisión sin registrar consumo. Es una decisión registrada, no una eliminación.",
+      "fields": {
+        "review_id": { "name": "Revisión", "description": "Qué revisión pendiente." },
+        "note": { "name": "Nota", "description": "Por qué no se registra nada: un fallo en la primera capa, un falso positivo." }
+      }
+    },
+    "sync_trays": {
+      "name": "Sincronizar con la impresora",
+      "description": "Vuelve a leer todas las bandejas del AMS y concilia el registro con lo que la impresora informa en este momento. Las etiquetas conocidas montan su bobina, las desconocidas se informan y nada se inventa. La misma pasada se ejecuta automáticamente al arrancar."
+    }
+  }
+}

@@ -92,30 +92,35 @@ class TraySync:
         slots: list[SlotSyncOutcome] = []
         for reading in (await self.gateway.current_trays()).values():
             await self.detect_spool.execute(reading)
-            slots.append(await self._outcome(reading))
+            slots.append(await slot_outcome(self.spools, reading))
         return TraySyncResult(dormant=False, slots=slots)
 
-    async def _outcome(self, reading: TrayReading) -> SlotSyncOutcome:
-        """Mirror `DetectSpool`'s branches by asking the repositories what is true now.
 
-        The occupant read settles `MOUNTED`: with auto-mount on, the pass just put the
-        resolved spool there; with auto-mount off, whatever the user mounted by hand is
-        still the ledger's honest answer for the slot.
-        """
-        if reading.empty:
-            return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.EMPTY, spool=None)
-        if reading.tag is None:
-            # Occupied, tag unreadable: nothing automatic is possible (UC-02/UC-03), and
-            # naming whatever the ledger has in the slot would dress a guess as a match.
-            return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.NO_TAG, spool=None)
-        candidates = await self.spools.find_by_tag(reading.tag)
-        if not candidates:
-            return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.UNKNOWN_TAG, spool=None)
-        if len(candidates) > 1:
-            return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.AMBIGUOUS_TAG, spool=None)
-        occupant = await self.spools.find_by_location(AmsSlot(reading.slot))
-        if occupant is None:
-            return SlotSyncOutcome(
-                reading=reading, status=SlotSyncStatus.DETECTED, spool=candidates[0]
-            )
-        return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.MOUNTED, spool=occupant)
+async def slot_outcome(spools: SpoolRepository, reading: TrayReading) -> SlotSyncOutcome:
+    """Mirror `DetectSpool`'s branches by asking the repositories what is true now.
+
+    The occupant read settles `MOUNTED`: with auto-mount on, the pass just put the
+    resolved spool there; with auto-mount off, whatever the user mounted by hand is
+    still the ledger's honest answer for the slot.
+
+    **Reads only.** A module function rather than a method of `TraySync` because the
+    Printer tab computes the same per-slot shape *without* running `DetectSpool` first
+    (docs/14 §14.5) — a tab that mutated the ledger by being looked at would violate the
+    reader's reasonable model of "just looking", and giving that path its own copy of
+    these five branches would let the two drift apart.
+    """
+    if reading.empty:
+        return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.EMPTY, spool=None)
+    if reading.tag is None:
+        # Occupied, tag unreadable: nothing automatic is possible (UC-02/UC-03), and
+        # naming whatever the ledger has in the slot would dress a guess as a match.
+        return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.NO_TAG, spool=None)
+    candidates = await spools.find_by_tag(reading.tag)
+    if not candidates:
+        return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.UNKNOWN_TAG, spool=None)
+    if len(candidates) > 1:
+        return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.AMBIGUOUS_TAG, spool=None)
+    occupant = await spools.find_by_location(AmsSlot(reading.slot))
+    if occupant is None:
+        return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.DETECTED, spool=candidates[0])
+    return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.MOUNTED, spool=occupant)

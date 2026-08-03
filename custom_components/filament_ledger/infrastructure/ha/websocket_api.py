@@ -28,7 +28,17 @@ from ...application.reconcile_spool import ReconcileSpoolCommand
 from ...application.register_spool import RegisterSpoolCommand
 from ...application.review_queue import ApproveReviewCommand, DismissReviewCommand
 from ...application.void_movement import VoidMovementCommand
-from ...const import DOMAIN
+from ...const import (
+    CONF_ANOMALY_THRESHOLD,
+    CONF_AUTO_MOUNT_ON_RFID,
+    CONF_DEFAULT_CORE_WEIGHT,
+    CONF_DEFAULT_OPENING_WEIGHT,
+    DEFAULT_ANOMALY_THRESHOLD_PCT,
+    DEFAULT_AUTO_MOUNT_ON_RFID,
+    DEFAULT_CORE_WEIGHT_G,
+    DEFAULT_OPENING_WEIGHT_G,
+    DOMAIN,
+)
 from ...domain.error import DomainError
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
@@ -43,10 +53,12 @@ from ...domain.value.identifiers import (
     TagUid,
 )
 from ...domain.value.material import Material, MaterialKind
-from .runtime import LedgerRuntime, runtimes
+from .printer_state import PrinterSnapshot
+from .runtime import LedgerConfigEntry, LedgerRuntime, loaded_entries, runtimes
 from .serialisers import (
     movement_line,
     pending_review,
+    printer_state,
     spool_detail,
     spool_summary,
     trash_result,
@@ -85,6 +97,9 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_spools_delete,
         handle_spools_restore,
         handle_trash,
+        handle_printer_state,
+        handle_settings_get,
+        handle_settings_update,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -95,6 +110,29 @@ def _runtime(hass: HomeAssistant) -> LedgerRuntime:
         msg = "Filament Ledger is not set up"
         raise ApplicationError(msg)
     return ledgers[0]
+
+
+def _entry(hass: HomeAssistant) -> LedgerConfigEntry:
+    """The config entry the settings commands read and write.
+
+    Resolved the same way `_runtime` resolves its runtime, and refused the same way when
+    nothing is set up: the panel gets a message rather than an exception.
+    """
+    entries = loaded_entries(hass)
+    if not entries:
+        msg = "Filament Ledger is not set up"
+        raise ApplicationError(msg)
+    return entries[0]
+
+
+def _settings(entry: LedgerConfigEntry) -> dict[str, Any]:
+    """The **effective** options: `entry.data` overlaid with `entry.options`.
+
+    This is the composition root's own merge, restated (`__init__.py`). Reading only
+    `options` would report the install-time answers as unset for every user who has never
+    opened the options flow, which is precisely the audience the Settings tab exists for.
+    """
+    return {**entry.data, **entry.options}
 
 
 def _tag_edit(payload: dict[str, Any]) -> TagEdit:
@@ -651,6 +689,110 @@ async def handle_trash(
     """Deleted spools and open void chapters — a view over facts, not a holding pen."""
     runtime = _runtime(hass)
     connection.send_result(msg["id"], trash_result(await runtime.use_cases.queries.trash()))
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/printer/state"})
+@websocket_api.async_response
+@guarded
+async def handle_printer_state(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """One glance at the printer, read-only (docs/14 §14.5).
+
+    **Nothing is written.** The trays are computed with the very reads the sync pass
+    performs, minus `DetectSpool` — a tab that mutated the ledger by being looked at would
+    violate the reader's reasonable model of "just looking", so `async_refresh` is
+    deliberately *not* called here either: there is nothing for the entities to hear.
+
+    A runtime without a wired printer — or a gateway that discovered nothing underneath
+    one — answers `{"dormant": true}` and the tab renders the teaching empty state, in the
+    voice the sync strip already uses: no spinner, no four invented trays.
+    """
+    runtime = _runtime(hass)
+    if runtime.printer is None:
+        connection.send_result(msg["id"], printer_state(PrinterSnapshot(dormant=True)))
+        return
+    connection.send_result(msg["id"], printer_state(await runtime.printer.execute()))
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/settings/get"})
+@websocket_api.async_response
+@guarded
+async def handle_settings_get(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The four options, as they currently take effect (docs/14 §14.6.4).
+
+    Readable by anyone: a hidden tab invites "it's broken", while a labelled read-only one
+    teaches the model. Only the *write* below is an administrative act.
+    """
+    settings = _settings(_entry(hass))
+    connection.send_result(
+        msg["id"],
+        {
+            CONF_DEFAULT_OPENING_WEIGHT: int(
+                settings.get(CONF_DEFAULT_OPENING_WEIGHT, DEFAULT_OPENING_WEIGHT_G)
+            ),
+            CONF_DEFAULT_CORE_WEIGHT: int(
+                settings.get(CONF_DEFAULT_CORE_WEIGHT, DEFAULT_CORE_WEIGHT_G)
+            ),
+            CONF_ANOMALY_THRESHOLD: int(
+                settings.get(CONF_ANOMALY_THRESHOLD, DEFAULT_ANOMALY_THRESHOLD_PCT)
+            ),
+            CONF_AUTO_MOUNT_ON_RFID: bool(
+                settings.get(CONF_AUTO_MOUNT_ON_RFID, DEFAULT_AUTO_MOUNT_ON_RFID)
+            ),
+        },
+    )
+
+
+# Outermost, which is the canonical Home Assistant stacking (`config/entity_registry`):
+# `websocket_command` only tags the function it wraps, and `require_admin` carries the tag
+# forward through `functools.wraps` while running its check *before* the handler is ever
+# scheduled. Stacked the other way round the gate would still hold, but the registered
+# command would be the ungated function — a distinction nobody should have to re-derive.
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/settings/update",
+        # The bounds are the config flow's, restated — for the same reason every adapter
+        # validates: a typo must be a message, not a stack trace. Every field is optional
+        # because the tab may send any subset; the merge below is what keeps the ones it
+        # did not send.
+        vol.Optional(CONF_DEFAULT_OPENING_WEIGHT): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=10000)
+        ),
+        vol.Optional(CONF_DEFAULT_CORE_WEIGHT): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=2000)
+        ),
+        vol.Optional(CONF_ANOMALY_THRESHOLD): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+        vol.Optional(CONF_AUTO_MOUNT_ON_RFID): bool,
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_settings_update(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Change how every user's ledger behaves — which *is* an administrative act.
+
+    `require_admin` is the considered inverse of the panel's own `require_admin=False`
+    (`panel.py`): weighing a spool is not administrative, and changing the anomaly
+    threshold for the whole household is.
+
+    The write goes through `async_update_entry`, which fires the registered update
+    listener and **reloads the entry** — the existing, only mechanism by which an option
+    change takes effect (`DetectSpool` holds `auto_mount` as a plain value on precisely
+    this promise). The tab says so before saving.
+
+    The subset is merged over the *effective* settings, not over `options` alone: writing
+    only what the tab sent would silently revert every option the user has already changed
+    but did not touch this time.
+    """
+    entry = _entry(hass)
+    changes = {key: value for key, value in msg.items() if key not in ("id", "type")}
+    hass.config_entries.async_update_entry(entry, options={**_settings(entry), **changes})
+    connection.send_result(msg["id"], {"ok": True})
 
 
 @callback

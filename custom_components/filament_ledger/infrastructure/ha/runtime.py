@@ -17,6 +17,7 @@ from ...application.query import LedgerSnapshot
 from ...application.use_cases import UseCases
 from ...const import DOMAIN
 from ..persistence.database import Database
+from .printer_state import ReadPrinterState
 from .tray_sync import TraySync
 
 
@@ -36,6 +37,10 @@ class LedgerRuntime:
     # test harnesses that install no printer; production always constructs one, and a
     # printerless install answers through the gateway's own dormant flag instead.
     sync_trays: TraySync | None = None
+    # The read-only printer glance, wired by the composition root beside the pass above.
+    # `None` only in test harnesses that install no printer; a printerless install answers
+    # through the gateway's own dormant flag instead (docs/14 §14.5).
+    printer: ReadPrinterState | None = None
 
     async def async_refresh(self) -> None:
         await self.coordinator.async_request_refresh()
@@ -47,14 +52,25 @@ class LedgerRuntime:
 type LedgerConfigEntry = ConfigEntry[LedgerRuntime]
 
 
+def loaded_entries(hass: HomeAssistant) -> list[LedgerConfigEntry]:
+    """Every set-up Filament Ledger config entry.
+
+    `runtimes` reads the runtime off these. The settings commands (docs/14 §14.6.4) need
+    the entry *itself*: options live on the entry, and writing them goes through
+    `hass.config_entries.async_update_entry`, which is what fires the update listener that
+    reloads the ledger.
+    """
+    return [
+        entry
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN)
+        if getattr(entry, "runtime_data", None) is not None
+    ]
+
+
 def runtimes(hass: HomeAssistant) -> list[LedgerRuntime]:
-    """Every set-up Filament Ledger entry.
+    """Every set-up Filament Ledger entry's runtime.
 
     v1 targets a single ledger. The list is what the websocket layer reads, so supporting
     more later is a change in one place rather than everywhere.
     """
-    return [
-        entry.runtime_data
-        for entry in hass.config_entries.async_loaded_entries(DOMAIN)
-        if getattr(entry, "runtime_data", None) is not None
-    ]
+    return [entry.runtime_data for entry in loaded_entries(hass)]

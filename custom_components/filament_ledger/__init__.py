@@ -73,6 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .infrastructure.ha.bambu_gateway import BambuLabGateway
     from .infrastructure.ha.event_bridge import HomeAssistantEventBus
     from .infrastructure.ha.panel import async_register_panel
+    from .infrastructure.ha.printer_state import ReadPrinterState
     from .infrastructure.ha.runtime import LedgerRuntime
     from .infrastructure.ha.services import async_register_services
     from .infrastructure.ha.tray_sync import TraySync
@@ -201,6 +202,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # sync button and the `sync_trays` service run the very same wiring on demand.
     sync_trays = TraySync(gateway=gateway, detect_spool=use_cases.detect_spool, spools=spools)
 
+    # The Printer tab's read-only glance over the same gateway (docs/14 §14.5). It runs no
+    # use case and writes nothing — the sync above stays the one mutation path.
+    printer = ReadPrinterState(gateway=gateway, spools=spools)
+
     entry.runtime_data = LedgerRuntime(
         database=database,
         use_cases=use_cases,
@@ -211,6 +216,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         ),
         default_core_weight_g=int(settings.get(CONF_DEFAULT_CORE_WEIGHT, DEFAULT_CORE_WEIGHT_G)),
         sync_trays=sync_trays,
+        printer=printer,
     )
 
     async def _tray_changed(reading: TrayReading) -> None:

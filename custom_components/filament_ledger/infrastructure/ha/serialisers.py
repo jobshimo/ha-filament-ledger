@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     # Type-only: `tray_sync` imports the gateway, which imports Home Assistant — and the
     # application test suite imports this module on machines without it. The functions
     # below only read attributes, so the types can stay annotations that never execute.
+    from .bambu_gateway import JobStatus
+    from .printer_state import PrinterSnapshot
     from .tray_sync import SlotSyncOutcome, TraySyncResult
 
 
@@ -257,6 +259,52 @@ def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
         "spool_id": spool.id if spool else None,
         "spool_name": spool.display_name if spool else None,
     }
+
+
+def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
+    """The Printer tab's read-only glance (docs/14 §14.5).
+
+    A dormant gateway answers `{"dormant": true}` **and nothing else**: the panel renders
+    the teaching empty state, and shipping a hull of nulls beside the flag would invite it
+    to render dashes for a printer that is not there.
+
+    Every other figure is nullable, and null means *the printer did not say*. The panel
+    renders each one as a dash, never as a zero — a missing figure is not a figure of zero
+    (docs/04 UC-04 step 2's principle, applied to display).
+    """
+    if snapshot.dormant:
+        return {"dormant": True}
+    job = snapshot.job
+    return {
+        "dormant": False,
+        "status": job.status if job else None,
+        "progress_pct": job.progress.rounded if job and job.progress is not None else None,
+        "current_layer": job.current_layer if job else None,
+        "total_layers": job.total_layers if job else None,
+        "job_name": job.name if job else None,
+        "error": _printer_error(job),
+        # Null until their upstream translation keys are verified on the reference
+        # instance and frozen (`FUTURE_PRINT_SENSOR_KEYS`). An undiscovered sensor
+        # serialises as null, never as an invented value — the gateway's standing policy.
+        "online": snapshot.online,
+        "connection_mode": snapshot.connection_mode,
+        "active_tray": snapshot.active_tray,
+        "trays": [_slot_sync(outcome) for outcome in snapshot.trays],
+    }
+
+
+def _printer_error(job: JobStatus | None) -> dict[str, Any] | None:
+    """The error sensor, or null when it said nothing.
+
+    The code crosses the wire as a **decimal string**, the same rule the review card's
+    `raw_print_error` follows: HMS codes are 64-bit — 0x0300010000020001 already exceeds
+    2^53 — and a JSON number lands in JavaScript as a double, corrupting the code before
+    the panel's `hms()` could format it.
+    """
+    if job is None or job.error is None:
+        return None
+    code = job.error.code
+    return {"active": job.error.active, "code": str(code) if code is not None else None}
 
 
 def spool_detail(detail: SpoolDetail) -> dict[str, Any]:

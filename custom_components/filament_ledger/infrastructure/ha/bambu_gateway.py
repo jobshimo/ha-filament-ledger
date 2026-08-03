@@ -42,9 +42,10 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
@@ -106,6 +107,55 @@ _EXTERNAL_SPOOL_KEY = "External Spool"
 # rather than an honest unknown.
 UNKNOWN_JOB_NAME = "unknown print"
 
+# The three sensors docs/14 §14.5 names for the Printer tab — active tray, online,
+# connection mode — are **deliberately not in `PRINT_SENSOR_KEYS` yet**.
+#
+# Discovery here resolves by `platform` + `translation_key`, never by entity id, and the
+# spec's own rule is that such a key is read off the reference instance's entity registry
+# *before* the constant is frozen (docs/13 — Traps). Guessing a key would break silently
+# for every user: an unmatched key discovers nothing, and the tab would report "no printer
+# reported this" forever without anybody noticing it was our typo.
+#
+# So the Printer tab serialises all three as `null` today — the standing policy for an
+# undiscovered sensor, applied honestly — and freezing them is one line each here plus one
+# reader, once the keys are confirmed. `tests/fixtures/bambu/entity_registry.json` already
+# carries rows whose keys read `active_tray` and `online`; `connection_mode` was never
+# captured. That asymmetry is the reason the trio waits together rather than shipping two
+# thirds of a verified constant.
+FUTURE_PRINT_SENSOR_KEYS = frozenset({"active_tray", "online", "connection_mode"})
+
+
+@dataclass(frozen=True, slots=True)
+class PrinterError:
+    """The error sensor as it reads right now.
+
+    `active` is the binary state; `code` is the verbatim integer off its attributes, or
+    `None` when the sensor exposes none. The two are separate facts: upstream can report
+    an error without a code, and inventing one from the flag would put a searchable HMS
+    quad on the screen that matches nothing.
+    """
+
+    active: bool
+    code: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class JobStatus:
+    """The job sensors at the moment they are asked — the read-only glance of docs/14 §14.5.
+
+    Every field but `name` is nullable, and null means *the sensor did not say*. That is
+    the gateway's standing policy applied to display: a missing figure is not a figure of
+    zero, and the tab renders a dash for each one. `name` alone has a stated fallback
+    (`UNKNOWN_JOB_NAME`), because a blank job name reads as a rendering bug.
+    """
+
+    status: str | None
+    name: str
+    current_layer: int | None
+    total_layers: int | None
+    progress: Percentage | None
+    error: PrinterError | None
+
 
 class BambuLabGateway:
     """`PrinterGateway`, implemented against `ha-bambulab`'s public entity surface.
@@ -134,6 +184,35 @@ class BambuLabGateway:
         after the upstream integration appears re-runs discovery, per the module policy.
         """
         return not self._entity_by_slot
+
+    @property
+    def discovered(self) -> bool:
+        """Whether discovery found anything at all — trays *or* job sensors.
+
+        `dormant` above asks the narrower tray question, because the reconciliation pass
+        has nothing to do without trays. The Printer tab asks the wider one: a machine
+        whose job sensors resolved still has a status worth showing even if its AMS did
+        not, and answering `dormant` there would hide a printer that is plainly present
+        (docs/14 §14.5).
+        """
+        return bool(self._entity_by_slot) or self._printer_device_id is not None
+
+    def current_job_status(self) -> JobStatus:
+        """What the printer says about the job right now.
+
+        Read through the very same total, never-raising readers the lifecycle events use
+        (`_text_state`, `_layer`, `_progress`, `_error_code`), so an unavailable sensor is
+        `None` here exactly as it is there. **Reading writes nothing** — the Printer tab is
+        a glance, and the sync button on Inventory remains the one mutation path.
+        """
+        return JobStatus(
+            status=self._text_state("print_status"),
+            name=self._job_name(),
+            current_layer=self._layer("current_layer"),
+            total_layers=self._total_layers(),
+            progress=self._progress(),
+            error=self._printer_error(),
+        )
 
     def subscribe(self, listener: TrayListener) -> None:
         """Register a listener for tray changes. Registration itself does no I/O.
@@ -334,6 +413,17 @@ class BambuLabGateway:
         if isinstance(code, int) and not isinstance(code, bool):
             return code
         return None
+
+    def _printer_error(self) -> PrinterError | None:
+        """The error sensor as a pair, or `None` when the sensor is absent or unavailable.
+
+        An absent sensor is not a healthy printer — it is a printer that did not say — so
+        it serialises as null rather than as `active: false`.
+        """
+        state = self._sensor_state("print_error")
+        if state is None:
+            return None
+        return PrinterError(active=state.state == STATE_ON, code=self._error_code())
 
     def _per_tray_weights(self) -> dict[SlotIndex, Grams] | None:
         """The weight sensor's per-tray figures, translated — or `None`, never a zero.

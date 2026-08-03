@@ -8,56 +8,46 @@
  *
  * Styling uses Home Assistant's own CSS custom properties throughout, so light, dark and
  * custom themes work without a line of per-theme code.
+ *
+ * **Every user-facing string lives in `i18n.js`** (docs/14 §14.6.1). The acceptance
+ * criterion is a panel source with zero user-facing literals in this file, and since
+ * there is no JavaScript harness to assert it, the rule is enforced by reading: a quoted
+ * sentence outside a `t(...)` call is a review finding.
+ *
+ * Two escaping rules, and they do not overlap:
+ *
+ * - Anything interpolated from the wire — a name, a note, a reason, a job name — goes
+ *   through `esc()` at its call site, exactly as it always has.
+ * - A `t(...)` result is **already safe and is never wrapped in `esc()`**: `t` escapes
+ *   every parameter it substitutes, and several templates carry `<b>` on purpose, so
+ *   escaping the template would print the tags.
  */
 
-const CONFIDENCE = {
-  HIGH: { label: "High", cls: "high" },
-  MEDIUM: { label: "Medium", cls: "med" },
-  LOW: { label: "Low", cls: "low" },
-};
+import {
+  esc,
+  readLanguageOverride,
+  resolveLanguage,
+  translator,
+  writeLanguageOverride,
+} from "./i18n.js";
+
+/** The CSS class per confidence level; the words themselves come from the table. */
+const CONFIDENCE_CLASS = { HIGH: "high", MEDIUM: "med", LOW: "low" };
 
 const MATERIALS = ["PLA", "PETG", "ABS", "ASA", "TPU", "PC", "PA", "PVA", "SUPPORT", "OTHER"];
 
-/**
- * How each EstimatorKind is named on a review card (docs/06 §6.3): provenance is shown so
- * a guess is never mistaken for a measurement. NONE only reaches this map when its figures
- * are non-zero — the printer reported them (domain/value/review.py); the all-zero NONE
- * review renders the distinct no-data banner instead.
- */
-const ESTIMATORS = {
-  LINEAR_PROGRESS: "Estimated from progress · approximate",
-  NONE: "Reported by the printer · not an estimate",
-};
-
 const TABS = [
-  { id: "inventory", label: "Inventory" },
-  { id: "history", label: "History" },
-  { id: "review", label: "Review" },
-  { id: "ams", label: "AMS" },
-  // After AMS: the correction surfaces sit behind the daily ones (docs/14 §14.4.4).
-  { id: "trash", label: "Trash" },
+  "inventory",
+  "history",
+  "review",
+  "ams",
+  // Between AMS and Trash: a glance at the machine sits with the daily surfaces, and the
+  // correction ones sit behind them (docs/14 §14.4.4, §14.5).
+  "printer",
+  "trash",
+  // Last. Configuration is the least-frequent surface (docs/14 §14.6.4).
+  "settings",
 ];
-
-/**
- * How each MovementType reads in the global history (docs/06 §6.6). Deliberately terser
- * than the per-spool labels: the History table shows every spool together, so each word
- * has to earn its column width. "Estimate (confirmed)" keeps the provenance visible — an
- * approved estimate must never read like a measurement.
- */
-const HISTORY_LABELS = {
-  PRINT_CONSUMPTION: "Print",
-  ESTIMATED_CONSUMPTION: "Estimate (confirmed)",
-  MANUAL_ADJUSTMENT: "Adjustment",
-  RECONCILIATION: "Reconciliation",
-  OPENING_BALANCE: "Opening balance",
-  DISCARD: "Discard",
-  PURGE_WASTE: "Purge",
-  // The corrections (docs/14 §14.3, §14.4). Both legs of a reassignment read
-  // "Reassigned"; the row's own note names the counterpart spool.
-  REASSIGNMENT: "Reassigned",
-  VOID_REVERSAL: "Deleted (returned)",
-  REINSTATEMENT: "Restored",
-};
 
 /**
  * The two entry types that never leave the history the user sees (docs/14 §14.4.1), so
@@ -67,19 +57,32 @@ const HISTORY_LABELS = {
 const NOT_VOIDABLE = new Set(["OPENING_BALANCE", "VOID_REVERSAL"]);
 
 /**
- * The note a weight correction made from the edit dialog carries into history. The dialog
- * names itself so that six months later the row explains where the number came from — the
- * same reason every other correction in this panel writes a note it did not have to.
+ * What a figure the printer did not report looks like (docs/14 §14.5).
+ *
+ * A dash, never a zero: a missing figure is not a figure of zero, and rendering one as
+ * the other is exactly the optimistic lie this project exists to prevent.
  */
-const EDIT_CORRECTION_NOTE = "Corrected from the edit dialog";
-
-const esc = (value) =>
-  String(value ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-  );
+const DASH = "—";
 
 const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
 const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
+
+/**
+ * Put an **already-safe** fragment into a `[[token]]` slot of a translated string.
+ *
+ * `t()` escapes every parameter it substitutes, which is exactly right for raw wire data
+ * and exactly wrong for a value that has already been escaped or is deliberately markup —
+ * a second pass would print `&amp;` inside somebody's spool name. This is the other door.
+ *
+ * The replacement is a *function* on purpose: `String.replace` reads `$&`, `` $` `` and
+ * friends in a replacement **string** as back-references, and a backtick is not one of
+ * the characters `esc()` neutralises. A replacer function has no such syntax.
+ *
+ * Global, like `t`'s own substitution: a template may name the same value twice, and
+ * filling only the first would leave a visible `[[token]]` behind.
+ */
+const fill = (template, token, value) =>
+  template.replace(new RegExp(`\\[\\[${token}\\]\\]`, "g"), () => value);
 
 /**
  * The verbatim `print_error` as the searchable HMS quad — AABB-CCDD-EEFF-GGHH, sixteen
@@ -97,16 +100,6 @@ function hms(code) {
   if (hex.length > 16) return code;
   const quad = hex.padStart(16, "0");
   return `HMS ${quad.slice(0, 4)}-${quad.slice(4, 8)}-${quad.slice(8, 12)}-${quad.slice(12, 16)}`;
-}
-
-function when(iso) {
-  if (!iso) return "";
-  const then = new Date(iso);
-  const days = Math.floor((Date.now() - then.getTime()) / 86400000);
-  if (days <= 0) return `Today ${then.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-  if (days === 1) return "Yesterday";
-  if (days < 30) return `${days} days ago`;
-  return then.toLocaleDateString();
 }
 
 class FilamentLedgerPanel extends HTMLElement {
@@ -128,16 +121,103 @@ class FilamentLedgerPanel extends HTMLElement {
     // The last sync's per-slot outcome. Transient by design: dismissed by hand, replaced
     // by the next sync, dropped on a tab change — a report of a moment, not state.
     this._sync = null;
+    // The printer glance and the settings, each fetched only when its tab is opened and
+    // when its own button asks (docs/14 §14.5): no timer, and never on the general
+    // refresh — a glance has a moment, and the moment is the user's.
+    this._printer = null;
+    this._printerLoading = false;
+    this._settings = null;
+    this._settingsLoading = false;
+    this._settingsSaved = false;
+    // Resolved once here so the very first paint is already in the right language; `set
+    // hass` re-resolves as soon as the profile is known.
+    this._applyLanguage();
   }
 
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
-    if (first) this.refresh();
+    if (first) {
+      this._applyLanguage();
+      this.refresh();
+    }
   }
 
   get hass() {
     return this._hass;
+  }
+
+  /** The override, else the Home Assistant profile, else English (docs/14 §14.6.1). */
+  _applyLanguage() {
+    this._lang = resolveLanguage(this._hass);
+    this._t = translator(this._lang);
+  }
+
+  /**
+   * When a movement happened, in words.
+   *
+   * A method rather than a module function because the words are translated, and the
+   * language is a property of this panel instance rather than of the module.
+   */
+  when(iso) {
+    if (!iso) return "";
+    const t = this._t;
+    const then = new Date(iso);
+    const days = Math.floor((Date.now() - then.getTime()) / 86400000);
+    if (days <= 0) {
+      return t("time.today", {
+        time: then.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      });
+    }
+    if (days === 1) return t("time.yesterday");
+    if (days < 30) return t("time.daysAgo", { days });
+    return esc(then.toLocaleDateString());
+  }
+
+  /**
+   * How a movement type reads, in the two registers docs/06 §6.6 distinguishes.
+   *
+   * `hist.*` is the terse global-table wording, `mv.*` the fuller one a single spool's
+   * own history uses. Both are derived from the wire's `type` rather than from its
+   * pre-rendered `label`, because the label the backend computes is English and the
+   * column has to speak the reader's language.
+   *
+   * A type neither table knows renders verbatim rather than as its own key: the wire
+   * value is the honest answer, and inventing a word for it would be worse.
+   */
+  movementLabel(type, scope = "hist") {
+    const key = `${scope}.${type}`;
+    const label = this._t(key);
+    return label === key ? esc(type) : label;
+  }
+
+  /** *confirmed by you* or *automatic* — provenance for the reader (docs/02 §2.4). */
+  sourceLabel(source) {
+    const key = `src.${source}`;
+    const label = this._t(key);
+    return label === key ? esc(source) : label;
+  }
+
+  /**
+   * Where a spool is, rebuilt from the `kind`/`slot` pair rather than printed from the
+   * wire's pre-rendered `label`.
+   *
+   * `describe_location` sends both (`application/query.py`); the label is English, and
+   * the pair is the data it was built from. Rebuilding is the same move `movementLabel`
+   * makes for the same reason — a read model is data, and the sentence around it belongs
+   * to the reader.
+   */
+  locationLabel(location) {
+    const key = `loc.${location?.kind}`;
+    const label = this._t(key, { slot: location?.slot });
+    return label === key ? esc(location?.label ?? "") : label;
+  }
+
+  /** *active*, *sealed*, *discarded*, *deleted* — the derived state, in words. */
+  stateLabel(state) {
+    const key = `state.${state}`;
+    const label = this._t(key);
+    return label === key ? esc(String(state).toLowerCase()) : label;
   }
 
   connectedCallback() {
@@ -208,6 +288,28 @@ class FilamentLedgerPanel extends HTMLElement {
         this._tab = id;
         this._detail = null;
         this._sync = null;
+        // Exactly one command per opening, and none at all for the other tabs: neither
+        // surface rides the general refresh, and no timer exists (docs/14 §14.5).
+        if (id === "printer") this._printerLoading = true;
+        if (id === "settings") {
+          this._settingsLoading = true;
+          // The notice belongs to the save that produced it, not to the tab.
+          this._settingsSaved = false;
+        }
+        this.render();
+        if (id === "printer") this._loadPrinter();
+        if (id === "settings") this._loadSettings();
+        break;
+      case "refresh-printer":
+        this._printerLoading = true;
+        this.render();
+        this._loadPrinter();
+        break;
+      case "set-language":
+        // A device preference, not ledger state: no backend call, and the panel repaints
+        // in the new language immediately (docs/14 §14.6.1).
+        writeLanguageOverride(target.dataset.lang);
+        this._applyLanguage();
         this.render();
         break;
       case "sync-trays":
@@ -338,6 +440,60 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
+   * One printer glance (docs/14 §14.5).
+   *
+   * Called from exactly two places — opening the tab and pressing Refresh — so the count
+   * of calls is the count of the user's own requests. Reading writes nothing, which is
+   * why this deliberately does not go through `guarded`: there is no ledger change for a
+   * `refresh()` to pick up.
+   */
+  async _loadPrinter() {
+    try {
+      this._printer = await this.call("printer/state");
+      this._error = null;
+    } catch (error) {
+      this._error = error.message || String(error);
+    }
+    this._printerLoading = false;
+    this.render();
+  }
+
+  /** The config entry's four options, read on opening the tab. Readable by anyone. */
+  async _loadSettings() {
+    try {
+      this._settings = await this.call("settings/get");
+      this._error = null;
+    } catch (error) {
+      this._error = error.message || String(error);
+    }
+    this._settingsLoading = false;
+    this.render();
+  }
+
+  /**
+   * Save the options, which reloads the entry (docs/14 §14.6.4).
+   *
+   * The saved values are folded into the local copy rather than re-fetched: the write
+   * fires the update listener and Home Assistant reloads this integration, so a
+   * `settings/get` sent immediately afterwards can land in the window where the entry is
+   * not loaded and answer "Filament Ledger is not set up" — an alarming message for an
+   * operation that just succeeded. The schema accepted these exact values, so echoing
+   * them is not a guess, and the notice tells the user what the reload is.
+   */
+  async _saveSettings(changes) {
+    try {
+      await this.call("settings/update", changes);
+      this._settings = { ...this._settings, ...changes };
+      this._settingsSaved = true;
+      this._error = null;
+    } catch (error) {
+      this._settingsSaved = false;
+      this._error = error.message || String(error);
+    }
+    this.render();
+  }
+
+  /**
    * Restore the spool, then reopen the void modal on the same entry.
    *
    * The two are separate commands and the API has no transaction spanning them, so the
@@ -377,7 +533,7 @@ class FilamentLedgerPanel extends HTMLElement {
       return {
         movement_id: row.movement_id,
         amount_g: row.amount_g,
-        label: HISTORY_LABELS[row.type] ?? row.type,
+        label: this.movementLabel(row.type),
         type: row.type,
         spool_id: row.spool_id,
         spool_name: row.spool_name,
@@ -542,6 +698,17 @@ class FilamentLedgerPanel extends HTMLElement {
           this.call("movements/restore", { movement_id: this._dialog.movement_id }),
         );
         break;
+      case "settings":
+        // Every field, every time: the command takes any subset, and sending the whole
+        // form is what makes "what the tab shows" and "what the entry holds" the same
+        // four numbers after a save.
+        this._saveSettings({
+          default_opening_weight: Number(data.default_opening_weight),
+          default_core_weight: Number(data.default_core_weight),
+          anomaly_threshold: Number(data.anomaly_threshold),
+          auto_mount_on_rfid: data.auto_mount_on_rfid === "on",
+        });
+        break;
       // Restoring a *spool* needs no form: the Trash row and the deleted spool's detail
       // both carry the whole question in one button, so it dispatches through `_onClick`.
       default:
@@ -572,7 +739,10 @@ class FilamentLedgerPanel extends HTMLElement {
           spool_id: spool.id,
           measured_g: Number(stated),
           includes_core: false,
-          note: EDIT_CORRECTION_NOTE,
+          // Written into the ledger, so it keeps the language of the panel that wrote
+          // it — exactly like a hand-typed reason, and for the same reason: the note has
+          // to be readable by the person who caused it.
+          note: this._t("dlg.editCorrectionNote"),
         },
       };
     }
@@ -647,15 +817,25 @@ class FilamentLedgerPanel extends HTMLElement {
     reason.disabled = relative === "";
     reason.required = relative !== "";
 
+    const t = this._t;
     const current = Number(this._detail?.balance_exact_g ?? 0);
+    // `textContent`, not markup: these three carry no tags, and the numbers they
+    // interpolate are numbers — so the escaping `t` applies is invisible either way.
     if (stated !== "" && Number.isFinite(Number(stated))) {
       const change = Math.round((Number(stated) - current) * 10) / 10;
-      hint.textContent = `Records a reconciliation of ${signed(change)} g — from ${current.toFixed(1)} g to ${Number(stated).toFixed(1)} g.`;
+      hint.textContent = t("dlg.correctReconcile", {
+        delta: signed(change),
+        from: current.toFixed(1),
+        to: Number(stated).toFixed(1),
+      });
     } else if (relative !== "" && Number.isFinite(Number(relative))) {
       const change = Math.round(Number(relative) * 10) / 10;
-      hint.textContent = `Records an adjustment of ${signed(change)} g — the balance becomes ${(current + change).toFixed(1)} g.`;
+      hint.textContent = t("dlg.correctAdjust", {
+        delta: signed(change),
+        after: (current + change).toFixed(1),
+      });
     } else {
-      hint.textContent = "Leave both empty and nothing is written to history.";
+      hint.textContent = t("dlg.correctNothing");
     }
   }
 
@@ -663,41 +843,63 @@ class FilamentLedgerPanel extends HTMLElement {
 
   render() {
     if (!this._root) return;
+    const t = this._t;
     this._root.innerHTML = `
       ${this.header()}
       <main>
         ${this._error ? this.errorBar() : ""}
-        ${this._loading ? `<div class="empty">Loading…</div>` : this.body()}
+        ${this._loading ? `<div class="empty">${t("app.loading")}</div>` : this.body()}
       </main>
       ${this._dialog ? this.dialog() : ""}
     `;
   }
 
+  /**
+   * The header: product, who Home Assistant says is standing at the panel, and the tabs.
+   *
+   * The account line is forward-looking and worth stating (docs/14 §14.6.3): the panel is
+   * deliberately not admin-only, because weighing a spool is not an administrative act,
+   * so several household users share one surface. Showing the identity readies the ground
+   * for actor attribution in v1.1 and costs one line today.
+   */
   header() {
+    const t = this._t;
     const badges = {
       inventory: this._stock?.needs_weighing
-        ? `<span class="count">${this._stock.needs_weighing}</span>`
+        ? `<span class="count">${esc(this._stock.needs_weighing)}</span>`
         : "",
-      review: this._reviews.length ? `<span class="count">${this._reviews.length}</span>` : "",
+      review: this._reviews.length ? `<span class="count">${esc(this._reviews.length)}</span>` : "",
     };
     return `
       <header>
-        <h1>Filament Ledger</h1>
+        <div class="head-top">
+          <h1>${t("app.title")}</h1>
+          ${this.account()}
+        </div>
         <nav>
           ${TABS.map(
             (tab) => `
-            <button data-action="tab" data-id="${tab.id}" class="${this._tab === tab.id && !this._detail ? "on" : ""}">
-              ${tab.label}${badges[tab.id] || ""}
+            <button data-action="tab" data-id="${tab}" class="${this._tab === tab && !this._detail ? "on" : ""}">
+              ${t(`tab.${tab}`)}${badges[tab] || ""}
             </button>`,
           ).join("")}
         </nav>
       </header>`;
   }
 
+  account() {
+    const user = this._hass?.user;
+    if (!user?.name) return "";
+    return `<div class="whoami">
+      <span class="who-name">${esc(user.name)}</span>
+      ${user.is_admin ? `<span class="who-admin">${this._t("app.adminBadge")}</span>` : ""}
+    </div>`;
+  }
+
   errorBar() {
     return `<div class="error">
       <span>${esc(this._error)}</span>
-      <button data-action="dismiss-error">Dismiss</button>
+      <button data-action="dismiss-error">${this._t("act.dismiss")}</button>
     </div>`;
   }
 
@@ -706,7 +908,9 @@ class FilamentLedgerPanel extends HTMLElement {
     if (this._tab === "history") return this.historyView();
     if (this._tab === "review") return this.reviewView();
     if (this._tab === "ams") return this.amsView();
+    if (this._tab === "printer") return this.printerView();
     if (this._tab === "trash") return this.trashView();
+    if (this._tab === "settings") return this.settingsView();
     return this.inventoryView();
   }
 
@@ -724,17 +928,18 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   inventoryView() {
+    const t = this._t;
     if (!this._spools.length) {
       return `
         <section class="stack">
           ${this.syncStrip()}
           <div class="empty teach">
-            <h2>No spools yet.</h2>
-            <p>Register the filament you own, and the ledger starts tracking every gram that leaves it.</p>
-            <button class="primary" data-action="dialog" data-id="new-spool">Register your first spool</button>
-            <p class="muted small">Printer already loaded?
-              <button class="link" data-action="sync-trays">⟳ Sync with printer</button>
-              reads the trays and offers to register what it finds.</p>
+            <h2>${t("inv.emptyTitle")}</h2>
+            <p>${t("inv.emptyBody")}</p>
+            <button class="primary" data-action="dialog" data-id="new-spool">${t("inv.emptyCta")}</button>
+            <p class="muted small">${t("inv.emptyLoaded")}
+              <button class="link" data-action="sync-trays">${t("inv.sync")}</button>
+              ${t("inv.emptyLoadedTail")}</p>
           </div>
         </section>`;
     }
@@ -745,13 +950,13 @@ class FilamentLedgerPanel extends HTMLElement {
     return `
       <section class="stack">
         <div class="card summary">
-          ${stat("Total stock", grams(this._stock?.total_g ?? 0))}
-          ${stat("Spools", this._stock?.spool_count ?? 0)}
-          ${stat("Need weighing", this._stock?.needs_weighing ?? 0, this._stock?.needs_weighing)}
+          ${stat(t("inv.totalStock"), esc(grams(this._stock?.total_g ?? 0)))}
+          ${stat(t("inv.spools"), esc(this._stock?.spool_count ?? 0))}
+          ${stat(t("inv.needsWeighing"), esc(this._stock?.needs_weighing ?? 0), this._stock?.needs_weighing)}
         </div>
         <div class="bar">
-          <button class="primary" data-action="dialog" data-id="new-spool">+ New spool</button>
-          <button data-action="sync-trays">⟳ Sync with printer</button>
+          <button class="primary" data-action="dialog" data-id="new-spool">${t("inv.newSpool")}</button>
+          <button data-action="sync-trays">${t("inv.sync")}</button>
         </div>
         ${this.syncStrip()}
         <div class="grid">${this._spools.map((s) => this.spoolCard(s)).join("")}</div>
@@ -760,60 +965,68 @@ class FilamentLedgerPanel extends HTMLElement {
 
   /** The last sync's outcome, one line per slot the printer reported. Transient. */
   syncStrip() {
+    const t = this._t;
     const sync = this._sync;
     if (!sync) return "";
-    const dismiss = `<button class="sync-dismiss" data-action="sync-dismiss">Dismiss</button>`;
+    const dismiss = `<button class="sync-dismiss" data-action="sync-dismiss">${t("act.dismiss")}</button>`;
     if (sync.dormant) {
       // The honest no-printer answer — not a spinner, not four invented empty slots.
       return `
         <div class="card sync-strip">
-          <div class="sync-head"><b>No printer connected — nothing to sync.</b>${dismiss}</div>
-          <p class="muted small">The ledger reads trays through the Bambu Lab integration.
-            Once it is set up, reload Filament Ledger and this button reports real trays.</p>
+          <div class="sync-head"><b>${t("sync.dormantTitle")}</b>${dismiss}</div>
+          <p class="muted small">${t("sync.dormantBody")}</p>
         </div>`;
     }
     if (!sync.slots.length) {
       return `
         <div class="card sync-strip">
-          <div class="sync-head"><b>The printer reported no usable trays right now.</b>${dismiss}</div>
-          <p class="muted small">A tray whose sensor is unavailable is omitted, never guessed empty.
-            Try again once the printer is reachable.</p>
+          <div class="sync-head"><b>${t("sync.noTraysTitle")}</b>${dismiss}</div>
+          <p class="muted small">${t("sync.noTraysBody")}</p>
         </div>`;
     }
     const rows = sync.slots.map((o) => this.syncRow(o)).join("");
     return `
       <div class="card sync-strip">
-        <div class="sync-head"><b>Synced with the printer</b>${dismiss}</div>
+        <div class="sync-head"><b>${t("sync.doneTitle")}</b>${dismiss}</div>
         ${rows}
       </div>`;
   }
 
   syncRow(outcome) {
-    const slot = `<span class="sync-slot">Slot ${esc(outcome.slot)}</span>`;
+    const t = this._t;
+    const slot = `<span class="sync-slot">${t("sync.slot", { slot: outcome.slot })}</span>`;
     const hints = [outcome.name_hint, outcome.material_hint].filter(Boolean).map(esc).join(" · ");
     const swatch = outcome.colour_hint
       ? `<span class="sync-dot" style="background:${esc(outcome.colour_hint)}"></span>`
       : "";
     switch (outcome.status) {
       case "empty":
-        return `<div class="sync-row">${slot}<span class="muted">empty</span></div>`;
+        return `<div class="sync-row">${slot}<span class="muted">${t("sync.empty")}</span></div>`;
       case "mounted":
         return `<div class="sync-row">${slot}${swatch}<span>${esc(outcome.spool_name)}</span>
-          <span class="muted">mounted</span></div>`;
+          <span class="muted">${t("sync.mounted")}</span></div>`;
       case "detected":
         return `<div class="sync-row">${slot}${swatch}<span>${esc(outcome.spool_name)}</span>
-          <span class="muted">detected — left in place, auto-mount is off</span></div>`;
+          <span class="muted">${t("sync.detected")}</span></div>`;
       case "no_tag":
-        return `<div class="sync-row">${slot}${swatch}<span class="muted">occupied, tag unreadable —
-          nothing automatic is possible${hints ? ` (${hints})` : ""}</span></div>`;
+        // The hints are already escaped, so they go in through `fill` rather than as a
+        // parameter — which would double-encode a name carrying an ampersand.
+        return `<div class="sync-row">${slot}${swatch}<span class="muted">${
+          hints ? fill(t("sync.noTagHints"), "hints", hints) : t("sync.noTag")
+        }</span></div>`;
       case "ambiguous_tag":
-        return `<div class="sync-row">${slot}${swatch}<span class="muted">two spools share tag
-          ${esc(outcome.tag_uid)} — mount the right one by hand, the system will not pick</span></div>`;
+        return `<div class="sync-row">${slot}${swatch}<span class="muted">${t("sync.ambiguous", {
+          tag: outcome.tag_uid,
+        })}</span></div>`;
       case "unknown_tag":
         return `<div class="sync-row unknown">${slot}${swatch}
-          <span>unknown tag ${esc(outcome.tag_uid)}${hints ? ` · ${hints}` : ""}</span>
-          <span class="muted">not in inventory</span>
-          <button data-action="sync-register" data-slot="${esc(outcome.slot)}">Register…</button>
+          <span>${
+            hints
+              ? fill(t("sync.unknownTagHints", { tag: outcome.tag_uid }), "hints", hints)
+              : t("sync.unknownTag", { tag: outcome.tag_uid })
+          }</span>
+          <span class="muted">${t("sync.notInInventory")}</span>
+          <button data-action="sync-register" data-slot="${esc(outcome.slot)}">${t("sync.register")}</button>
         </div>`;
       default:
         return `<div class="sync-row">${slot}<span class="muted">${esc(outcome.status)}</span></div>`;
@@ -821,10 +1034,10 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   spoolCard(spool) {
-    const conf = CONFIDENCE[spool.confidence];
+    const t = this._t;
     const sealed = spool.state === "SEALED";
     const bar = sealed
-      ? `<span class="chip">Sealed</span>`
+      ? `<span class="chip">${t("inv.sealed")}</span>`
       : `<div class="barline">
            <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
            <span class="pct">${spool.percentage}%</span>
@@ -834,37 +1047,50 @@ class FilamentLedgerPanel extends HTMLElement {
         <div class="swatch" style="background:${esc(spool.colour)}"></div>
         <div class="spool-body">
           <button class="card-x" data-action="spool-intent" data-id="${esc(spool.id)}"
-            title="Remove this spool">×</button>
+            title="${t("inv.removeSpool")}">×</button>
           <div class="name">${esc(spool.name)}</div>
           <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
           <div class="big">${spool.balance_g}<small> g</small></div>
           ${bar}
           <div class="foot">
-            <span class="conf ${conf.cls}"><i></i>${conf.label}</span>
-            <span class="muted">· ${esc(spool.location.label)}</span>
+            ${this.confidenceChip(spool.confidence)}
+            <span class="muted">· ${this.locationLabel(spool.location)}</span>
           </div>
-          ${spool.needs_weighing ? `<div class="cta">Weigh this spool</div>` : ""}
+          ${spool.needs_weighing ? `<div class="cta">${t("inv.weighThis")}</div>` : ""}
         </div>
       </article>`;
+  }
+
+  /**
+   * The confidence dot and its word (docs/02 §2.6). `suffix` spells out "confidence"
+   * after it, which the detail view wants and a crowded card does not.
+   *
+   * The word is already a table result, so it goes in through `fill` rather than as a
+   * parameter — the same rule every other spliced fragment in this file follows.
+   */
+  confidenceChip(level, suffix = false) {
+    const word = this._t(`conf.${level}`);
+    const text = suffix ? fill(this._t("conf.suffix"), "level", word) : word;
+    return `<span class="conf ${CONFIDENCE_CLASS[level] ?? ""}"><i></i>${text}</span>`;
   }
 
   // -- AMS ---------------------------------------------------------------------------
 
   amsView() {
+    const t = this._t;
     const slots = [1, 2, 3, 4].map((slot) => {
       const spool = this._spools.find(
         (s) => s.location.kind === "AMS_SLOT" && s.location.slot === slot,
       );
       if (!spool) {
         return `<div class="card tray empty-tray">
-          <div class="n">Slot ${slot}</div>
-          <div class="muted">Empty</div>
-          <button data-action="mount-slot" data-slot="${slot}">Mount</button>
+          <div class="n">${t("ams.slot", { slot })}</div>
+          <div class="muted">${t("ams.empty")}</div>
+          <button data-action="mount-slot" data-slot="${slot}">${t("act.mount")}</button>
         </div>`;
       }
-      const conf = CONFIDENCE[spool.confidence];
       return `<div class="card tray">
-        <div class="n">Slot ${slot}</div>
+        <div class="n">${t("ams.slot", { slot })}</div>
         <div class="reel" style="background:${esc(spool.colour)}"></div>
         <div class="name">${esc(spool.name)}</div>
         <div class="big">${spool.balance_g}<small> g</small></div>
@@ -872,20 +1098,17 @@ class FilamentLedgerPanel extends HTMLElement {
           <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
           <span class="pct">${spool.percentage}%</span>
         </div>
-        <div class="foot"><span class="conf ${conf.cls}"><i></i>${conf.label}</span></div>
+        <div class="foot">${this.confidenceChip(spool.confidence)}</div>
         <div class="tray-actions">
-          <button data-action="open" data-id="${esc(spool.id)}">Open</button>
-          <button data-action="unmount" data-id="${esc(spool.id)}">Unmount</button>
+          <button data-action="open" data-id="${esc(spool.id)}">${t("act.open")}</button>
+          <button data-action="unmount" data-id="${esc(spool.id)}">${t("act.unmount")}</button>
         </div>
       </div>`;
     });
 
     return `
       <section class="stack">
-        <div class="note">
-          No printer is connected yet. Slots are assigned by hand — mounting records no
-          movement, because moving a spool consumes no filament.
-        </div>
+        <div class="note">${t("ams.note")}</div>
         <div class="trays">${slots.join("")}</div>
       </section>`;
   }
@@ -893,16 +1116,13 @@ class FilamentLedgerPanel extends HTMLElement {
   // -- history -----------------------------------------------------------------------
 
   historyView() {
+    const t = this._t;
     if (!this._movements.length) {
       return `
       <div class="empty teach">
-        <h2>No movements yet.</h2>
-        <p>
-          Every gram that enters or leaves any spool lands here, newest first — prints,
-          corrections, discards, all in one ledger. Register a spool and its opening
-          balance becomes the first row.
-        </p>
-        <p class="muted">Nothing here can ever be edited. A correction is a new row.</p>
+        <h2>${t("history.emptyTitle")}</h2>
+        <p>${t("history.emptyBody")}</p>
+        <p class="muted">${t("history.emptyFoot")}</p>
       </div>`;
     }
 
@@ -910,36 +1130,37 @@ class FilamentLedgerPanel extends HTMLElement {
     return `
       <section class="stack">
         <div class="card ledger-wrap">
-          <h3>All movements</h3>
+          <h3>${t("history.heading")}</h3>
           <div class="scroll">
             <table class="ledger">
               <thead><tr>
-                <th>When</th><th>Spool</th><th>Entry</th><th class="r">Amount</th><th>Source</th>
-                <th class="r">Correct</th>
+                <th>${t("history.colWhen")}</th><th>${t("history.colSpool")}</th>
+                <th>${t("history.colEntry")}</th><th class="r">${t("history.colAmount")}</th>
+                <th>${t("history.colSource")}</th><th class="r">${t("history.colCorrect")}</th>
               </tr></thead>
               <tbody>${rows}</tbody>
             </table>
           </div>
-          <p class="muted small">
-            The newest ${esc(this._movements.length)} entries, every spool together. For the
-            running balance behind any row, open its spool — a balance only derives within
-            one spool's history.
-          </p>
+          <p class="muted small">${t("history.foot", { count: this._movements.length })}</p>
         </div>
       </section>`;
   }
 
   historyRow(m) {
+    const t = this._t;
     const detail = [m.job_name, m.note].filter(Boolean).map(esc).join(" · ");
+    const confirmed = m.source === "USER_CONFIRMED";
     return `
       <tr>
-        <td class="when" title="${esc(m.occurred_at)}">${esc(when(m.occurred_at))}</td>
+        <td class="when" title="${esc(m.occurred_at)}">${this.when(m.occurred_at)}</td>
         <td class="who"><span class="hist-dot" style="background:${esc(m.spool_colour)}"></span>${esc(m.spool_name)}</td>
-        <td class="what">${esc(HISTORY_LABELS[m.type] ?? m.type)}
+        <td class="what">${this.movementLabel(m.type)}
           ${detail ? `<span>${detail}</span>` : ""}
         </td>
         <td class="amt ${m.amount_g < 0 ? "minus" : "plus"}">${signed(m.amount_g)}</td>
-        <td class="src"><span class="badge ${m.source === "USER_CONFIRMED" ? "user" : "auto"}">${m.source === "USER_CONFIRMED" ? "confirmed" : "auto"}</span></td>
+        <td class="src"><span class="badge ${confirmed ? "user" : "auto"}">${
+          confirmed ? t("history.confirmed") : t("history.auto")
+        }</span></td>
         <td class="acts">${this.rowActions(m)}</td>
       </tr>`;
   }
@@ -961,19 +1182,20 @@ class FilamentLedgerPanel extends HTMLElement {
    * variant to offer: a reassignment is a pair, and half a pair is filament invented.
    */
   rowActions(m) {
-    if (m.voided) return `<span class="muted small">deleted</span>`;
+    const t = this._t;
+    if (m.voided) return `<span class="muted small">${t("history.deleted")}</span>`;
     const buttons = [];
     const retired = this._movementSubject(m.movement_id)?.retirement;
     if (m.direction === "DECREASE" && !retired) {
       buttons.push(
         `<button class="rowact" data-action="reassign" data-id="${esc(m.movement_id)}"
-          title="Move this charge to another spool">⇄</button>`,
+          title="${t("history.reassignTitle")}">⇄</button>`,
       );
     }
     if (!NOT_VOIDABLE.has(m.type)) {
       buttons.push(
         `<button class="rowact danger" data-action="void-movement" data-id="${esc(m.movement_id)}"
-          title="Delete this entry and return the grams">×</button>`,
+          title="${t("history.voidTitle")}">×</button>`,
       );
     }
     return buttons.join("");
@@ -982,18 +1204,13 @@ class FilamentLedgerPanel extends HTMLElement {
   // -- review ------------------------------------------------------------------------
 
   reviewView() {
+    const t = this._t;
     if (!this._reviews.length) {
       return `
       <div class="empty teach">
-        <h2>Nothing to review.</h2>
-        <p>
-          Cancelled and failed prints will appear here so you can confirm how much filament
-          they used. Nothing is ever deducted for them until you say so.
-        </p>
-        <p class="muted">
-          This queue fills up once the printer is connected. Until then every movement in the
-          ledger is one you entered yourself.
-        </p>
+        <h2>${t("review.emptyTitle")}</h2>
+        <p>${t("review.emptyBody")}</p>
+        <p class="muted">${t("review.emptyFoot")}</p>
       </div>`;
     }
 
@@ -1004,15 +1221,15 @@ class FilamentLedgerPanel extends HTMLElement {
       .sort((a, b) => String(b.opened_at).localeCompare(String(a.opened_at)))
       .map((review) => this.reviewCard(review))
       .join("");
-    const n = this._reviews.length;
     return `
       <section class="stack">
-        <div class="muted">${n} pending</div>
+        <div class="muted">${t("review.pending", { count: this._reviews.length })}</div>
         ${cards}
       </section>`;
   }
 
   reviewCard(review) {
+    const t = this._t;
     const failed = review.job_state === "FAILED";
     // NONE doubles as the explicit no-consumption-data flag when every frozen figure is
     // zero (domain/value/review.py): that review renders the distinct no-data card, not
@@ -1020,16 +1237,18 @@ class FilamentLedgerPanel extends HTMLElement {
     const noData =
       review.estimator === "NONE" && review.lines.every((line) => line.estimated_g === 0);
 
-    const metaBits = [when(review.opened_at)];
+    const metaBits = [this.when(review.opened_at)];
     if (review.job_state === "FINISHED") {
-      metaBits.push("completed");
+      metaBits.push(t("review.completed"));
     } else if (review.layer_reached != null && review.total_layers != null) {
-      const pct = review.progress_pct != null ? ` (${esc(review.progress_pct)}%)` : "";
+      const figures = { layer: review.layer_reached, total: review.total_layers };
       metaBits.push(
-        `stopped at layer ${esc(review.layer_reached)} of ${esc(review.total_layers)}${pct}`,
+        review.progress_pct != null
+          ? t("review.stoppedAtLayerPct", { ...figures, pct: review.progress_pct })
+          : t("review.stoppedAtLayer", figures),
       );
     } else if (review.progress_pct != null) {
-      metaBits.push(`stopped at ${esc(review.progress_pct)}%`);
+      metaBits.push(t("review.stoppedAtPct", { pct: review.progress_pct }));
     }
 
     // The raw facts, verbatim (docs/06 §6.3): the HMS quad is searchable, the title holds
@@ -1039,24 +1258,32 @@ class FilamentLedgerPanel extends HTMLElement {
     // "0" is the printer's no-error value, hidden exactly as the integer 0 was.
     if (review.raw_print_error != null && review.raw_print_error !== "0") {
       rawBits.push(
-        `Printer error <span class="rv-hms" title="raw print_error ${esc(review.raw_print_error)}">${esc(hms(review.raw_print_error))}</span>`,
+        `${t("review.printerError")} <span class="rv-hms" title="${t("review.rawErrorTitle", {
+          code: review.raw_print_error,
+        })}">${esc(hms(review.raw_print_error))}</span>`,
       );
     }
     if (review.raw_gcode_state) {
-      rawBits.push(`printer reported &quot;${esc(review.raw_gcode_state)}&quot;`);
+      rawBits.push(t("review.printerReported", { state: review.raw_gcode_state }));
     }
 
+    const estimator = t(`est.${review.estimator}`);
     const banner = noData
       ? `<div class="rv-nodata">
-           <div class="t">⛔ No consumption data — the printer never reported it</div>
-           <div class="muted small">Nothing has been deducted for this print.</div>
+           <div class="t">${t("review.noDataTitle")}</div>
+           <div class="muted small">${t("review.noDataBody")}</div>
          </div>`
-      : `<div class="rv-est">${esc(ESTIMATORS[review.estimator] ?? review.estimator)}</div>`;
+      : `<div class="rv-est">${
+          estimator === `est.${review.estimator}` ? esc(review.estimator) : estimator
+        }</div>`;
 
     const rows = review.lines.map((line) => this.reviewRow(line)).join("");
-    const total = review.lines.length > 1
-      ? `<div class="rv-total">total <b>${esc(review.estimated_total_g.toFixed(1))}</b> g</div>`
-      : "";
+    const total =
+      review.lines.length > 1
+        ? `<div class="rv-total">${t("review.total", {
+            grams: review.estimated_total_g.toFixed(1),
+          })}</div>`
+        : "";
 
     // Approve starts disabled whenever a non-zero row has no spool — the button and the
     // domain rule (02 §2.3) must never disagree about what is legal.
@@ -1077,33 +1304,34 @@ class FilamentLedgerPanel extends HTMLElement {
         ${banner}
         <div class="rv-rows">${rows}${total}</div>
         <div class="rv-weigh">
-          <span>⚖ I weighed the ${noData ? "spools" : "waste"}:</span>
+          <span>${noData ? t("review.weighedSpools") : t("review.weighedWaste")}</span>
           <input class="rv-weighed num" type="number" min="0" step="0.1"> g
-          <button data-action="review-distribute">Distribute</button>
+          <button data-action="review-distribute">${t("review.distribute")}</button>
         </div>
-        <label class="rv-notewrap">Note
-          <input class="rv-note" placeholder="optional">
+        <label class="rv-notewrap">${t("act.note")}
+          <input class="rv-note" placeholder="${t("act.optional")}">
         </label>
         <div class="rv-actions">
-          <button data-action="review-dismiss" data-id="${esc(review.id)}">Dismiss</button>
+          <button data-action="review-dismiss" data-id="${esc(review.id)}">${t("act.dismiss")}</button>
           <button class="primary rv-approve" data-action="review-approve" data-id="${esc(review.id)}"
-            ${blocked ? "disabled" : ""}>✓ Approve</button>
+            ${blocked ? "disabled" : ""}>${t("review.approve")}</button>
         </div>
         <div class="rv-hint muted small" ${blocked ? "" : "hidden"}>${this._approveHint(blockedSlots)}</div>
       </article>`;
   }
 
   reviewRow(line) {
+    const t = this._t;
     const spool = line.spool_id ? this._spools.find((s) => s.id === line.spool_id) : null;
     const amount = `
-      <span class="rv-slot">Slot ${esc(line.slot)}</span>
+      <span class="rv-slot">${t("ams.slot", { slot: line.slot })}</span>
       <input class="rv-amt num" type="number" min="0" step="0.1" value="${esc(line.estimated_g.toFixed(1))}"> g`;
 
     if (line.spool_id) {
       return `
         <div class="rv-row" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}">
           <span class="rv-dot" style="background:${esc(spool?.colour ?? "transparent")}"></span>
-          <span class="rv-spool">${esc(spool ? spool.name : "Unknown spool")}</span>
+          <span class="rv-spool">${spool ? esc(spool.name) : t("review.unknownSpool")}</span>
           ${amount}
         </div>`;
     }
@@ -1120,18 +1348,26 @@ class FilamentLedgerPanel extends HTMLElement {
     return `
       <div class="rv-row unresolved" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}">
         <span class="rv-warn">⚠</span>
-        <span class="rv-spool muted">no spool recorded</span>
+        <span class="rv-spool muted">${t("review.noSpoolRecorded")}</span>
         ${amount}
-        <div class="rv-pickline">which spool was in this slot?
-          <select class="rv-pick"><option value="">Choose spool…</option>${options}</select>
+        <div class="rv-pickline">${t("review.whichSpool")}
+          <select class="rv-pick"><option value="">${t("review.chooseSpool")}</option>${options}</select>
         </div>
       </div>`;
   }
 
+  /**
+   * Why Approve is disabled, naming the slots (docs/06 §6.3).
+   *
+   * Built as markup here and as `textContent` in `_syncReviewCard`; the sentence is one
+   * key either way, so the two can never say different things about the same card.
+   */
   _approveHint(slots) {
     if (!slots.length) return "";
-    const list = slots.map((s) => `slot ${esc(s)}`).join(" and ");
-    return `Approve is disabled until ${list} has a spool, or its amount is 0.`;
+    const list = slots
+      .map((slot) => this._t("review.slotWord", { slot }))
+      .join(this._t("act.and"));
+    return fill(this._t("review.blockedHint"), "slots", list);
   }
 
   /** Re-derive the card's total, hint and Approve state from its inputs, in place. */
@@ -1159,8 +1395,8 @@ class FilamentLedgerPanel extends HTMLElement {
     const hint = card.querySelector(".rv-hint");
     hint.hidden = !blocked;
     hint.textContent = unattributed.length
-      ? `Approve is disabled until ${unattributed.map((s) => `slot ${s}`).join(" and ")} has a spool, or its amount is 0.`
-      : "Amounts must be zero or positive numbers.";
+      ? this._approveHint(unattributed)
+      : this._t("review.invalidAmounts");
   }
 
   /**
@@ -1242,16 +1478,18 @@ class FilamentLedgerPanel extends HTMLElement {
   // -- spool detail ------------------------------------------------------------------
 
   detailView() {
+    const t = this._t;
     const spool = this._detail;
-    const conf = CONFIDENCE[spool.confidence];
     const deleted = spool.state === "DELETED";
     const rows = spool.history
       .map(
         (line) => `
         <tr class="${line.voided ? "voided" : ""}">
-          <td class="when">${when(line.occurred_at)}</td>
-          <td class="what">${esc(line.label)}${line.voided ? `<b class="chip-void">deleted</b>` : ""}
-            <span>${line.note ? `${esc(line.note)} · ` : ""}${esc(line.source_label)}</span>
+          <td class="when">${this.when(line.occurred_at)}</td>
+          <td class="what">${this.movementLabel(line.type, "mv")}${
+            line.voided ? `<b class="chip-void">${t("history.deleted")}</b>` : ""
+          }
+            <span>${line.note ? `${esc(line.note)} · ` : ""}${this.sourceLabel(line.source)}</span>
           </td>
           <td class="amt ${line.amount_g < 0 ? "minus" : "plus"}">${signed(line.amount_g)}</td>
           <td class="bal">${line.balance_after_g}</td>
@@ -1274,56 +1512,58 @@ class FilamentLedgerPanel extends HTMLElement {
 
     return `
       <section class="stack">
-        <button class="link" data-action="back">← All spools</button>
+        <button class="link" data-action="back">${t("detail.back")}</button>
         <div class="card detail">
           <div class="reel-big" style="background:${esc(spool.colour)}"></div>
           <div class="meta">
             <h2>${esc(spool.name)}</h2>
-            <div class="big">${spool.balance_g}<small> g of ${spool.opening_weight_g} g</small></div>
+            <div class="big">${spool.balance_g}<small> ${t("detail.ofOpening", {
+              opening: spool.opening_weight_g,
+            })}</small></div>
             <div class="barline">
               <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
               <span class="pct">${spool.percentage}%</span>
             </div>
             <div class="facts">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""} · ${esc(spool.colour)}</div>
-            <div class="facts">${esc(spool.location.label)} · ${esc(spool.state.toLowerCase())}${spool.tag_uid ? ` · tag ${esc(spool.tag_uid)}` : ""}</div>
-            <div class="foot"><span class="conf ${conf.cls}"><i></i>${conf.label} confidence</span></div>
+            <div class="facts">${this.locationLabel(spool.location)} · ${this.stateLabel(spool.state)}${
+              spool.tag_uid ? ` · ${t("dlg.tag")} ${esc(spool.tag_uid)}` : ""
+            }</div>
+            <div class="foot">${this.confidenceChip(spool.confidence, true)}</div>
           </div>
         </div>
 
         ${
           deleted
             ? `<div class="note">
-                 This spool is in the trash — treated as never registered, counted in
-                 nothing. Its history is below, whole and unchanged, and restoring brings
-                 both back.
+                 ${t("detail.deletedNote")}
                  <div class="bar" style="margin-top:10px">
-                   <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">Restore this spool</button>
+                   <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">${t("detail.restoreSpool")}</button>
                  </div>
                </div>`
             : `<div class="bar">
-                 <button class="primary" data-action="dialog" data-id="weigh">Weigh</button>
-                 <button data-action="dialog" data-id="adjust">Adjust</button>
-                 <button data-action="dialog" data-id="discard">Discard</button>
-                 <button data-action="dialog" data-id="edit-spool">Edit</button>
-                 <button data-action="spool-intent" data-id="${esc(spool.id)}">Remove…</button>
+                 <button class="primary" data-action="dialog" data-id="weigh">${t("detail.weigh")}</button>
+                 <button data-action="dialog" data-id="adjust">${t("detail.adjust")}</button>
+                 <button data-action="dialog" data-id="discard">${t("act.discard")}</button>
+                 <button data-action="dialog" data-id="edit-spool">${t("detail.edit")}</button>
+                 <button data-action="spool-intent" data-id="${esc(spool.id)}">${t("detail.remove")}</button>
                </div>`
         }
 
         <div class="card ledger-wrap">
-          <h3>Movement history</h3>
+          <h3>${t("detail.heading")}</h3>
           <div class="scroll">
             <table class="ledger">
-              <thead><tr><th>When</th><th>Entry</th><th class="r">Amount</th><th class="r">Balance</th><th class="r">Correct</th></tr></thead>
+              <thead><tr>
+                <th>${t("history.colWhen")}</th><th>${t("history.colEntry")}</th>
+                <th class="r">${t("history.colAmount")}</th>
+                <th class="r">${t("history.colBalance")}</th>
+                <th class="r">${t("history.colCorrect")}</th>
+              </tr></thead>
               <tbody>${rows}</tbody>
             </table>
           </div>
           <div class="checksum">${esc(sum)} = <b>${spool.balance_exact_g.toFixed(1)} g</b></div>
-          <p class="muted small">
-            Read bottom-up it is a derivation, not an assertion. Nothing above can be edited —
-            a correction is a new row. Deleted entries stay here, struck through, with the
-            row that returned their grams beside them: this is the one view that hides
-            nothing, because it is the view that proves the total.
-          </p>
+          <p class="muted small">${t("detail.foot")}</p>
         </div>
       </section>`;
   }
@@ -1331,18 +1571,15 @@ class FilamentLedgerPanel extends HTMLElement {
   // -- trash -------------------------------------------------------------------------
 
   trashView() {
+    const t = this._t;
     const trash = this._trash;
     const spools = trash?.spools ?? [];
     const movements = trash?.movements ?? [];
     if (!spools.length && !movements.length) {
       return `
       <div class="empty teach">
-        <h2>The trash is empty.</h2>
-        <p>
-          Deleted spools and deleted history entries wait here, and everything can be
-          restored. Nothing in the ledger is ever truly gone — a deletion is one more
-          entry, not one less.
-        </p>
+        <h2>${t("trash.emptyTitle")}</h2>
+        <p>${t("trash.emptyBody")}</p>
       </div>`;
     }
 
@@ -1354,55 +1591,68 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   trashSpools(spools) {
+    const t = this._t;
     const rows = spools
       .map(
         (spool) => `
       <div class="trash-row">
         <span class="hist-dot" style="background:${esc(spool.colour)}"></span>
         <span class="trash-name">${esc(spool.name)}</span>
-        <span class="muted small">${esc(spool.material)} · ${spool.balance_g} g ·
-          ${esc(spool.movement_count)} entries · deleted ${esc(when(spool.deleted_at))}</span>
+        <span class="muted small">${fill(
+          t("trash.spoolMeta", {
+            material: spool.material,
+            balance: spool.balance_g,
+            count: spool.movement_count,
+          }),
+          "when",
+          this.when(spool.deleted_at),
+        )}</span>
         <span class="trash-acts">
-          <button data-action="open" data-id="${esc(spool.id)}">Open</button>
-          <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">Restore</button>
+          <button data-action="open" data-id="${esc(spool.id)}">${t("act.open")}</button>
+          <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">${t("act.restore")}</button>
         </span>
       </div>`,
       )
       .join("");
     return `
       <div class="card trash-card">
-        <h3>Spools</h3>
-        <p class="muted small">Registered by mistake, so counted in nothing. Restoring
-          returns each one to storage — its old slot was freed and is not reclaimed — and
-          its history comes back with it.</p>
+        <h3>${t("trash.spoolsHeading")}</h3>
+        <p class="muted small">${t("trash.spoolsBody")}</p>
         ${rows}
       </div>`;
   }
 
   trashMovements(movements) {
+    const t = this._t;
     const rows = movements.map((entry) => this.trashMovementRow(entry)).join("");
     return `
       <div class="card trash-card">
-        <h3>History entries</h3>
-        <p class="muted small">Deleted from the views you read every day, never from the
-          ledger. The entry and the row that returned its grams are both still there, in
-          the spool's own history.</p>
+        <h3>${t("trash.movementsHeading")}</h3>
+        <p class="muted small">${t("trash.movementsBody")}</p>
         ${rows}
       </div>`;
   }
 
   trashMovementRow(entry) {
-    const back = entry.amount_g < 0 ? "returned" : "removed";
+    const t = this._t;
+    const direction = entry.amount_g < 0 ? t("trash.returned") : t("trash.removed");
     const action = entry.restorable
-      ? `<button class="primary" data-action="restore-movement" data-id="${esc(entry.movement_id)}">Restore</button>`
-      : `<span class="muted small">${esc(this._notRestorable(entry))}</span>`;
+      ? `<button class="primary" data-action="restore-movement" data-id="${esc(entry.movement_id)}">${t("act.restore")}</button>`
+      : `<span class="muted small">${this._notRestorable(entry)}</span>`;
+    // `label`, `direction` and `when` are already-safe results; only `reason` is raw wire
+    // data, and it is the one that goes in as a parameter so `t` escapes it.
+    let meta = entry.reason
+      ? t("trash.movementMetaReason", { reason: entry.reason })
+      : t("trash.movementMeta");
+    meta = fill(meta, "label", this.movementLabel(entry.type, "mv"));
+    meta = fill(meta, "grams", esc(Math.abs(entry.amount_g).toFixed(1)));
+    meta = fill(meta, "direction", direction);
+    meta = fill(meta, "when", this.when(entry.voided_at));
     return `
       <div class="trash-row">
         <span class="hist-dot" style="background:${esc(entry.spool_colour)}"></span>
         <span class="trash-name">${esc(entry.spool_name)}</span>
-        <span class="muted small">${esc(entry.label)} ·
-          <b>${esc(Math.abs(entry.amount_g).toFixed(1))} g</b> ${back} ·
-          deleted ${esc(when(entry.voided_at))}${entry.reason ? ` · ${esc(entry.reason)}` : ""}</span>
+        <span class="muted small">${meta}</span>
         <span class="trash-acts">${action}</span>
       </div>`;
   }
@@ -1414,11 +1664,252 @@ class FilamentLedgerPanel extends HTMLElement {
    * the sentence and the decision can never disagree about a third case.
    */
   _notRestorable(entry) {
-    if (!entry.had_restitution) {
-      return "nothing was returned when this was deleted; the ledger still counts it";
+    const t = this._t;
+    if (!entry.had_restitution) return t("trash.noRestitution");
+    if (entry.spool_deleted) return t("trash.spoolDeleted");
+    return t("trash.spoolDiscarded");
+  }
+
+  // -- printer -----------------------------------------------------------------------
+
+  /**
+   * A read-only glance at the machine (docs/14 §14.5).
+   *
+   * Not a printer UI: control stays a non-goal (N1, docs/01 §1.3), `ha-bambulab` has its
+   * own cards, and duplicating them adds risk with no benefit. Every figure the printer
+   * did not report renders as a dash rather than a zero — a missing figure is not a
+   * figure of zero.
+   */
+  printerView() {
+    const t = this._t;
+    if (this._printerLoading && !this._printer) {
+      return `<div class="empty">${t("app.loading")}</div>`;
     }
-    if (entry.spool_deleted) return "restore this entry's spool first";
-    return "this entry's spool was discarded — there is nothing to deduct from";
+    const state = this._printer;
+    if (!state || state.dormant) {
+      // The honest no-printer answer, in the voice the sync strip already speaks.
+      return `
+        <div class="empty teach">
+          <h2>${t("printer.dormantTitle")}</h2>
+          <p>${t("printer.dormantBody")}</p>
+          <p class="muted small">${t("printer.dormantFoot")}</p>
+        </div>`;
+    }
+
+    return `
+      <section class="stack">
+        <div class="bar">
+          <button data-action="refresh-printer" ${this._printerLoading ? "disabled" : ""}>${t("printer.refresh")}</button>
+        </div>
+        ${this.printerFacts(state)}
+        ${this.printerError(state.error)}
+        ${this.printerTrays(state.trays ?? [])}
+        <p class="muted small">${t("printer.readOnly")}</p>
+        <p class="muted small">${t("printer.pendingSensors")}</p>
+      </section>`;
+  }
+
+  printerFacts(state) {
+    const t = this._t;
+    const progress =
+      state.progress_pct == null
+        ? DASH
+        : `<span class="pr-bar">
+             <span class="track"><i style="width:${Number(state.progress_pct)}%"></i></span>
+             <span class="pct">${esc(state.progress_pct)}%</span>
+           </span>`;
+    const layer =
+      state.current_layer == null && state.total_layers == null
+        ? DASH
+        : t("printer.layerOf", {
+            current: state.current_layer ?? DASH,
+            total: state.total_layers ?? DASH,
+          });
+    const online = state.online == null ? DASH : t(state.online ? "printer.yes" : "printer.no");
+    return `
+      <div class="card pr-facts">
+        ${this.printerFact(t("printer.status"), state.status == null ? DASH : esc(state.status))}
+        ${this.printerFact(t("printer.job"), state.job_name == null ? DASH : esc(state.job_name))}
+        ${this.printerFact(t("printer.progress"), progress)}
+        ${this.printerFact(t("printer.layer"), layer)}
+        ${this.printerFact(t("printer.online"), online)}
+        ${this.printerFact(
+          t("printer.connection"),
+          state.connection_mode == null ? DASH : esc(state.connection_mode),
+        )}
+        ${this.printerFact(
+          t("printer.activeTray"),
+          state.active_tray == null ? DASH : esc(state.active_tray),
+        )}
+      </div>`;
+  }
+
+  printerFact(key, value) {
+    return `<div class="pr-fact"><div class="k">${key}</div><div class="v">${value}</div></div>`;
+  }
+
+  /**
+   * The error, as the searchable HMS quad with the verbatim code in the title — the
+   * review card's pattern, and for its reason: the code arrives as a decimal string
+   * because a 64-bit HMS value would already be corrupted as a JSON number.
+   */
+  printerError(error) {
+    const t = this._t;
+    if (!error) return "";
+    if (!error.active) {
+      return `<div class="note">${t("printer.noError")}</div>`;
+    }
+    const code = error.code;
+    return `
+      <div class="card pr-error">
+        <b>${t("printer.errorHeading")}</b>
+        ${
+          code == null
+            ? ""
+            : `<span class="rv-hms" title="${t("review.rawErrorTitle", { code })}">${esc(hms(code))}</span>`
+        }
+      </div>`;
+  }
+
+  /**
+   * The four-tray strip: what the printer reports beside what the ledger has mounted.
+   *
+   * The per-slot shapes are the sync command's, computed read-only — this tab never runs
+   * `DetectSpool`, so looking at it changes nothing (docs/14 §14.5).
+   */
+  printerTrays(trays) {
+    const t = this._t;
+    if (!trays.length) return `<div class="note">${t("printer.noTrays")}</div>`;
+    const cards = trays
+      .map((tray) => {
+        const mounted = this._spools.find(
+          (s) => s.location.kind === "AMS_SLOT" && s.location.slot === tray.slot,
+        );
+        const swatch = tray.colour_hint
+          ? `<div class="reel" style="background:${esc(tray.colour_hint)}"></div>`
+          : `<div class="reel empty-reel"></div>`;
+        const reported = [tray.name_hint, tray.material_hint].filter(Boolean).map(esc).join(" · ");
+        return `<div class="card tray">
+          <div class="n">${t("ams.slot", { slot: tray.slot })}</div>
+          ${swatch}
+          <div class="name">${reported || DASH}</div>
+          <div class="muted small">${this.syncStatusWord(tray.status)}</div>
+          <div class="muted small">${
+            mounted
+              ? fill(t("printer.trayLedger"), "spool", esc(mounted.name))
+              : t("printer.trayLedgerEmpty")
+          }</div>
+        </div>`;
+      })
+      .join("");
+    return `
+      <div class="pr-trays">
+        <h3 class="pr-h">${t("printer.traysHeading")}</h3>
+        <div class="trays">${cards}</div>
+      </div>`;
+  }
+
+  /** The one-word status a slot outcome reads as, reusing the sync strip's vocabulary. */
+  syncStatusWord(status) {
+    const keys = {
+      empty: "sync.empty",
+      mounted: "sync.mounted",
+      detected: "sync.detected",
+      no_tag: "sync.noTag",
+      ambiguous_tag: "sync.ambiguous",
+      unknown_tag: "sync.notInInventory",
+    };
+    const key = keys[status];
+    return key ? this._t(key) : esc(status);
+  }
+
+  // -- settings ----------------------------------------------------------------------
+
+  /**
+   * The four config-entry options, plus the per-device language (docs/14 §14.6.4).
+   *
+   * A non-admin sees the same values read-only with a line explaining why: a hidden tab
+   * invites "it's broken", while a labelled read-only one teaches the model.
+   */
+  settingsView() {
+    const t = this._t;
+    if (this._settingsLoading && !this._settings) {
+      return `<div class="empty">${t("app.loading")}</div>`;
+    }
+    const admin = Boolean(this._hass?.user?.is_admin);
+    return `
+      <section class="stack">
+        ${this._settings ? this.settingsForm(this._settings, admin) : ""}
+        ${this.languageCard()}
+      </section>`;
+  }
+
+  settingsForm(settings, admin) {
+    const t = this._t;
+    const ro = admin ? "" : "disabled";
+    const field = (name, label, help, value, attrs) => `
+      <label>${label}
+        <input name="${name}" type="number" ${attrs} value="${esc(value)}" ${ro} required>
+        <small>${help}</small>
+      </label>`;
+    return `
+      <form class="card set-card" data-form="settings">
+        <h3 class="pr-h">${t("settings.heading")}</h3>
+        ${admin ? "" : `<p class="muted small">${t("settings.readOnly")}</p>`}
+        ${field(
+          "default_opening_weight",
+          t("settings.openingWeight"),
+          t("settings.openingWeightHelp"),
+          settings.default_opening_weight,
+          'min="1" max="10000" step="1"',
+        )}
+        ${field(
+          "default_core_weight",
+          t("settings.coreWeight"),
+          t("settings.coreWeightHelp"),
+          settings.default_core_weight,
+          'min="0" max="2000" step="1"',
+        )}
+        ${field(
+          "anomaly_threshold",
+          t("settings.anomalyThreshold"),
+          t("settings.anomalyThresholdHelp"),
+          settings.anomaly_threshold,
+          'min="1" max="100" step="1"',
+        )}
+        <label class="row">
+          <input name="auto_mount_on_rfid" type="checkbox" ${settings.auto_mount_on_rfid ? "checked" : ""} ${ro}>
+          <span class="small">${t("settings.autoMount")}</span>
+        </label>
+        <small class="muted">${t("settings.autoMountHelp")}</small>
+        ${
+          admin
+            ? `<p class="muted small">${t("settings.reloadWarning")}</p>
+               <div class="actions">
+                 <button type="submit" class="primary">${t("settings.save")}</button>
+               </div>
+               ${this._settingsSaved ? `<p class="saved small">${t("settings.saved")}</p>` : ""}`
+            : ""
+        }
+      </form>`;
+  }
+
+  languageCard() {
+    const t = this._t;
+    const current = readLanguageOverride();
+    const option = (value, label) =>
+      `<button data-action="set-language" data-lang="${value}"
+        class="${(current ?? "") === value ? "primary" : ""}">${label}</button>`;
+    return `
+      <div class="card set-card">
+        <h3 class="pr-h">${t("settings.languageHeading")}</h3>
+        <div class="bar">
+          ${option("", t("settings.languageAuto"))}
+          ${option("en", t("settings.languageEn"))}
+          ${option("es", t("settings.languageEs"))}
+        </div>
+        <small class="muted">${t("settings.languageHelp")}</small>
+      </div>`;
   }
 
   // -- dialogs -----------------------------------------------------------------------
@@ -1451,6 +1942,7 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   newSpoolForm() {
+    const t = this._t;
     const defaults = this._stock?.defaults || { opening_weight_g: 1000, core_weight_g: 250 };
     // Pre-fill from a sync outcome when one opened this dialog (docs/06 §6.4): material,
     // colour, name and tag are what the tray reported; the opening weight stays the
@@ -1464,29 +1956,28 @@ class FilamentLedgerPanel extends HTMLElement {
     const materialOther = hinted && !MATERIALS.includes(hinted) ? hinted : "";
     return `
       <form data-form="new-spool">
-        <h3>Register a spool</h3>
-        <label>Material
+        <h3>${t("dlg.registerTitle")}</h3>
+        <label>${t("dlg.material")}
           <select name="material">${MATERIALS.map((m) => `<option ${m === material ? "selected" : ""}>${m}</option>`).join("")}</select>
         </label>
-        <label>Name if OTHER<input name="material_other" value="${esc(materialOther)}" placeholder="Nylon-X"></label>
-        <label>Colour<input name="colour" value="${esc(hint?.colour_hint || "#000000")}" type="color"></label>
-        <label>Opening weight (g)
+        <label>${t("dlg.materialOther")}<input name="material_other" value="${esc(materialOther)}" placeholder="${t("dlg.materialOtherPlaceholder")}"></label>
+        <label>${t("dlg.colour")}<input name="colour" value="${esc(hint?.colour_hint || "#000000")}" type="color"></label>
+        <label>${t("dlg.openingWeight")}
           <input name="opening_weight_g" type="number" step="0.1" min="1" value="${defaults.opening_weight_g}" required>
         </label>
-        <label>Empty reel weight (g)
+        <label>${t("dlg.coreWeight")}
           <input name="core_weight_g" type="number" step="0.1" min="0" value="${defaults.core_weight_g}" required>
-          <small>A scale weighs the whole spool. The ledger subtracts this for you.</small>
+          <small>${t("dlg.coreWeightHelp")}</small>
         </label>
-        <label>Vendor<input name="vendor" placeholder="Bambu Lab"></label>
-        <label>Label<input name="label" value="${esc(hint?.name_hint || "")}" placeholder="Shelf B"></label>
+        <label>${t("dlg.vendor")}<input name="vendor" placeholder="${t("dlg.vendorPlaceholder")}"></label>
+        <label>${t("dlg.label")}<input name="label" value="${esc(hint?.name_hint || "")}" placeholder="${t("dlg.labelPlaceholder")}"></label>
         ${
           hint?.tag_uid
             ? `<input type="hidden" name="tag_uid" value="${esc(hint.tag_uid)}">
-        <p class="muted small">Tag ${esc(hint.tag_uid)} from slot ${esc(hint.slot)} will be attached,
-          so the next sync mounts this spool by itself.</p>`
+        <p class="muted small">${t("dlg.tagFromSlot", { tag: hint.tag_uid, slot: hint.slot })}</p>`
             : ""
         }
-        ${this.formActions("Register")}
+        ${this.formActions(t("dlg.register"))}
       </form>`;
   }
 
@@ -1499,29 +1990,29 @@ class FilamentLedgerPanel extends HTMLElement {
    * one. What it offers instead is the correction section below, which writes a movement.
    */
   editSpoolForm() {
+    const t = this._t;
     const spool = this._detail;
     // `material` is the display name, which for OTHER *is* the free-text name.
     const other = spool.material_kind === "OTHER" ? spool.material : "";
     return `
       <form data-form="edit-spool" data-core="${esc(spool.core_weight_g)}">
-        <h3>Edit spool</h3>
-        <label>Material
+        <h3>${t("dlg.editTitle")}</h3>
+        <label>${t("dlg.material")}
           <select name="material">${MATERIALS.map(
             (m) => `<option ${m === spool.material_kind ? "selected" : ""}>${m}</option>`,
           ).join("")}</select>
         </label>
-        <label>Name if OTHER<input name="material_other" value="${esc(other)}" placeholder="Nylon-X"></label>
-        <label>Colour<input name="colour" value="${esc(spool.colour)}" type="color"></label>
-        <label>Vendor<input name="vendor" value="${esc(spool.vendor ?? "")}" placeholder="Bambu Lab"></label>
-        <label>Label<input name="label" value="${esc(spool.label ?? "")}" placeholder="Shelf B"></label>
-        <label>Empty reel weight (g)
+        <label>${t("dlg.materialOther")}<input name="material_other" value="${esc(other)}" placeholder="${t("dlg.materialOtherPlaceholder")}"></label>
+        <label>${t("dlg.colour")}<input name="colour" value="${esc(spool.colour)}" type="color"></label>
+        <label>${t("dlg.vendor")}<input name="vendor" value="${esc(spool.vendor ?? "")}" placeholder="${t("dlg.vendorPlaceholder")}"></label>
+        <label>${t("dlg.label")}<input name="label" value="${esc(spool.label ?? "")}" placeholder="${t("dlg.labelPlaceholder")}"></label>
+        <label>${t("dlg.coreWeight")}
           <input name="core_weight_g" type="number" step="0.1" min="0" value="${esc(spool.core_weight_g)}" required>
         </label>
-        <p class="muted small">An emptied Vendor or Label keeps its current value — the tag
-          below is the only field this dialog can clear.</p>
+        <p class="muted small">${t("dlg.editClearNote")}</p>
         ${this.editTagField(spool)}
         ${this.editCorrectionSection(spool)}
-        ${this.formActions("Save")}
+        ${this.formActions(t("act.save"))}
       </form>`;
   }
 
@@ -1533,29 +2024,25 @@ class FilamentLedgerPanel extends HTMLElement {
    * "leave it alone" — absent, not null.
    */
   editTagField(spool) {
+    const t = this._t;
     if (spool.tag_source === "DETECTED") {
       return `
         <div class="ed-tag">
-          <div class="k">Tag</div>
+          <div class="k">${t("dlg.tag")}</div>
           <div class="ed-tagval">${esc(spool.tag_uid)}</div>
-          <small>Attached by the printer — edit is disabled so the tag always matches the
-            physical spool.</small>
+          <small>${t("dlg.tagDetected")}</small>
         </div>`;
     }
     return `
-      <label>Tag
+      <label>${t("dlg.tag")}
         <span class="ed-tagrow">
-          <input class="ed-taginput" name="tag_uid" value="${esc(spool.tag_uid ?? "")}" placeholder="none">
-          <button type="button" data-action="clear-tag">Clear</button>
+          <input class="ed-taginput" name="tag_uid" value="${esc(spool.tag_uid ?? "")}" placeholder="${t("dlg.tagPlaceholder")}">
+          <button type="button" data-action="clear-tag">${t("dlg.tagClear")}</button>
         </span>
-        <small>${
-          spool.tag_uid
-            ? "Yours to change — clearing the field removes the tag."
-            : "A spool can be given a tag here; a tag typed here stays yours to change."
-        }</small>
+        <small>${spool.tag_uid ? t("dlg.tagYours") : t("dlg.tagNone")}</small>
       </label>
       <label class="row"><input name="confirm_duplicate_tag" type="checkbox">
-        <span class="small">This tag belongs to another spool on purpose</span>
+        <span class="small">${t("dlg.tagDuplicate")}</span>
       </label>`;
   }
 
@@ -1564,51 +2051,54 @@ class FilamentLedgerPanel extends HTMLElement {
    * writing a movement, so history explains it (docs/14 §14.2).
    */
   editCorrectionSection(spool) {
+    const t = this._t;
     return `
       <div class="ed-corr">
-        <div class="k">Correct the weight</div>
-        <p class="muted small">This writes a movement to history — the edit itself never
-          touches the balance.</p>
-        <label>Set remaining filament to (g)
+        <div class="k">${t("dlg.correctHeading")}</div>
+        <p class="muted small">${t("dlg.correctBody")}</p>
+        <label>${t("dlg.setRemaining")}
           <input class="ed-set" name="set_g" type="number" step="0.1" min="0"
             placeholder="${esc(spool.balance_exact_g.toFixed(1))}">
-          <small>Net filament, without the reel. Recorded as a reconciliation.</small>
+          <small>${t("dlg.setRemainingHelp")}</small>
         </label>
-        <label>Add / remove (g)
+        <label>${t("dlg.addRemove")}
           <input class="ed-delta" name="delta_g" type="number" step="0.1" placeholder="0.0">
-          <small>Negative removes, positive adds. Recorded as an adjustment.</small>
+          <small>${t("dlg.addRemoveHelp")}</small>
         </label>
-        <label>Reason for the adjustment
-          <input class="ed-reason" name="delta_reason" placeholder="why" disabled>
-          <small>Required for an adjustment. An unexplained one is indistinguishable from a bug.</small>
+        <label>${t("dlg.adjustReason")}
+          <input class="ed-reason" name="delta_reason" placeholder="${t("act.why")}" disabled>
+          <small>${t("dlg.adjustReasonHelp")}</small>
         </label>
-        <p class="ed-hint muted small">Leave both empty and nothing is written to history.</p>
+        <p class="ed-hint muted small">${t("dlg.correctNothing")}</p>
       </div>`;
   }
 
   weighForm() {
+    const t = this._t;
     return `
       <form data-form="weigh">
-        <h3>Weigh spool</h3>
-        <p class="muted">Put the whole spool on a kitchen scale.</p>
-        <label>Measured weight (g)<input name="measured_g" type="number" step="0.1" min="0" required autofocus></label>
-        <label class="row"><input name="includes_core" type="checkbox" checked> Includes the reel (${this._detail.core_weight_g} g)</label>
-        <label>Note<input name="note" placeholder="optional"></label>
-        <p class="muted small">This is recorded as a correction. Nothing in your history changes.</p>
-        ${this.formActions("Record")}
+        <h3>${t("dlg.weighTitle")}</h3>
+        <p class="muted">${t("dlg.weighBody")}</p>
+        <label>${t("dlg.measured")}<input name="measured_g" type="number" step="0.1" min="0" required autofocus></label>
+        <label class="row"><input name="includes_core" type="checkbox" checked>
+          ${t("dlg.includesCore", { core: this._detail.core_weight_g })}</label>
+        <label>${t("act.note")}<input name="note" placeholder="${t("act.optional")}"></label>
+        <p class="muted small">${t("dlg.weighFoot")}</p>
+        ${this.formActions(t("act.record"))}
       </form>`;
   }
 
   adjustForm() {
+    const t = this._t;
     return `
       <form data-form="adjust">
-        <h3>Adjust</h3>
-        <label>Amount (g)<input name="amount_g" type="number" step="0.1" required autofocus>
-          <small>Negative removes, positive adds.</small>
+        <h3>${t("dlg.adjustTitle")}</h3>
+        <label>${t("dlg.amount")}<input name="amount_g" type="number" step="0.1" required autofocus>
+          <small>${t("dlg.amountHelp")}</small>
         </label>
-        <label>Reason<input name="reason" required placeholder="why"></label>
-        <p class="muted small">The reason is required. An unexplained adjustment is indistinguishable from a bug.</p>
-        ${this.formActions("Record")}
+        <label>${t("act.reason")}<input name="reason" required placeholder="${t("act.why")}"></label>
+        <p class="muted small">${t("dlg.adjustFoot")}</p>
+        ${this.formActions(t("act.record"))}
       </form>`;
   }
 
@@ -1621,6 +2111,7 @@ class FilamentLedgerPanel extends HTMLElement {
    * movement is known to.
    */
   reassignForm() {
+    const t = this._t;
     const subject = this._movementSubject(this._dialog.movement_id);
     if (!subject) return this.staleSubject();
     const moved = Math.abs(subject.amount_g).toFixed(1);
@@ -1631,23 +2122,21 @@ class FilamentLedgerPanel extends HTMLElement {
       .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`)
       .join("");
     if (!options) {
-      return `<h3>Reassign this charge</h3>
-        <p class="muted">There is no other spool in inventory to charge.</p>
+      return `<h3>${t("dlg.reassignTitle")}</h3>
+        <p class="muted">${t("dlg.reassignNone")}</p>
         ${this.formActions(null)}`;
     }
     return `
       <form data-form="reassign">
-        <h3>Reassign this charge</h3>
-        <p class="cx-says">
-          Return <b>${esc(moved)} g</b> to <b>${esc(subject.spool_name)}</b>, and charge
-          <b>${esc(moved)} g</b> to the spool you choose. The original entry stays in
-          history, marked as reassigned.
-        </p>
-        <label>Charge it to<select name="to_spool_id">${options}</select></label>
-        <label>Note<input name="note" placeholder="optional"></label>
-        <p class="muted small">No reason is required: the pair names both spools and links
-          back to the entry it corrects, so it explains itself.</p>
-        ${this.formActions("Reassign")}
+        <h3>${t("dlg.reassignTitle")}</h3>
+        <p class="cx-says">${t("dlg.reassignSays", {
+          grams: moved,
+          spool: subject.spool_name,
+        })}</p>
+        <label>${t("dlg.reassignTo")}<select name="to_spool_id">${options}</select></label>
+        <label>${t("act.note")}<input name="note" placeholder="${t("act.optional")}"></label>
+        <p class="muted small">${t("dlg.reassignFoot")}</p>
+        ${this.formActions(t("dlg.reassign"))}
       </form>`;
   }
 
@@ -1660,78 +2149,65 @@ class FilamentLedgerPanel extends HTMLElement {
    * back, and say why.
    */
   voidMovementForm() {
+    const t = this._t;
     const subject = this._movementSubject(this._dialog.movement_id);
     if (!subject) return this.staleSubject();
     const moved = Math.abs(subject.amount_g).toFixed(1);
-    const name = esc(subject.spool_name);
+    const figures = { grams: moved, spool: subject.spool_name };
     // The owner's sentence, and its honest inverse. Voiding an entry that *added*
     // filament removes those grams again — saying "returns" there would be a lie in the
     // one place the panel is promising exactly what will happen.
     const promise =
-      subject.amount_g < 0
-        ? `This returns <b>${esc(moved)} g</b> to <b>${name}</b>.`
-        : `This removes <b>${esc(moved)} g</b> from <b>${name}</b>.`;
+      subject.amount_g < 0 ? t("dlg.voidReturns", figures) : t("dlg.voidRemoves", figures);
 
-    if (subject.retirement) {
-      return this.voidRetiredForm(subject, moved, name);
-    }
+    if (subject.retirement) return this.voidRetiredForm(subject, figures);
     return `
       <form data-form="void-movement">
-        <h3>Delete this entry?</h3>
+        <h3>${t("dlg.voidTitle")}</h3>
         <p class="cx-says">${promise}</p>
-        <label>Reason<input name="reason" placeholder="optional"></label>
-        <p class="muted small">Nothing is erased. The entry leaves the views you read
-          every day and waits in the trash; the ledger records the deletion and the grams
-          coming back as two more rows.</p>
-        ${this.formActions("Delete entry")}
+        <label>${t("act.reason")}<input name="reason" placeholder="${t("act.optional")}"></label>
+        <p class="muted small">${t("dlg.voidFoot")}</p>
+        ${this.formActions(t("dlg.voidConfirm"))}
       </form>`;
   }
 
-  voidRetiredForm(subject, moved, name) {
+  voidRetiredForm(subject, figures) {
+    const t = this._t;
     const deleted = subject.retirement === "DELETED";
     const explain = deleted
-      ? `<b>${name}</b> is in the trash, so there is nowhere for
-         <b>${esc(moved)} g</b> to go back to.`
-      : `<b>${name}</b> was discarded, so there is nowhere for
-         <b>${esc(moved)} g</b> to go back to.`;
+      ? t("dlg.voidDeletedSpool", figures)
+      : t("dlg.voidDiscardedSpool", figures);
     const route = deleted
       ? `<button class="primary" type="button" data-action="void-restore-spool"
-          data-id="${esc(subject.spool_id)}">Restore the spool first</button>`
-      : `<p class="muted small">The way back for a discarded spool is to delete its
-          whole-spool discard entry: that returns the balance and the spool together, in
-          one operation.</p>`;
+          data-id="${esc(subject.spool_id)}">${t("dlg.voidRestoreFirst")}</button>`
+      : `<p class="muted small">${t("dlg.voidDiscardRoute")}</p>`;
     return `
       <form data-form="void-movement">
-        <h3>Delete this entry?</h3>
+        <h3>${t("dlg.voidTitle")}</h3>
         <p class="cx-says">${explain}</p>
         ${route}
         <input type="hidden" name="without_restitution" value="1">
-        <label>Why nothing comes back<input name="reason" required placeholder="say what happened"></label>
-        <p class="muted small">Required here. The entry still counts toward its spool's
-          balance — only the views change — and a deletion with no explanation reads as a
-          bug six months later. This one cannot be restored afterwards.</p>
-        ${this.formActions("Delete without returning grams")}
+        <label>${t("dlg.voidWhyNothing")}<input name="reason" required placeholder="${t("dlg.voidWhyPlaceholder")}"></label>
+        <p class="muted small">${t("dlg.voidNoRestitutionFoot")}</p>
+        ${this.formActions(t("dlg.voidNoRestitutionConfirm"))}
       </form>`;
   }
 
   restoreMovementForm() {
+    const t = this._t;
     const entry = (this._trash?.movements ?? []).find(
       (m) => m.movement_id === this._dialog.movement_id,
     );
     if (!entry) return this.staleSubject();
-    const moved = Math.abs(entry.amount_g).toFixed(1);
-    const name = esc(entry.spool_name);
+    const figures = { grams: Math.abs(entry.amount_g).toFixed(1), spool: entry.spool_name };
     const promise =
-      entry.amount_g < 0
-        ? `Deduct <b>${esc(moved)} g</b> from <b>${name}</b> again?`
-        : `Add <b>${esc(moved)} g</b> to <b>${name}</b> again?`;
+      entry.amount_g < 0 ? t("dlg.restoreDeduct", figures) : t("dlg.restoreAdd", figures);
     return `
       <form data-form="restore-movement">
-        <h3>Restore this entry?</h3>
+        <h3>${t("dlg.restoreTitle")}</h3>
         <p class="cx-says">${promise}</p>
-        <p class="muted small">The entry returns to your history and the ledger records
-          the restoration as one more row. Nothing that happened is rewritten.</p>
-        ${this.formActions("Restore")}
+        <p class="muted small">${t("dlg.restoreFoot")}</p>
+        ${this.formActions(t("act.restore"))}
       </form>`;
   }
 
@@ -1740,23 +2216,22 @@ class FilamentLedgerPanel extends HTMLElement {
    * different facts about the world, and one line each so neither is picked by accident.
    */
   spoolIntentBody() {
+    const t = this._t;
     const spool =
       this._spools.find((s) => s.id === this._dialog.spool_id) ??
       (this._detail?.id === this._dialog.spool_id ? this._detail : null);
     if (!spool) return this.staleSubject();
     const id = esc(spool.id);
     return `
-      <h3>Remove ${esc(spool.name)}</h3>
-      <p class="muted">What actually happened to it?</p>
+      <h3>${t("dlg.intentTitle", { name: spool.name })}</h3>
+      <p class="muted">${t("dlg.intentAsk")}</p>
       <div class="intent">
-        <button data-action="intent-discard" data-id="${id}">I threw it away</button>
-        <small>A real event: the remaining ${spool.balance_g} g counts as waste in your
-          statistics, and the spool keeps its history.</small>
+        <button data-action="intent-discard" data-id="${id}">${t("dlg.intentThrewAway")}</button>
+        <small>${t("dlg.intentThrewAwayHelp", { grams: spool.balance_g })}</small>
       </div>
       <div class="intent">
-        <button data-action="intent-delete" data-id="${id}">It was registered by mistake</button>
-        <small>Treats it as never registered — counted in nothing, anywhere, and
-          restorable from the Trash.</small>
+        <button data-action="intent-delete" data-id="${id}">${t("dlg.intentMistake")}</button>
+        <small>${t("dlg.intentMistakeHelp")}</small>
       </div>
       ${this.formActions(null)}`;
   }
@@ -1766,58 +2241,61 @@ class FilamentLedgerPanel extends HTMLElement {
    * Says so instead of rendering a blank box or, worse, figures from a stale row.
    */
   staleSubject() {
-    return `<h3>That entry has moved on</h3>
-      <p class="muted">The ledger changed while this was open. Close this and try again —
-        nothing was sent.</p>
+    return `<h3>${this._t("dlg.staleTitle")}</h3>
+      <p class="muted">${this._t("dlg.staleBody")}</p>
       ${this.formActions(null)}`;
   }
 
   discardForm() {
+    const t = this._t;
     const whole = this._dialog?.mode === "whole_spool";
     return `
       <form data-form="discard">
-        <h3>Discard</h3>
-        <label>What<select name="mode">
-          <option value="partial" ${whole ? "" : "selected"}>Part of this spool</option>
-          <option value="whole_spool" ${whole ? "selected" : ""}>The whole spool</option>
+        <h3>${t("dlg.discardTitle")}</h3>
+        <label>${t("dlg.discardWhat")}<select name="mode">
+          <option value="partial" ${whole ? "" : "selected"}>${t("dlg.discardPartial")}</option>
+          <option value="whole_spool" ${whole ? "selected" : ""}>${t("dlg.discardWhole")}</option>
         </select></label>
-        <label>Amount (g), if partial<input name="amount_g" type="number" step="0.1" min="0"></label>
-        <label>Reason<input name="reason" required placeholder="tangled section"></label>
-        ${this.formActions("Discard")}
+        <label>${t("dlg.discardAmount")}<input name="amount_g" type="number" step="0.1" min="0"></label>
+        <label>${t("act.reason")}<input name="reason" required placeholder="${t("dlg.discardReasonPlaceholder")}"></label>
+        ${this.formActions(t("act.discard"))}
       </form>`;
   }
 
   mountForm() {
+    const t = this._t;
+    const slot = this._dialog.slot;
     const available = this._spools.filter((s) => s.location.kind !== "AMS_SLOT");
     if (!available.length) {
-      return `<h3>Mount in slot ${this._dialog.slot}</h3>
-        <p class="muted">Every spool is already mounted. Unmount one first.</p>
+      return `<h3>${t("dlg.mountTitle", { slot })}</h3>
+        <p class="muted">${t("dlg.mountNone")}</p>
         ${this.formActions(null)}`;
     }
     return `
       <form data-form="mount">
-        <h3>Mount in slot ${this._dialog.slot}</h3>
-        <label>Spool<select name="spool_id">
+        <h3>${t("dlg.mountTitle", { slot })}</h3>
+        <label>${t("dlg.mountSpool")}<select name="spool_id">
           ${available.map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`).join("")}
         </select></label>
-        ${this.formActions("Mount")}
+        ${this.formActions(t("act.mount"))}
       </form>`;
   }
 
   dismissReviewForm() {
+    const t = this._t;
     return `
       <form data-form="dismiss-review">
-        <h3>Record no consumption for this print?</h3>
+        <h3>${t("dlg.dismissTitle")}</h3>
         <p class="muted">${esc(this._dialog.review?.job_name ?? "")}</p>
-        <label>Reason<input name="note" placeholder="optional"></label>
-        <p class="muted small">Dismissal is a decision written to history, not a delete.</p>
-        ${this.formActions("Dismiss")}
+        <label>${t("act.reason")}<input name="note" placeholder="${t("act.optional")}"></label>
+        <p class="muted small">${t("dlg.dismissFoot")}</p>
+        ${this.formActions(t("act.dismiss"))}
       </form>`;
   }
 
   formActions(confirmLabel) {
     return `<div class="actions">
-      <button type="button" data-action="close-dialog">Cancel</button>
+      <button type="button" data-action="close-dialog">${this._t("act.cancel")}</button>
       ${confirmLabel ? `<button type="submit" class="primary">${confirmLabel}</button>` : ""}
     </div>`;
   }
@@ -1831,7 +2309,12 @@ const STYLES = `
 
 header { background: var(--app-header-background-color, var(--primary-color));
   color: var(--app-header-text-color, #fff); padding: 12px 20px 0; position: sticky; top: 0; z-index: 5; }
-header h1 { margin: 0 0 10px; font-size: 20px; font-weight: 400; }
+header h1 { margin: 0; font-size: 20px; font-weight: 400; }
+.head-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.whoami { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12.5px; opacity: .85; }
+.who-name { font-weight: 500; }
+.who-admin { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+  border: 1px solid currentColor; border-radius: 999px; padding: 1px 7px; opacity: .9; }
 nav { display: flex; gap: 4px; overflow-x: auto; }
 nav button { background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
   color: inherit; opacity: .75; font: inherit; font-size: 14px; padding: 8px 16px 10px; white-space: nowrap; }
@@ -2068,6 +2551,39 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 .intent { display: flex; flex-direction: column; gap: 5px; padding: 11px 0;
   border-top: 1px solid var(--divider-color, #eee); }
 .intent button { align-self: flex-start; }
+
+/* Printer tab — docs/14 §14.5. A glance, not a printer UI. */
+.pr-h { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--secondary-text-color); font-weight: 700; }
+.pr-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.pr-fact { padding: 13px 18px; border-right: 1px solid var(--divider-color, #eee);
+  border-bottom: 1px solid var(--divider-color, #eee); min-width: 0; }
+.pr-fact .k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--secondary-text-color); font-weight: 700; }
+.pr-fact .v { font-size: 16px; margin-top: 3px; overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums; }
+.pr-bar { display: flex; align-items: center; gap: 8px; }
+.pr-bar .track { flex: 1; height: 6px; border-radius: 3px; min-width: 40px;
+  background: var(--divider-color, #eee); overflow: hidden; display: block; }
+.pr-bar .track i { display: block; height: 100%; background: var(--primary-color); }
+.pr-error { padding: 11px 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border-left: 3px solid var(--error-color, #c62828); }
+.pr-trays { display: flex; flex-direction: column; }
+.tray .empty-reel { border: 1px dashed var(--divider-color, #ddd); background: none; }
+
+/* Settings tab — docs/14 §14.6.4. */
+.set-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+.set-card label { display: flex; flex-direction: column; gap: 5px; font-size: 13px;
+  color: var(--secondary-text-color); }
+.set-card label.row { flex-direction: row; align-items: center; gap: 9px; }
+.set-card input { font: inherit; font-size: 15px; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
+  color: var(--primary-text-color); }
+.set-card input[type=checkbox] { width: auto; }
+.set-card input:disabled { opacity: .6; cursor: not-allowed; }
+.set-card small { color: var(--secondary-text-color); font-size: 12px; }
+.set-card .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.saved { color: var(--success-color, #2e7d32); text-align: right; margin: 0; }
 
 @media (max-width: 600px) { main { padding: 12px; } .detail { gap: 12px; } }
 `;
