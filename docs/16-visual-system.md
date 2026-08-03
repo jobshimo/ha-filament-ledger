@@ -141,11 +141,10 @@ specimen that throws says so in place rather than rendering empty.
 
 Two sheets sit beside `STYLES`, and both are temporary in different ways.
 
-- **An approximation of Home Assistant's default theme.** Outside HA not one of the 15 theme
-  variables is defined, and without them the specimens render as unstyled boxes. **The token
-  pass deletes this block**: when the panel owns its palette there is nothing left to
-  approximate. Until then, anything hanging on an exact shade still has to be checked inside
-  Home Assistant.
+- ~~An approximation of Home Assistant's default theme.~~ **Removed by the token pass, as
+  planned.** It existed because outside HA not one of the 15 theme variables was defined and
+  the specimens rendered as unstyled boxes. The panel now owns its palette, so there is
+  nothing left to approximate.
 - **A containment rule for dialogs**, and only for dialogs. `.scrim` is `position: fixed`,
   which is right in the panel and wrong on a catalogue — it escapes its frame and stacks
   overlays on the page. Scoping it to `absolute` inside a positioned stage reproduces the same
