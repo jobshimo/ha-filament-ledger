@@ -2773,7 +2773,12 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 }
 
-const STYLES = `
+/**
+ * Exported for `styleguide.html`, which adopts this exact sheet into its own shadow roots so
+ * the catalogue and the panel cannot drift apart (16 §16.4). Nothing else imports it, and the
+ * panel keeps using it directly.
+ */
+export const STYLES = `
 :host { display: block; height: 100%; background: var(--primary-background-color);
   /* The first two tokens of 16 §16.3. The rest of the vocabulary arrives with the token pass;
      these land early because the faces they name are what this change ships. */

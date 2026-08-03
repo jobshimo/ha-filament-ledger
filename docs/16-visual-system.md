@@ -132,8 +132,25 @@ path the panel already registers:
 /filament_ledger_static/styleguide.html
 ```
 
-It imports `STYLES` from the panel module. There is no second copy of the CSS and there is no
-way for the two to drift.
+It imports `STYLES` from the panel module and adopts that exact stylesheet into each specimen's
+shadow root. Better still, it does not hand-write the markup either: it asks a real, unmounted
+`<filament-ledger-panel>` to render each view from fixtures whose shapes come from
+`infrastructure/ha/serialisers.py`. There is no second copy of the CSS and no second copy of the
+markup, so the catalogue cannot drift away from the panel — it can only break loudly, and a
+specimen that throws says so in place rather than rendering empty.
+
+Two sheets sit beside `STYLES`, and both are temporary in different ways.
+
+- **An approximation of Home Assistant's default theme.** Outside HA not one of the 15 theme
+  variables is defined, and without them the specimens render as unstyled boxes. **The token
+  pass deletes this block**: when the panel owns its palette there is nothing left to
+  approximate. Until then, anything hanging on an exact shade still has to be checked inside
+  Home Assistant.
+- **A containment rule for dialogs**, and only for dialogs. `.scrim` is `position: fixed`,
+  which is right in the panel and wrong on a catalogue — it escapes its frame and stacks
+  overlays on the page. Scoping it to `absolute` inside a positioned stage reproduces the same
+  layout. This is the only place the page overrides the panel, it concerns positioning rather
+  than appearance, and if the list ever grows past that the catalogue has started lying.
 
 **What it must never do: talk to Home Assistant.** No websocket, no `hass`, no real spool, no
 real balance. Hard-coded sample markup only. That constraint is what makes the page safe to
