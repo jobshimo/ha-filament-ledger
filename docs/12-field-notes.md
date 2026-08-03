@@ -10,7 +10,10 @@ that Phase 2 is written against payloads somebody looked at.
 
 ## 2026-08-02 — First connection
 
-**Hardware.** Bambu Lab A1, serial `<SERIAL>`, with AMS Lite (reported as `AMS 1`).
+**Hardware.** Bambu Lab A1 with AMS Lite (reported as `AMS 1`). The serial is written here as
+`<SERIAL>`: it identifies one person's machine and adds nothing a reader needs, because every
+rule below is about the *shape* of what the printer reports, never about which printer reported
+it. Discovery resolves entities through the registry, so no code matches on a serial either.
 Home Assistant 2026.7.4 on HAOS. `ha-bambulab` v2.2.22.
 
 **Connection mode: hybrid.** Authenticated against Bambu Cloud, with
