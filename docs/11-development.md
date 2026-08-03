@@ -119,17 +119,37 @@ broken during the first difficult afternoon.
 
 ## 11.6 The panel
 
-`ui/` is a separate TypeScript build — Lit and Vite — producing a single bundle registered as
-a custom panel ([05 §5.7](05-ha-integration.md)).
+> **Superseded by [ADR-0006](adr/0006-vanilla-panel.md).** What is shipped is
+> `custom_components/filament_ledger/www/filament-ledger-panel.js`: a hand-written ES module.
+> **No TypeScript, no Lit, no Vite, no bundle, no `node_modules`, and no CI job verifying a
+> build** — none of that exists in this repository, and a reader looking for `ui/` will not
+> find it. The file a user reads is the file their browser executes.
+>
+> Its appearance is specified in [16 — The Visual System](16-visual-system.md); the panel has
+> its own identity rather than the Home Assistant theme ([ADR-0008](adr/0008-panel-visual-identity.md)).
+>
+> The superseded plan is kept below rather than deleted, for the reason ADR-0006 gives: a plan
+> that changed is worth more to a later reader than one that appears to have been obvious.
 
-**The built bundle is committed.** HACS installs a repository, not a build pipeline; a user
-cannot run `npm install`. Source lives in `ui/src`, output in
-`custom_components/filament_ledger/ui/`, and CI verifies that a fresh build of the committed
-source reproduces the committed output — otherwise the bundle drifts from its source and
-nobody notices until a bug cannot be reproduced.
+The original plan, written before any panel existed:
 
-Not needed until Phase 3. Written down now so Phase 3 does not start with an unplanned
-toolchain decision.
+> `ui/` is a separate TypeScript build — Lit and Vite — producing a single bundle registered as
+> a custom panel ([05 §5.7](05-ha-integration.md)).
+>
+> **The built bundle is committed.** HACS installs a repository, not a build pipeline; a user
+> cannot run `npm install`. Source lives in `ui/src`, output in
+> `custom_components/filament_ledger/ui/`, and CI verifies that a fresh build of the committed
+> source reproduces the committed output — otherwise the bundle drifts from its source and
+> nobody notices until a bug cannot be reproduced.
+>
+> Not needed until Phase 3. Written down now so Phase 3 does not start with an unplanned
+> toolchain decision.
+
+Building the first panel is what showed the default was heavier than the problem. The cost that
+would justify revisiting it is the one ADR-0006 names: **there is no type checking and no test
+harness on the JavaScript.** That is why every pull request touching `www/` carries a
+hand-verification checklist ([CONTRIBUTING](../CONTRIBUTING.md)), and why the styleguide page
+exists ([16 §16.4](16-visual-system.md)).
 
 ## 11.7 Conventions
 
