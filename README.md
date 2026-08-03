@@ -16,7 +16,7 @@ immutable movement, and the balance is their sum — instead of trusting a perce
 cannot measure. It deducts automatically from finished prints, sends everything it is unsure
 about to a review queue, and gives you a sidebar panel to weigh, correct and audit the lot.
 
-<!-- ![The inventory view](docs/img/inventory.png) -->
+![The inventory view](docs/img/inventory.jpg)
 
 ---
 
@@ -199,7 +199,7 @@ to lie to hold it.
 
 ### Inventory
 
-<!-- ![Inventory](docs/img/inventory.png) -->
+![Inventory](docs/img/inventory.jpg)
 
 The landing view: what you have, without a click. A card per spool — colour block first, because
 you think in colours — with the balance in grams as the largest thing on it, a progress bar, the
@@ -218,7 +218,7 @@ The edit form has no balance field at all — that is not an omission, that is t
 
 ### History
 
-<!-- ![History](docs/img/history.png) -->
+![History](docs/img/history.jpg)
 
 The whole ledger, newest first, every spool together — the last print, the correction you made
 yesterday, the discard nobody remembers. Each row: when, which spool, what kind of entry, the
@@ -240,7 +240,7 @@ arithmetic is approximate.
 
 ### Stats
 
-<!-- ![Stats](docs/img/stats.png) -->
+![Stats](docs/img/stats.jpg)
 
 What it all adds up to, over 30 days, 90 days or all time. Printed and wasted totals, prints
 finished, reviews resolved, measured print time and average print length, filament by colour and
@@ -281,7 +281,7 @@ not a delete.
 
 ### AMS
 
-<!-- ![AMS](docs/img/ams.png) -->
+![AMS](docs/img/ams.jpg)
 
 A physical mirror of the machine: four slot cards with what is loaded, its balance, its
 confidence, and the live progress of the current print with an estimated per-slot figure. That
