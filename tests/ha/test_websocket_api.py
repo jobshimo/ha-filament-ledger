@@ -38,6 +38,7 @@ from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import EstimatorKind, ReviewReason
 from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
+from custom_components.filament_ledger.infrastructure.ha.event_bridge import LEDGER_EVENTS
 from custom_components.filament_ledger.infrastructure.ha.tray_sync import TraySync
 from custom_components.filament_ledger.infrastructure.ha.websocket_api import (
     async_register_commands,
@@ -75,6 +76,7 @@ REVIEWS_DISMISS = "filament_ledger/reviews/dismiss"
 MOVEMENTS = "filament_ledger/movements"
 TRAYS_SYNC = "filament_ledger/trays/sync"
 STATISTICS = "filament_ledger/statistics"
+SUBSCRIBE = "filament_ledger/subscribe"
 
 
 @dataclass
@@ -90,6 +92,13 @@ class FakeConnection:
 
     def __init__(self) -> None:
         self.replies: dict[int, Reply] = {}
+        # What a subscription pushes, and how it is closed. The real `ActiveConnection`
+        # carries both, and `handle_subscribe` uses both.
+        self.messages: list[dict[str, object]] = []
+        self.subscriptions: dict[int, object] = {}
+
+    def send_message(self, message: dict[str, object]) -> None:
+        self.messages.append(message)
 
     def send_result(self, msg_id: int, result: object = None) -> None:
         self.replies[msg_id] = Reply(result=result)
@@ -1344,3 +1353,66 @@ class TestTraysSync:
         second = await ws.result_dict(TRAYS_SYNC)
 
         assert second == first
+
+
+class TestSubscribe:
+    """The panel's only live channel: one subscription, and the backend pushes.
+
+    What is pinned here is the shape of the mechanism — the current state arrives without
+    being asked for, the bus listeners exist while the subscription does, and closing it
+    removes every one of them. Between them they are the difference between a push and a
+    poll wearing a push's clothes.
+
+    The debounced *delivery* is Home Assistant's own `Debouncer` and needs a running timer
+    to observe; what matters here is that the listeners are wired to it and unwired again.
+    """
+
+    async def test_subscribing_pushes_the_current_state_without_being_asked(
+        self, ws: WsClient
+    ) -> None:
+        await ws.send(SUBSCRIBE)
+
+        kinds = [
+            cast("dict[str, object]", message["event"])["kind"]
+            for message in ws.connection.messages
+        ]
+        assert "ledger" in kinds, "a panel that must fetch its first state is not subscribed"
+        assert "printer" in kinds
+
+    async def test_the_first_push_carries_everything_the_ledger_views_read(
+        self, ws: WsClient
+    ) -> None:
+        """Five reads used to be five round trips per change, per open panel. One payload
+        now, computed once on the server."""
+        await ws.send(SUBSCRIBE)
+
+        ledger = next(
+            cast("dict[str, object]", m["event"])
+            for m in ws.connection.messages
+            if cast("dict[str, object]", m["event"])["kind"] == "ledger"
+        )
+
+        assert set(ledger) == {"kind", "spools", "stock", "reviews", "movements", "trash"}
+
+    async def test_it_listens_for_every_ledger_event_while_subscribed(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        await ws.send(SUBSCRIBE)
+
+        listening = {entry.event_type for entry in harness.hass.bus.listeners}
+
+        assert listening >= LEDGER_EVENTS
+
+    async def test_closing_the_subscription_removes_every_listener(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """A subscription outliving its panel keeps a read model being computed for a view
+        nobody is looking at, once more per navigation away and back."""
+        before = {id(entry) for entry in harness.hass.bus.listeners}
+        await ws.send(SUBSCRIBE)
+        unsubscribe = ws.connection.subscriptions[ws.last_id]
+
+        cast("Callable[[], None]", unsubscribe)()
+
+        after = {id(entry) for entry in harness.hass.bus.listeners}
+        assert after == before, "the subscription left listeners behind"

@@ -90,6 +90,75 @@ const STATS_BAR_ROW = 34;
  */
 const TAB_FADE_SLACK = 1;
 
+/**
+ * The typefaces, and the one rule about them that fails silently if broken.
+ *
+ * **A `@font-face` declared inside a shadow root is ignored.** Font faces resolve against the
+ * document, and a shadow tree is deliberately not allowed to define one — otherwise a component
+ * could redefine another's fonts and encapsulation would leak through the font stack. Putting
+ * these in `STYLES` produces no error and no warning; the text simply renders in the fallback,
+ * which reads as a font that failed to load rather than a rule that was never honoured
+ * ([16 §16.2](../../../docs/16-visual-system.md)).
+ *
+ * So the faces are written into `document.head` instead. Everything else stays in the shadow
+ * root, where it belongs.
+ *
+ * Space Grotesk is a **variable** font: one file per subset spans 400–700, which is why a
+ * single rule carries a weight *range* rather than four rules carrying four files. IBM Plex
+ * Mono is static, so it gets one file per weight. Only latin and latin-ext ship — the panel
+ * speaks English and Spanish, and cyrillic would be 60 KB nobody renders.
+ *
+ * Paths are resolved from `import.meta.url` rather than from a hard-coded `/filament_ledger_static`,
+ * so the fonts follow the module wherever it is served from.
+ */
+const FONT_STYLE_ID = "filament-ledger-fonts";
+
+const LATIN =
+  "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, " +
+  "U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD";
+
+const LATIN_EXT =
+  "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, " +
+  "U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, " +
+  "U+2C60-2C7F, U+A720-A7FF";
+
+const FONT_FACES = [
+  { family: "Space Grotesk", weight: "400 700", file: "space-grotesk-latin.woff2", range: LATIN },
+  { family: "Space Grotesk", weight: "400 700", file: "space-grotesk-latin-ext.woff2", range: LATIN_EXT },
+  { family: "IBM Plex Mono", weight: "400", file: "ibm-plex-mono-400-latin.woff2", range: LATIN },
+  { family: "IBM Plex Mono", weight: "400", file: "ibm-plex-mono-400-latin-ext.woff2", range: LATIN_EXT },
+  { family: "IBM Plex Mono", weight: "500", file: "ibm-plex-mono-500-latin.woff2", range: LATIN },
+  { family: "IBM Plex Mono", weight: "500", file: "ibm-plex-mono-500-latin-ext.woff2", range: LATIN_EXT },
+  { family: "IBM Plex Mono", weight: "600", file: "ibm-plex-mono-600-latin.woff2", range: LATIN },
+  { family: "IBM Plex Mono", weight: "600", file: "ibm-plex-mono-600-latin-ext.woff2", range: LATIN_EXT },
+];
+
+/**
+ * Declare the faces on the document, once.
+ *
+ * Guarded by id: the browser executes a module once per URL, but a guard costs one line and
+ * makes a second execution harmless rather than a duplicated stylesheet.
+ *
+ * `font-display: swap` on purpose — the panel's job is to show a number to somebody standing at
+ * a printer, and text they cannot read for 300 ms is worse than text in the wrong face.
+ */
+function installFonts() {
+  if (document.getElementById(FONT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = FONT_STYLE_ID;
+  style.textContent = FONT_FACES.map(
+    ({ family, weight, file, range }) => `@font-face {
+  font-family: "${family}";
+  font-style: normal;
+  font-weight: ${weight};
+  font-display: swap;
+  src: url("${new URL(`fonts/${file}`, import.meta.url).href}") format("woff2");
+  unicode-range: ${range};
+}`,
+  ).join("\n");
+  document.head.appendChild(style);
+}
+
 const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
 const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
 
@@ -126,6 +195,95 @@ function hms(code) {
   if (hex.length > 16) return code;
   const quad = hex.padStart(16, "0");
   return `HMS ${quad.slice(0, 4)}-${quad.slice(4, 8)}-${quad.slice(8, 12)}-${quad.slice(12, 16)}`;
+}
+
+/**
+ * The three sizes the coil is drawn at, and the one place their geometry is written down.
+ *
+ * `box` is the SVG's own coordinate space and the element's rendered size in CSS pixels —
+ * the charts already work this way (`STATS_BAR_ROW`), and a viewBox that matches the pixel
+ * box means a stroke width is a real width rather than a number to be scaled in the head.
+ */
+/**
+ * Eight motes of filament colour drifting up behind everything.
+ *
+ * Written out as data rather than eight hand-tuned divs: position, size, colour and the
+ * two timings. The negative delays are what matter — without them all eight would start
+ * at the bottom together on the first paint and arrive as a wave, which reads as a loading
+ * animation rather than as something that was already happening.
+ *
+ * `pointer-events: none` on the layer, `aria-hidden` on it: decoration is not content, and
+ * it must never intercept a tap meant for a spool.
+ */
+const MOTES = [
+  { x: 8, size: 3, colour: "#00e0c6", dur: 17, delay: -2 },
+  { x: 21, size: 2, colour: "#ff8a3d", dur: 23, delay: -7 },
+  { x: 34, size: 4, colour: "#8323ff", dur: 19, delay: -12 },
+  { x: 47, size: 2, colour: "#00e0c6", dur: 26, delay: -3 },
+  { x: 58, size: 3, colour: "#ffb340", dur: 21, delay: -15 },
+  { x: 71, size: 2, colour: "#00e0c6", dur: 29, delay: -9 },
+  { x: 83, size: 3, colour: "#e11d48", dur: 24, delay: -19 },
+  { x: 93, size: 2, colour: "#ff8a3d", dur: 18, delay: -5 },
+];
+
+const AMBIENT = `<div class="ambient" aria-hidden="true">${MOTES.map(
+  (m) =>
+    `<i style="left:${m.x}%;width:${m.size}px;height:${m.size}px;background:${m.colour};
+      box-shadow:0 0 ${m.size * 3}px ${m.colour};
+      animation-duration:${m.dur}s;animation-delay:${m.delay}s"></i>`,
+).join("")}</div>`;
+
+/**
+ * The panel does not decide when it is stale. The backend tells it.
+ *
+ * One subscription, and the integration pushes a payload whenever the ledger changes or
+ * the printer's own entities do. No polling, no interval, and no comparing of `hass`
+ * objects between assignments: the two things that can change what this panel shows are
+ * both known on the server, and the server is what says so
+ * (`infrastructure/ha/websocket_api.py`).
+ *
+ * The seventeen event names this file used to carry went with it. They lived here because
+ * the client was deciding what mattered. It is not, any more, so there is no second list
+ * to drift out of step with the bridge.
+ */
+const SUBSCRIBE = "filament_ledger/subscribe";
+
+const RING_SIZES = {
+  card: { box: 106, r: 46, w: 11 },
+  slot: { box: 130, r: 62, w: 5 },
+  hero: { box: 178, r: 85, w: 6 },
+};
+
+/**
+ * How much filament is left, drawn as an arc.
+ *
+ * Hand-rolled SVG, like every other chart in this panel ([ADR-0006](adr/0006-vanilla-panel.md)
+ * admits no library). Two circles: the track, and an arc whose `stroke-dashoffset` is the
+ * share of the circumference *not* filled. The arc carries the filament's own colour,
+ * because colour is the primary identifier ([06 §6.8](../../../docs/06-ui-spec.md)) and the
+ * ring is the largest surface on the card for it to occupy.
+ *
+ * **This is not the Ring/Profile/3D switcher** ([16 §16.6](../../../docs/16-visual-system.md)
+ * scopes that out as a new capability). It is how a spool is drawn, from percentage and
+ * colour — two values the ledger already holds.
+ *
+ * `aria-hidden`, deliberately: the percentage sits beside it as text, and a screen reader
+ * reading the same figure twice is worse than one that never saw the decoration.
+ */
+function spoolRing(size, percentage, colour) {
+  const { box, r, w } = RING_SIZES[size];
+  const mid = box / 2;
+  const circumference = Math.round(2 * Math.PI * r);
+  const filled = Math.max(0, Math.min(100, Number(percentage) || 0));
+  const offset = Math.round(circumference * (1 - filled / 100));
+  // `color` as well as `stroke`, so the glow can be `currentColor` and the two can never
+  // drift apart into a ring that shines a colour it is not drawn in.
+  return `<svg class="ring" viewBox="0 0 ${box} ${box}" aria-hidden="true"
+      style="--ring-circ:${circumference};color:${esc(colour)}">
+      <circle class="ring-track" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"></circle>
+      <circle class="ring-arc" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"
+        stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
+    </svg>`;
 }
 
 class FilamentLedgerPanel extends HTMLElement {
@@ -168,6 +326,14 @@ class FilamentLedgerPanel extends HTMLElement {
     // The tab strip is recreated on every render; `window` is not, and a listener added
     // per render would accumulate one copy per navigation.
     this._onViewportResize = () => this._paintTabOverflow();
+    // Live updates: the unsubscribe callbacks Home Assistant hands back, the debounce
+    // timers, and the flag that remembers an update held back while the user was typing.
+    this._unsubscribe = null;
+    this._subscribing = false;
+    this._liveDeferred = false;
+    // Which tab the last paint drew, so the entry animation runs on a change of view and
+    // not on every update that arrives while you are looking at one.
+    this._painted = null;
     // Resolved once here so the very first paint is already in the right language; `set
     // hass` re-resolves as soon as the profile is known.
     this._applyLanguage();
@@ -176,9 +342,16 @@ class FilamentLedgerPanel extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    // The subscription is the first load as well as the live one: it pushes the current
+    // state on open, so there is no separate set of startup reads that could disagree with
+    // what arrives a moment later.
+    //
+    // Nothing happens on later assignments. Home Assistant hands over a new `hass` whenever
+    // anything in the house changes, and treating that as a signal about *this* integration
+    // is how a panel ends up polling while insisting it does not.
     if (first) {
       this._applyLanguage();
-      this.refresh();
+      this._subscribeLive();
     }
   }
 
@@ -260,13 +433,22 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   connectedCallback() {
-    this.shadowRoot.innerHTML = `<style>${STYLES}</style><div id="root"></div>`;
+    // The ambient layer is a sibling of #root, not part of it. The panel repaints by
+    // replacing #root's innerHTML on every navigation (ADR-0006), and a drifting particle
+    // rebuilt on every tab change would snap back to the bottom each time. Set once here,
+    // it drifts across the whole session and nobody sees a seam.
+    this.shadowRoot.innerHTML =
+      `<style>${STYLES}</style>${AMBIENT}<div id="root"></div>`;
     this._root = this.shadowRoot.getElementById("root");
     this._root.addEventListener("click", (event) => this._onClick(event));
     this._root.addEventListener("submit", (event) => this._onSubmit(event));
     // Review cards are edited in place — a full re-render per keystroke would steal the
     // focus mid-number — so edits patch the card directly instead of going through render().
     this._root.addEventListener("input", (event) => this._onInput(event));
+    // Leaving a field is the other moment a held update may land. Deferred by a tick
+    // because `activeElement` has not moved yet while `focusout` is dispatching — asking
+    // _busy() now would still see the field being left as the focused one.
+    this._root.addEventListener("focusout", () => setTimeout(() => this._releaseLive(), 0));
     // Passive: this listener only reads geometry and toggles two classes, and saying so
     // lets the browser keep scrolling off the main thread.
     window.addEventListener("resize", this._onViewportResize, { passive: true });
@@ -275,6 +457,105 @@ class FilamentLedgerPanel extends HTMLElement {
 
   disconnectedCallback() {
     window.removeEventListener("resize", this._onViewportResize);
+    // Home Assistant keeps one websocket for the whole frontend. A subscription this panel
+    // opened and did not close outlives the panel and keeps a read model being computed for
+    // a view nobody is looking at, once more per navigation away and back.
+    if (this._unsubscribe) this._unsubscribe();
+    this._unsubscribe = null;
+  }
+
+  // -- live --------------------------------------------------------------------------
+
+  /**
+   * Open the subscription, once (docs/06 §6.8).
+   *
+   * It resolves asynchronously, so it checks on arrival whether the panel is still
+   * connected: navigating away during setup would otherwise leave a live subscription with
+   * nothing left to close it.
+   *
+   * A subscription that cannot be opened costs liveness, never correctness — every action
+   * the user takes still refreshes on its own. Putting an error bar over a working ledger
+   * because a socket was unhappy would be the worse failure.
+   */
+  _subscribeLive() {
+    const connection = this._hass?.connection;
+    if (!connection || this._unsubscribe || this._subscribing) return;
+    this._subscribing = true;
+    connection
+      .subscribeMessage((payload) => this._pushed(payload), { type: SUBSCRIBE })
+      .then((unsubscribe) => {
+        this._subscribing = false;
+        if (this.isConnected) this._unsubscribe = unsubscribe;
+        else unsubscribe();
+      })
+      .catch(() => {
+        this._subscribing = false;
+      });
+  }
+
+  /**
+   * Apply what the backend pushed.
+   *
+   * Nothing is fetched here. The payload *is* the new state, computed once on the server
+   * for whoever is listening, rather than five queries per panel per change.
+   *
+   * Held, never dropped, while the user is mid-task: the panel repaints by replacing markup
+   * wholesale (ADR-0006), so applying an update over an open dialog or a focused field
+   * would discard what was typed and move the caret. A stale number is a smaller wrong than
+   * a number that ate what somebody was typing into it.
+   */
+  _pushed(payload) {
+    if (!payload) return;
+    if (payload.kind === "printer") this._printer = payload.printer;
+    else {
+      this._spools = payload.spools;
+      this._stock = payload.stock;
+      this._reviews = payload.reviews;
+      this._movements = payload.movements;
+      this._trash = payload.trash;
+    }
+    this._loading = false;
+    this._error = null;
+    if (this._busy()) {
+      this._liveDeferred = true;
+      return;
+    }
+    this._liveDeferred = false;
+    this._repaint();
+  }
+
+  /**
+   * Show what has already arrived.
+   *
+   * The detail view is the one surface a push cannot fill: it is one spool's whole history,
+   * asked for by opening it. Its summary moved in the payload, so it is re-read here — the
+   * only fetch left on the live path, and only while that view is open.
+   */
+  async _repaint() {
+    if (this._detail) {
+      try {
+        this._detail = await this.call("spools/get", { spool_id: this._detail.id });
+      } catch {
+        // A spool deleted from another browser: fall back to the list rather than an error.
+        this._detail = null;
+      }
+    }
+    this.render();
+  }
+
+  /** True while the user is mid-task and a repaint would interrupt them. */
+  _busy() {
+    if (this._dialog) return true;
+    const focused = this.shadowRoot.activeElement;
+    return Boolean(focused && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName));
+  }
+
+  /** Called wherever a dialog closes or an edit ends, to show an update held back. */
+  _releaseLive() {
+    if (this._liveDeferred && !this._busy()) {
+      this._liveDeferred = false;
+      this._repaint();
+    }
   }
 
   /**
@@ -502,6 +783,9 @@ class FilamentLedgerPanel extends HTMLElement {
         if (target.matches(".scrim") && event.target.closest(".modal")) break;
         this._dialog = null;
         this.render();
+        // A live update that arrived while this dialog was open was held rather than
+        // dropped; the surface is idle again, so let it land.
+        this._releaseLive();
         break;
       case "unmount":
         this.guarded(() => this.call("spools/unmount", { spool_id: id }));
@@ -976,9 +1260,16 @@ class FilamentLedgerPanel extends HTMLElement {
   render() {
     if (!this._root) return;
     const t = this._t;
+    // The entry animation belongs to *arriving somewhere*, not to painting. Every paint
+    // replaces the markup wholesale (ADR-0006), so animating unconditionally replayed a
+    // half-second fade over the whole view on every update — which is what a live panel
+    // looks like when it flickers. Now it runs on a change of view and nowhere else.
+    const view = this._detail ? `detail:${this._detail.id}` : this._tab;
+    const entering = view !== this._painted;
+    this._painted = view;
     this._root.innerHTML = `
       ${this.header()}
-      <main>
+      <main class="${entering ? "entering" : ""}">
         ${this._error ? this.errorBar() : ""}
         ${this._loading ? `<div class="empty">${t("app.loading")}</div>` : this.body()}
       </main>
@@ -1006,6 +1297,12 @@ class FilamentLedgerPanel extends HTMLElement {
     };
     return `
       <header>
+        <!-- A strand of filament running the width of the header, travelling slowly. The
+             dash pattern is the animation: only stroke-dashoffset moves, so the browser
+             never reflows anything to draw it. -->
+        <svg class="strand" viewBox="0 0 1200 26" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 20 C 180 20, 240 6, 420 6 S 700 22, 900 12 S 1100 4, 1200 8"></path>
+        </svg>
         <div class="head-top">
           <h1>${t("app.title")}</h1>
           ${this.account()}
@@ -1171,23 +1468,30 @@ class FilamentLedgerPanel extends HTMLElement {
   spoolCard(spool) {
     const t = this._t;
     const sealed = spool.state === "SEALED";
-    const bar = sealed
+    // A sealed spool is full by construction, so its ring is a closed circle and the word
+    // carries the fact instead of a percentage nobody needs to read.
+    const gauge = sealed
       ? `<span class="chip">${t("inv.sealed")}</span>`
-      : `<div class="barline">
-           <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
-           <span class="pct">${spool.percentage}%</span>
-         </div>`;
+      : `<span class="pct">${spool.percentage}%</span>`;
     return `
       <article class="card spool ${spool.has_anomaly ? "anomaly" : ""}" data-action="open" data-id="${esc(spool.id)}">
+        <span class="shim" aria-hidden="true"></span>
         <div class="swatch" style="background:${esc(spool.colour)}"></div>
+        <div class="spool-art">
+          <span class="hatch" aria-hidden="true"></span>
+          ${spoolRing("card", sealed ? 100 : spool.percentage, spool.colour)}
+          <div class="ring-mid">
+            <span class="ring-pct">${sealed ? 100 : spool.percentage}<small>%</small></span>
+          </div>
+        </div>
         <div class="spool-body">
           <button class="card-x" data-action="spool-intent" data-id="${esc(spool.id)}"
             title="${t("inv.removeSpool")}">×</button>
           <div class="name">${esc(spool.name)}</div>
           <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
           <div class="big">${spool.balance_g}<small> g</small></div>
-          ${bar}
           <div class="foot">
+            ${gauge}
             ${this.confidenceChip(spool.confidence)}
             <span class="muted">· ${this.locationLabel(spool.location)}</span>
           </div>
@@ -1226,7 +1530,12 @@ class FilamentLedgerPanel extends HTMLElement {
       }
       return `<div class="card tray">
         <div class="n">${t("ams.slot", { slot })}</div>
-        <div class="reel" style="background:${esc(spool.colour)}"></div>
+        <div class="tray-art">
+          ${spoolRing("slot", spool.percentage, spool.colour)}
+          <div class="ring-mid">
+            <span class="ring-hub" style="background:${esc(spool.colour)}"></span>
+          </div>
+        </div>
         <div class="name">${esc(spool.name)}</div>
         <div class="big">${spool.balance_g}<small> g</small></div>
         <div class="barline">
@@ -1917,7 +2226,18 @@ class FilamentLedgerPanel extends HTMLElement {
       <section class="stack">
         <button class="link" data-action="back">${t("detail.back")}</button>
         <div class="card detail">
-          <div class="reel-big" style="background:${esc(spool.colour)}"></div>
+          <!-- Seen face-on: the winding, the core hole, and the figure in the middle. The
+               card shows the same spool small; this is the same object, larger, not a
+               different drawing of it. -->
+          <div class="detail-art" style="--coil:${esc(spool.colour)}">
+            <span class="coil-base" aria-hidden="true"></span>
+            <span class="coil-wind" aria-hidden="true"></span>
+            <span class="coil-depth" aria-hidden="true"></span>
+            ${spoolRing("hero", spool.percentage, spool.colour)}
+            <div class="ring-mid">
+              <span class="ring-pct hero">${spool.percentage}<small>%</small></span>
+            </div>
+          </div>
           <div class="meta">
             <h2>${esc(spool.name)}</h2>
             <div class="big">${spool.balance_g}<small> ${t("detail.ofOpening", {
@@ -2704,25 +3024,114 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 }
 
-const STYLES = `
-:host { display: block; height: 100%; background: var(--primary-background-color); }
-* { box-sizing: border-box; }
-#root { min-height: 100%; color: var(--primary-text-color);
-  font-family: var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif); }
+/**
+ * Exported for `styleguide.html`, which adopts this exact sheet into its own shadow roots so
+ * the catalogue and the panel cannot drift apart (16 §16.4). Nothing else imports it, and the
+ * panel keeps using it directly.
+ */
+export const STYLES = `
+/* ===================================================================================
+   The vocabulary (16 §16.3). Every value lives here once. Nothing below hard-codes a
+   colour, a radius or a duration, which is what lets a surface written next month match
+   one written today without anybody remembering a hex code.
 
-header { background: var(--app-header-background-color, var(--primary-color));
-  color: var(--app-header-text-color, #fff); padding: 12px 20px 0; position: sticky; top: 0; z-index: 5; }
-header h1 { margin: 0; font-size: 20px; font-weight: 400; }
-.head-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-.whoami { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12.5px; opacity: .85; }
+   Names are semantic, never literal: --fl-bad, not --fl-red. The day a warning stops
+   being amber, one line changes and nothing reads as a lie.
+   =================================================================================== */
+:host {
+  display: block; height: 100%;
+  /* Positioned so the ambient layer has something to be absolute against — see .ambient. */
+  position: relative;
+
+  /* The panel does not occupy the viewport — it occupies what Home Assistant's sidebar
+     leaves of it, and that changes without the viewport changing at all. Declaring the
+     host a container is what lets every rule below ask the panel's own width instead
+     (16 §16.2). A media query here would be wrong with the sidebar pinned. */
+  container-type: inline-size;
+  container-name: panel;
+
+  /* The panel renders its own identity and no longer follows the HA theme (ADR-0008).
+     Telling the browser so keeps form controls and scrollbars from arriving in light. */
+  color-scheme: dark;
+
+  --fl-font-sans: "Space Grotesk", system-ui, sans-serif;
+  --fl-font-mono: "IBM Plex Mono", ui-monospace, "Roboto Mono", Menlo, monospace;
+
+  --fl-bg: #05070a;
+  --fl-surface: #0b1016;
+  --fl-surface-raised: #0e151d;
+  --fl-surface-sunken: #080d13;
+  --fl-line: #1f2a36;
+  --fl-line-soft: #161f2a;
+  --fl-line-strong: #2b3947;
+
+  --fl-ink: #e6edf3;
+  --fl-ink-bright: #ffffff;
+  --fl-ink-dim: #8b9aab;
+  --fl-ink-faint: #6d7f91;
+
+  --fl-accent: #00e0c6;
+  --fl-accent-bright: #7ff5e7;
+  --fl-accent-soft: rgba(0, 224, 198, .16);
+  --fl-accent-line: rgba(0, 224, 198, .42);
+  --fl-accent-glow: rgba(0, 224, 198, .14);
+
+  --fl-ok: #3ddc84;
+  --fl-ok-soft: rgba(61, 220, 132, .14);
+  --fl-warn: #ffb340;
+  --fl-warn-soft: rgba(255, 179, 64, .14);
+  --fl-bad: #ff8fa3;
+  --fl-bad-soft: rgba(255, 84, 112, .16);
+
+  --fl-radius-s: 8px;
+  --fl-radius-m: 12px;
+  --fl-radius-l: 16px;
+  --fl-radius-xl: 18px;
+
+  --fl-shadow-1: 0 8px 24px rgba(0, 0, 0, .35);
+  --fl-shadow-2: 0 14px 40px rgba(0, 0, 0, .4);
+
+  --fl-ease: cubic-bezier(.2, .8, .2, 1);
+  --fl-dur-fast: .2s;
+  --fl-dur-base: .25s;
+  --fl-dur-slow: .55s;
+
+  background: var(--fl-bg);
+  color: var(--fl-ink);
+}
+* { box-sizing: border-box; }
+#root { min-height: 100%; color: var(--fl-ink); font-family: var(--fl-font-sans);
+  background:
+    radial-gradient(1100px 520px at 82% -8%, rgba(0, 224, 198, .07), transparent 60%),
+    radial-gradient(900px 460px at -6% 4%, rgba(131, 35, 255, .06), transparent 58%),
+    var(--fl-bg);
+  background-attachment: fixed; }
+
+/* A hairline and a wash, not a coloured slab. The header used to be HA's app bar wearing
+   the theme's primary colour; it is now part of the same surface as everything under it. */
+header { background: linear-gradient(180deg, rgba(11, 16, 22, .92), rgba(5, 7, 10, .72));
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  color: var(--fl-ink); padding: 16px 22px 0; position: sticky; top: 0; z-index: 5;
+  border-bottom: 1px solid var(--fl-line-soft); }
+header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+.head-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.whoami { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12.5px;
+  color: var(--fl-ink-dim); }
 .who-name { font-weight: 500; }
 .who-admin { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
-  border: 1px solid currentColor; border-radius: 999px; padding: 1px 7px; opacity: .9; }
-nav { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+  border: 1px solid var(--fl-accent-line); color: var(--fl-accent-bright);
+  border-radius: 999px; padding: 1px 7px; }
+nav { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding-bottom: 10px; }
 nav::-webkit-scrollbar { display: none; }
-nav button { background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
-  color: inherit; opacity: .75; font: inherit; font-size: 14px; padding: 8px 16px 10px; white-space: nowrap; }
-nav button.on { opacity: 1; border-bottom-color: currentColor; font-weight: 500; }
+nav button { background: transparent; border: 1px solid transparent; cursor: pointer;
+  color: var(--fl-ink-dim); font: inherit; font-size: 14px; font-weight: 600;
+  padding: 10px 18px; border-radius: 10px; white-space: nowrap;
+  transition: color var(--fl-dur-base) var(--fl-ease), background var(--fl-dur-base) var(--fl-ease),
+    border-color var(--fl-dur-base) var(--fl-ease), box-shadow var(--fl-dur-base) var(--fl-ease); }
+nav button:hover { color: var(--fl-ink); background: rgba(255, 255, 255, .03); }
+nav button.on { color: var(--fl-ink-bright); border-color: var(--fl-accent-line);
+  background: linear-gradient(180deg, rgba(0, 224, 198, .18), rgba(0, 224, 198, .05));
+  box-shadow: 0 0 22px var(--fl-accent-glow), inset 0 1px 0 rgba(255, 255, 255, .06); }
 
 /* The overflow affordance: a fade at whichever end still has tabs beyond it, toggled from
    the strip's own scroll position. A mask rather than an overlay, because a mask is
@@ -2739,105 +3148,207 @@ nav.fade-start.fade-end {
   -webkit-mask-image: linear-gradient(to right, transparent, #000 26px, #000 calc(100% - 26px), transparent);
   mask-image: linear-gradient(to right, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
 nav .count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px;
-  margin-left: 7px; border-radius: 9px; background: var(--error-color, #c62828); color: #fff; font-size: 11px; font-weight: 700; }
+  margin-left: 7px; border-radius: 9px; background: var(--fl-bad); color: #23070d;
+  font-family: var(--fl-font-mono); font-size: 11px; font-weight: 700;
+  box-shadow: 0 0 14px rgba(255, 84, 112, .35); }
 
-main { padding: 16px; max-width: 1100px; margin: 0 auto; }
-.stack { display: flex; flex-direction: column; gap: 14px; }
-.card { background: var(--card-background-color, #fff); border-radius: var(--ha-card-border-radius, 12px);
-  box-shadow: var(--ha-card-box-shadow, 0 2px 6px rgba(0,0,0,.08)); border: 1px solid var(--divider-color, #e0e0e0); }
-.muted { color: var(--secondary-text-color); }
+/* The safe-area insets ride on the base rule rather than a later override, so a container
+   query can restate the padding without a trailing rule quietly winning back three sides.
+   The phone's notch is the panel's problem: its venue is somebody standing at a printer. */
+main { padding: 22px max(22px, env(safe-area-inset-right))
+    max(22px, env(safe-area-inset-bottom)) max(22px, env(safe-area-inset-left));
+  max-width: 1320px; margin: 0 auto; }
+/* Only on arriving at a view. An update that lands while you are reading one must not
+   replay it — see render(). */
+main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.card { background: linear-gradient(165deg, var(--fl-surface-raised), #0a0f14);
+  border-radius: var(--fl-radius-l); box-shadow: var(--fl-shadow-1);
+  border: 1px solid var(--fl-line); }
+.muted { color: var(--fl-ink-dim); }
 .small { font-size: 12.5px; }
 
-.error { display: flex; gap: 12px; align-items: center; background: var(--error-color, #c62828);
-  color: #fff; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; }
-.error button { margin-left: auto; background: rgba(255,255,255,.2); color: #fff; border: 0;
-  padding: 5px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+.error { display: flex; gap: 12px; align-items: center; background: var(--fl-bad-soft);
+  border: 1px solid rgba(255, 84, 112, .4); color: var(--fl-bad);
+  padding: 12px 15px; border-radius: var(--fl-radius-m); margin-bottom: 16px; }
+.error button { margin-left: auto; background: transparent; color: inherit;
+  border: 1px solid currentColor; padding: 5px 12px; border-radius: var(--fl-radius-s);
+  cursor: pointer; font: inherit; }
 
-.empty { padding: 56px 20px; text-align: center; color: var(--secondary-text-color); }
-.empty.teach h2 { color: var(--primary-text-color); font-weight: 400; margin: 0 0 10px; }
+.empty { padding: 56px 20px; text-align: center; color: var(--fl-ink-dim); }
+.empty.teach h2 { color: var(--fl-ink); font-weight: 600; margin: 0 0 10px; letter-spacing: -.01em; }
 .empty.teach p { max-width: 46ch; margin: 0 auto 14px; line-height: 1.6; }
 
-button { font: inherit; font-size: 14px; padding: 8px 16px; border-radius: 8px;
-  border: 1px solid var(--divider-color, #e0e0e0); background: var(--card-background-color, #fff);
-  color: var(--primary-text-color); cursor: pointer; }
-button.primary { background: var(--primary-color); border-color: var(--primary-color); color: #fff; font-weight: 500; }
-button.link { background: none; border: 0; color: var(--primary-color); padding: 0; align-self: flex-start; }
+button { font: inherit; font-size: 14px; font-weight: 500; padding: 9px 16px;
+  border-radius: var(--fl-radius-s); border: 1px solid var(--fl-line-strong);
+  background: transparent; color: var(--fl-ink-dim); cursor: pointer;
+  transition: color var(--fl-dur-fast) var(--fl-ease), border-color var(--fl-dur-fast) var(--fl-ease),
+    background var(--fl-dur-fast) var(--fl-ease); }
+button:hover { color: var(--fl-ink); border-color: var(--fl-ink-faint); }
+button.primary { color: var(--fl-accent-bright); border-color: var(--fl-accent-line); font-weight: 600;
+  background: linear-gradient(180deg, rgba(0, 224, 198, .2), rgba(0, 224, 198, .07));
+  box-shadow: 0 0 22px var(--fl-accent-glow); }
+button.primary:hover { color: var(--fl-ink-bright); border-color: var(--fl-accent); }
+button.link { background: none; border: 0; color: var(--fl-accent); padding: 0; align-self: flex-start; }
+button.link:hover { color: var(--fl-accent-bright); }
+:where(button, input, select, textarea):focus-visible { outline: 2px solid var(--fl-accent);
+  outline-offset: 2px; }
 .bar { display: flex; gap: 8px; flex-wrap: wrap; }
 
-.summary { display: flex; flex-wrap: wrap; }
-.stat { padding: 14px 20px; flex: 1 1 120px; border-right: 1px solid var(--divider-color, #eee); }
-.stat:last-child { border-right: 0; }
-.stat .k { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--secondary-text-color); font-weight: 600; }
-.stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
-.stat .v.alert { color: var(--error-color, #c62828); }
+/* A hairline grid: one background showing through 1px gaps, rather than nine borders that
+   have to agree with each other at every corner. */
+.summary { display: flex; flex-wrap: wrap; gap: 1px; background: var(--fl-line);
+  border-radius: var(--fl-radius-l); overflow: hidden; }
+.stat { padding: 18px 22px; flex: 1 1 150px; background: var(--fl-surface); }
+.stat .k { font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--fl-ink-faint); font-weight: 700; }
+.stat .v { font-family: var(--fl-font-mono); font-size: 28px; font-weight: 600;
+  font-variant-numeric: tabular-nums; margin-top: 4px; letter-spacing: -.02em;
+  color: var(--fl-ink-bright); }
+.stat .v.alert { color: var(--fl-warn); }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-.spool { display: flex; overflow: hidden; cursor: pointer; }
-.spool.anomaly { border-left: 3px solid var(--warning-color, #e07b00); }
-.swatch { width: 12px; flex: none; }
-.spool-body { padding: 13px 15px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
-.name { font-weight: 500; }
-.sub { font-size: 12.5px; color: var(--secondary-text-color); }
-.big { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; margin: 6px 0 3px; letter-spacing: -.02em; }
-.big small { font-size: 13px; font-weight: 500; color: var(--secondary-text-color); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 16px; }
+.spool { display: flex; overflow: hidden; cursor: pointer; position: relative;
+  transition: transform var(--fl-dur-base) var(--fl-ease), border-color var(--fl-dur-base) var(--fl-ease),
+    box-shadow var(--fl-dur-base) var(--fl-ease); }
+.spool:hover { transform: translateY(-2px); border-color: var(--fl-accent-line);
+  box-shadow: var(--fl-shadow-2), 0 0 26px var(--fl-accent-glow); }
+.spool.anomaly { border-left: 3px solid var(--fl-warn); }
+/* The swatch is the primary identifier (06 §6.8), so it glows with its own colour rather
+   than sitting as a flat strip: the filament colour is data, and it leads. */
+.swatch { width: 12px; flex: none; box-shadow: 0 0 18px -2px currentColor; }
+
+/* ---- The coil ---------------------------------------------------------------------
+   An arc of the filament's own colour, at three sizes. Geometry lives in RING_SIZES;
+   this is only how it is painted. Not the Ring/Profile/3D switcher — 16 §16.6 keeps that
+   out as a new capability; this is how a spool is drawn from data the ledger already has. */
+.spool-art { position: relative; width: 106px; height: 106px; flex: none; align-self: center;
+  margin: 16px 0 16px 16px; }
+.tray-art { position: relative; width: 130px; height: 130px; margin: 8px auto 4px; }
+.detail-art { position: relative; width: 178px; height: 178px; flex: none; }
+/* The winding, behind the arc: a hatch of fine spokes turning slowly. It is what stops a
+   100%-full coil from reading as a flat disc of colour. */
+.hatch { position: absolute; inset: 6px; border-radius: 50%;
+  background: repeating-conic-gradient(from 0deg,
+    rgba(255, 255, 255, .06) 0deg 3deg, transparent 3deg 8deg);
+  animation: fl-spin 18s linear infinite; }
+.ring { display: block; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible;
+  position: relative; }
+.ring-track { fill: none; stroke: var(--fl-line); }
+.ring-arc { fill: none; stroke: currentColor; stroke-linecap: round;
+  filter: drop-shadow(0 0 7px currentColor);
+  animation: fl-arc 1.4s var(--fl-ease) both; }
+.ring-mid { position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 4px; pointer-events: none; }
+.ring-pct { font-family: var(--fl-font-mono); font-size: 21px; font-weight: 600;
+  color: var(--fl-ink-bright); letter-spacing: -.02em; }
+.ring-pct small { font-size: 11px; color: var(--fl-ink-faint); margin-left: 1px; }
+.ring-pct.hero { font-size: 30px; }
+.ring-pct.hero small { font-size: 14px; }
+
+/* ---- The spool, face-on -------------------------------------------------------------
+   Three layers under the arc, and together they are why a detail view reads as a physical
+   reel rather than as a larger progress ring:
+
+   - the body, with the core hole punched out of its middle;
+   - the winding — concentric turns of the filament's own colour, masked away from the
+     hole and turning slowly, which is what makes the colour read as material rather than
+     as a fill;
+   - the depth, an inset shadow so the winding sits inside the reel instead of on it.
+
+   The card shows the same spool small, with a spoke hatch instead: at 106px the turns
+   would collapse into a moiré, and a texture that fights its own size is worse than none. */
+.coil-base { position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle, #131b24 26%, #0c1218 27%);
+  border: 1px solid var(--fl-line); }
+.coil-wind { position: absolute; inset: 12px; border-radius: 50%;
+  background: repeating-radial-gradient(circle,
+    var(--coil) 0 3px, rgba(0, 0, 0, .7) 3px 6px);
+  -webkit-mask-image: radial-gradient(circle, transparent 23%, #000 24%);
+  mask-image: radial-gradient(circle, transparent 23%, #000 24%);
+  animation: fl-spin 22s linear infinite; }
+.coil-depth { position: absolute; inset: 12px; border-radius: 50%;
+  box-shadow: inset 0 0 30px rgba(0, 0, 0, .9); }
+/* The hub: the physical core the filament is wound on, and a second place the colour
+   reads at a glance when the arc is nearly empty. */
+.ring-hub { width: 34px; height: 34px; border-radius: 50%; display: block;
+  box-shadow: 0 0 20px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
+  border: 2px solid var(--fl-surface); }
+.spool-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.name { font-weight: 600; letter-spacing: -.01em; }
+.sub { font-size: 12.5px; color: var(--fl-ink-dim); }
+.big { font-family: var(--fl-font-mono); font-size: 30px; font-weight: 600;
+  font-variant-numeric: tabular-nums; margin: 8px 0 4px; letter-spacing: -.03em;
+  color: var(--fl-ink-bright); }
+.big small { font-family: var(--fl-font-sans); font-size: 13px; font-weight: 500; color: var(--fl-ink-dim); }
 .chip { align-self: flex-start; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
-  font-weight: 600; border: 1px solid var(--divider-color, #ddd); border-radius: 999px; padding: 2px 10px;
-  color: var(--secondary-text-color); }
-.barline { display: flex; align-items: center; gap: 8px; }
-.track { flex: 1; height: 6px; border-radius: 3px; background: var(--divider-color, #eee); overflow: hidden; }
-.track i { display: block; height: 100%; }
-.pct { font-size: 12px; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; min-width: 30px; text-align: right; }
-.foot { display: flex; gap: 7px; align-items: center; margin-top: 7px; font-size: 12.5px; flex-wrap: wrap; }
-.cta { color: var(--error-color, #c62828); font-size: 12.5px; font-weight: 500; }
+  font-weight: 600; border: 1px solid var(--fl-line-strong); border-radius: 999px; padding: 2px 10px;
+  color: var(--fl-ink-dim); }
+.barline { display: flex; align-items: center; gap: 9px; }
+.track { flex: 1; height: 6px; border-radius: 3px; background: var(--fl-surface-sunken);
+  border: 1px solid var(--fl-line-soft); overflow: hidden; }
+.track i { display: block; height: 100%; transform-origin: left;
+  animation: fl-bar var(--fl-dur-slow) var(--fl-ease) both; }
+.pct { font-family: var(--fl-font-mono); font-size: 12px; color: var(--fl-ink-faint);
+  font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+.foot { display: flex; gap: 7px; align-items: center; margin-top: 8px; font-size: 12.5px; flex-wrap: wrap; }
+.cta { color: var(--fl-warn); font-size: 12.5px; font-weight: 600; }
 
-.conf { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
-.conf i { width: 8px; height: 8px; border-radius: 50%; }
-.conf.high { color: var(--success-color, #2e7d32); } .conf.high i { background: var(--success-color, #2e7d32); }
-.conf.med  { color: var(--warning-color, #e07b00); } .conf.med i  { background: var(--warning-color, #e07b00); }
-.conf.low  { color: var(--error-color, #c62828); }   .conf.low i  { background: var(--error-color, #c62828); }
+/* Confidence never rides on colour alone — the dot always sits beside its word (06 §6.8).
+   The tint is the second signal, not the only one. */
+.conf { display: inline-flex; align-items: center; gap: 6px; font-weight: 600;
+  border-radius: 999px; padding: 2px 10px 2px 8px; }
+.conf i { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+.conf.high { color: var(--fl-ok); background: var(--fl-ok-soft); } .conf.high i { background: var(--fl-ok); }
+.conf.med  { color: var(--fl-warn); background: var(--fl-warn-soft); } .conf.med i  { background: var(--fl-warn); }
+.conf.low  { color: var(--fl-bad); background: var(--fl-bad-soft); }   .conf.low i  { background: var(--fl-bad); }
 
-.note { background: var(--card-background-color, #fff); border-left: 3px solid var(--primary-color);
-  padding: 11px 15px; border-radius: 0 8px 8px 0; font-size: 13.5px; color: var(--secondary-text-color); }
+.note { background: var(--fl-surface); border: 1px solid var(--fl-line);
+  border-left: 3px solid var(--fl-accent); padding: 12px 16px;
+  border-radius: 0 var(--fl-radius-m) var(--fl-radius-m) 0; font-size: 13.5px; color: var(--fl-ink-dim); }
 
-.trays { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
-.tray { padding: 14px; display: flex; flex-direction: column; gap: 5px; }
-.tray .n { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--secondary-text-color); font-weight: 700; }
-.tray .reel { height: 42px; border-radius: 6px; margin: 4px 0; }
-.tray.empty-tray { align-items: center; justify-content: center; text-align: center; gap: 10px; border-style: dashed; min-height: 170px; }
+.trays { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+.tray { padding: 16px; display: flex; flex-direction: column; gap: 5px; }
+.tray .n { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--fl-ink-faint); font-weight: 700; }
+.tray .reel { height: 48px; border-radius: var(--fl-radius-s); margin: 6px 0;
+  box-shadow: 0 0 22px -6px currentColor, inset 0 1px 0 rgba(255, 255, 255, .12); }
+.tray.empty-tray { align-items: center; justify-content: center; text-align: center; gap: 10px;
+  border-style: dashed; border-color: var(--fl-line-strong); background: var(--fl-surface-sunken);
+  min-height: 190px; }
 .tray-actions { display: flex; gap: 6px; margin-top: 8px; }
-.tray-actions button { padding: 5px 10px; font-size: 12.5px; flex: 1; }
+.tray-actions button { padding: 6px 10px; font-size: 12.5px; flex: 1; }
 
 .detail { display: flex; gap: 16px; padding: 18px; flex-wrap: wrap; }
-.reel-big { width: 60px; height: 60px; border-radius: 10px; flex: none; }
 .detail .meta { flex: 1 1 220px; min-width: 0; }
 .detail h2 { margin: 0 0 4px; font-size: 19px; font-weight: 500; }
-.facts { font-size: 12.5px; color: var(--secondary-text-color); }
+.facts { font-size: 12.5px; color: var(--fl-ink-dim); }
 
 .ledger-wrap { padding: 16px 18px 18px; }
 .ledger-wrap h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; }
+  color: var(--fl-ink-dim); font-weight: 700; }
 .scroll { overflow-x: auto; }
 table.ledger { width: 100%; border-collapse: collapse; min-width: 460px; }
 table.ledger th { text-align: left; font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; padding-bottom: 8px; border-bottom: 1px solid var(--divider-color, #e0e0e0); }
+  color: var(--fl-ink-dim); font-weight: 700; padding-bottom: 8px; border-bottom: 1px solid var(--fl-line); }
 table.ledger th.r, table.ledger td.amt, table.ledger td.bal { text-align: right; }
-table.ledger td { padding: 9px 0; border-bottom: 1px solid var(--divider-color, #f0f0f0); vertical-align: top; }
-table.ledger td.when { font-size: 12.5px; color: var(--secondary-text-color); white-space: nowrap; padding-right: 14px; }
+table.ledger td { padding: 9px 0; border-bottom: 1px solid var(--fl-line); vertical-align: top; }
+table.ledger td.when { font-size: 12.5px; color: var(--fl-ink-dim); white-space: nowrap; padding-right: 14px; }
 table.ledger td.what { font-size: 13.5px; }
-table.ledger td.what span { display: block; font-size: 12px; color: var(--secondary-text-color); }
-table.ledger td.amt, table.ledger td.bal { font-family: ui-monospace, "Roboto Mono", Menlo, monospace;
+table.ledger td.what span { display: block; font-size: 12px; color: var(--fl-ink-dim); }
+table.ledger td.amt, table.ledger td.bal { font-family: var(--fl-font-mono);
   font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 16px; }
 table.ledger td.amt { font-weight: 600; }
-table.ledger td.amt.minus { color: var(--error-color, #c62828); }
-table.ledger td.amt.plus { color: var(--success-color, #2e7d32); }
-table.ledger td.bal { color: var(--secondary-text-color); }
-.checksum { margin-top: 12px; padding: 10px 13px; border-radius: 8px; background: var(--secondary-background-color, #f5f5f5);
-  font-family: ui-monospace, "Roboto Mono", Menlo, monospace; font-size: 12.5px; overflow-x: auto;
-  white-space: nowrap; color: var(--secondary-text-color); }
-.checksum b { color: var(--primary-text-color); }
+table.ledger td.amt.minus { color: var(--fl-bad); }
+table.ledger td.amt.plus { color: var(--fl-ok); }
+table.ledger td.bal { color: var(--fl-ink-dim); }
+.checksum { margin-top: 12px; padding: 10px 13px; border-radius: 8px; background: var(--fl-surface-sunken);
+  font-family: var(--fl-font-mono); font-size: 12.5px; overflow-x: auto;
+  white-space: nowrap; color: var(--fl-ink-dim); }
+.checksum b { color: var(--fl-ink); }
 
 .sync-strip { padding: 13px 16px; display: flex; flex-direction: column; gap: 7px;
-  border-left: 3px solid var(--primary-color); }
+  border-left: 3px solid var(--fl-accent); }
 .sync-head { display: flex; align-items: center; gap: 10px; }
 .sync-head b { font-weight: 500; }
 .sync-dismiss { margin-left: auto; padding: 4px 10px; font-size: 12.5px; }
@@ -2845,104 +3356,107 @@ table.ledger td.bal { color: var(--secondary-text-color); }
 .sync-row.unknown { font-weight: 500; }
 .sync-row button { padding: 4px 10px; font-size: 12.5px; }
 .sync-slot { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; min-width: 52px; }
+  color: var(--fl-ink-dim); font-weight: 700; min-width: 52px; }
 .sync-dot { width: 13px; height: 13px; border-radius: 4px; flex: none;
-  border: 1px solid var(--divider-color, #e0e0e0); }
+  border: 1px solid var(--fl-line); }
 
 .hist-dot { display: inline-block; width: 13px; height: 13px; border-radius: 4px;
-  border: 1px solid var(--divider-color, #e0e0e0); margin-right: 7px; vertical-align: -2px; }
+  border: 1px solid var(--fl-line); margin-right: 7px; vertical-align: -2px; }
 table.ledger td.who { font-size: 13.5px; white-space: nowrap; padding-right: 14px; }
 table.ledger td.src { padding-left: 14px; }
 .badge { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700;
-  border-radius: 999px; padding: 2px 9px; border: 1px solid var(--divider-color, #ddd);
-  color: var(--secondary-text-color); white-space: nowrap; }
-.badge.user { color: var(--primary-color); border-color: currentColor; }
+  border-radius: 999px; padding: 2px 9px; border: 1px solid var(--fl-line);
+  color: var(--fl-ink-dim); white-space: nowrap; }
+.badge.user { color: var(--fl-accent); border-color: currentColor; }
 
 .rv-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
 .rv-head { display: flex; align-items: baseline; gap: 9px; }
 .rv-ico { flex: none; }
 .rv-name { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
 .rv-state { margin-left: auto; font-size: 11px; letter-spacing: .08em; font-weight: 700;
-  color: var(--secondary-text-color); white-space: nowrap; }
-.rv-card .sub { font-size: 12.5px; color: var(--secondary-text-color); }
-.rv-hms { font-family: ui-monospace, "Roboto Mono", Menlo, monospace; }
-.rv-est { font-size: 12.5px; color: var(--secondary-text-color); font-style: italic; }
-.rv-nodata { border-left: 3px solid var(--error-color, #c62828); padding: 8px 12px;
-  background: var(--secondary-background-color, #f5f5f5); border-radius: 0 8px 8px 0; }
+  color: var(--fl-ink-dim); white-space: nowrap; }
+.rv-card .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
+.rv-hms { font-family: var(--fl-font-mono); }
+.rv-est { font-size: 12.5px; color: var(--fl-ink-dim); font-style: italic; }
+.rv-nodata { border-left: 3px solid var(--fl-bad); padding: 8px 12px;
+  background: var(--fl-surface-sunken); border-radius: 0 8px 8px 0; }
 .rv-nodata .t { font-weight: 500; }
 .rv-rows { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
 .rv-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .rv-dot { width: 14px; height: 14px; border-radius: 4px; flex: none;
-  border: 1px solid var(--divider-color, #e0e0e0); }
+  border: 1px solid var(--fl-line); }
 .rv-warn { flex: none; width: 14px; text-align: center; }
 .rv-spool { flex: 1 1 140px; min-width: 0; }
-.rv-slot { font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; }
+.rv-slot { font-size: 12px; color: var(--fl-ink-dim); white-space: nowrap; }
 input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; border-radius: 8px;
-  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
-  color: var(--primary-text-color); text-align: right; font-variant-numeric: tabular-nums; }
+  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
+  color: var(--fl-ink); text-align: right; font-variant-numeric: tabular-nums; }
 .rv-pickline { flex-basis: 100%; padding-left: 23px; font-size: 12.5px;
-  color: var(--secondary-text-color); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  color: var(--fl-ink-dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rv-pick { font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px;
-  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
-  color: var(--primary-text-color); }
-.rv-total { align-self: flex-end; font-size: 13px; color: var(--secondary-text-color);
-  border-top: 1px solid var(--divider-color, #e0e0e0); padding-top: 5px;
+  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
+  color: var(--fl-ink); }
+.rv-total { align-self: flex-end; font-size: 13px; color: var(--fl-ink-dim);
+  border-top: 1px solid var(--fl-line); padding-top: 5px;
   font-variant-numeric: tabular-nums; }
-.rv-total b { color: var(--primary-text-color); }
+.rv-total b { color: var(--fl-ink); }
 .rv-weigh { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
 .rv-weigh button { padding: 6px 12px; font-size: 13px; }
 .rv-notewrap { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px;
-  color: var(--secondary-text-color); }
+  color: var(--fl-ink-dim); }
 .rv-note { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 8px;
-  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
-  color: var(--primary-text-color); }
+  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
+  color: var(--fl-ink); }
 .rv-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .rv-actions .primary:disabled { opacity: .45; cursor: not-allowed; }
 .rv-hint { text-align: right; }
 
-.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center;
-  padding: 16px; z-index: 20; }
-.modal { background: var(--card-background-color, #fff); border-radius: 14px; padding: 20px;
-  width: min(420px, 100%); max-height: 86vh; overflow-y: auto; }
-.modal h3 { margin: 0 0 14px; font-size: 17px; font-weight: 500; }
+.scrim { position: fixed; inset: 0; background: rgba(3, 5, 8, .68); display: grid; place-items: center;
+  padding: 16px; z-index: 20; backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+.modal { background: linear-gradient(160deg, #0f1720, #0a0f15); border: 1px solid var(--fl-line);
+  border-radius: var(--fl-radius-xl); padding: 24px; box-shadow: var(--fl-shadow-2);
+  width: min(440px, 100%); max-height: 86vh; overflow-y: auto;
+  animation: fl-pop var(--fl-dur-slow) var(--fl-ease) both; }
+.modal h3 { margin: 0 0 16px; font-size: 18px; font-weight: 600; letter-spacing: -.01em;
+  color: var(--fl-ink-bright); }
 .modal form { display: flex; flex-direction: column; gap: 12px; }
-.modal label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--secondary-text-color); }
+.modal label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--fl-ink-dim); }
 .modal label.row { flex-direction: row; align-items: center; gap: 9px; }
 .modal input, .modal select { font: inherit; font-size: 15px; padding: 9px 11px; border-radius: 8px;
-  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
-  color: var(--primary-text-color); }
+  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
+  color: var(--fl-ink); }
 .modal input[type=checkbox] { width: auto; }
 .modal input[type=color] { padding: 3px; height: 42px; }
-.modal small { color: var(--secondary-text-color); font-size: 12px; }
+.modal small { color: var(--fl-ink-dim); font-size: 12px; }
 .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
 .modal input:disabled { opacity: .5; cursor: not-allowed; }
 
 .ed-tag { display: flex; flex-direction: column; gap: 5px; }
 .ed-tag .k, .ed-corr .k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; }
-.ed-tagval { font-family: ui-monospace, "Roboto Mono", Menlo, monospace; font-size: 15px;
-  color: var(--primary-text-color); }
+  color: var(--fl-ink-dim); font-weight: 700; }
+.ed-tagval { font-family: var(--fl-font-mono); font-size: 15px;
+  color: var(--fl-ink); }
 .ed-tagrow { display: flex; gap: 8px; align-items: stretch; }
 .ed-tagrow input { flex: 1; min-width: 0; }
 .ed-tagrow button { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
 .ed-corr { display: flex; flex-direction: column; gap: 12px; padding-top: 14px;
-  border-top: 1px solid var(--divider-color, #e0e0e0); }
+  border-top: 1px solid var(--fl-line); }
 .ed-corr p { margin: 0; }
 
 /* Corrections — docs/14 §14.3, §14.4. */
 .spool-body { position: relative; }
 .card-x { position: absolute; top: -4px; right: -6px; border: 0; background: none;
-  color: var(--secondary-text-color); font-size: 18px; line-height: 1; padding: 4px 7px;
+  color: var(--fl-ink-dim); font-size: 18px; line-height: 1; padding: 4px 7px;
   border-radius: 8px; opacity: .55; }
-.card-x:hover { opacity: 1; color: var(--error-color, #c62828);
-  background: var(--secondary-background-color, #f5f5f5); }
+.card-x:hover { opacity: 1; color: var(--fl-bad);
+  background: var(--fl-surface-sunken); }
 
 table.ledger td.acts { text-align: right; white-space: nowrap; padding-left: 10px; }
 .rowact { padding: 3px 9px; font-size: 13px; line-height: 1.3; margin-left: 4px;
-  color: var(--secondary-text-color); }
-.rowact:hover { color: var(--primary-text-color); }
-.rowact.danger:hover { color: var(--error-color, #c62828);
-  border-color: var(--error-color, #c62828); }
+  color: var(--fl-ink-dim); }
+.rowact:hover { color: var(--fl-ink); }
+.rowact.danger:hover { color: var(--fl-bad);
+  border-color: var(--fl-bad); }
 
 /* A voided row is struck through, never omitted: the detail view is the derivation
    surface, and hiding a row there would break the visible closed sum. */
@@ -2951,111 +3465,200 @@ table.ledger tr.voided td.amt { text-decoration: line-through; opacity: .6; }
 table.ledger tr.voided td.what span { text-decoration: none; }
 .chip-void { display: inline-block; margin-left: 7px; font-size: 10px; font-weight: 700;
   letter-spacing: .08em; text-transform: uppercase; text-decoration: none;
-  border-radius: 999px; padding: 1px 8px; color: var(--error-color, #c62828);
+  border-radius: 999px; padding: 1px 8px; color: var(--fl-bad);
   border: 1px solid currentColor; vertical-align: 1px; }
 
 .trash-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 8px; }
 .trash-card h3 { margin: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; }
+  color: var(--fl-ink-dim); font-weight: 700; }
 .trash-card p { margin: 0 0 4px; }
 .trash-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
-  padding: 9px 0; border-top: 1px solid var(--divider-color, #f0f0f0); font-size: 13.5px; }
+  padding: 9px 0; border-top: 1px solid var(--fl-line); font-size: 13.5px; }
 .trash-name { font-weight: 500; }
 .trash-acts { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .trash-acts button { padding: 5px 12px; font-size: 12.5px; }
 
 /* The sentence a correction modal commits to before anything is sent. */
 .cx-says { margin: 0; line-height: 1.6; padding: 11px 13px; border-radius: 8px;
-  background: var(--secondary-background-color, #f5f5f5); font-size: 14px; }
+  background: var(--fl-surface-sunken); font-size: 14px; }
 .intent { display: flex; flex-direction: column; gap: 5px; padding: 11px 0;
-  border-top: 1px solid var(--divider-color, #eee); }
+  border-top: 1px solid var(--fl-line); }
 .intent button { align-self: flex-start; }
 
 /* Printer tab — docs/14 §14.5. A glance, not a printer UI. */
 .pr-h { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; }
+  color: var(--fl-ink-dim); font-weight: 700; }
 .pr-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-.pr-fact { padding: 13px 18px; border-right: 1px solid var(--divider-color, #eee);
-  border-bottom: 1px solid var(--divider-color, #eee); min-width: 0; }
+.pr-fact { padding: 13px 18px; border-right: 1px solid var(--fl-line);
+  border-bottom: 1px solid var(--fl-line); min-width: 0; }
 .pr-fact .k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; }
+  color: var(--fl-ink-dim); font-weight: 700; }
 .pr-fact .v { font-size: 16px; margin-top: 3px; overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums; }
 .pr-bar { display: flex; align-items: center; gap: 8px; }
 .pr-bar .track { flex: 1; height: 6px; border-radius: 3px; min-width: 40px;
-  background: var(--divider-color, #eee); overflow: hidden; display: block; }
-.pr-bar .track i { display: block; height: 100%; background: var(--primary-color); }
+  background: var(--fl-line); overflow: hidden; display: block; }
+.pr-bar .track i { display: block; height: 100%; background: var(--fl-accent); }
 .pr-error { padding: 11px 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  border-left: 3px solid var(--error-color, #c62828); }
+  border-left: 3px solid var(--fl-bad); }
 .pr-trays { display: flex; flex-direction: column; }
-.tray .empty-reel { border: 1px dashed var(--divider-color, #ddd); background: none; }
+.tray .empty-reel { border: 1px dashed var(--fl-line); background: none; }
 
 /* Settings tab — docs/14 §14.6.4. */
 .set-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
 .set-card label { display: flex; flex-direction: column; gap: 5px; font-size: 13px;
-  color: var(--secondary-text-color); }
+  color: var(--fl-ink-dim); }
 .set-card label.row { flex-direction: row; align-items: center; gap: 9px; }
 .set-card input { font: inherit; font-size: 15px; padding: 9px 11px; border-radius: 8px;
-  border: 1px solid var(--divider-color, #ddd); background: var(--primary-background-color, #fff);
-  color: var(--primary-text-color); }
+  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
+  color: var(--fl-ink); }
 .set-card input[type=checkbox] { width: auto; }
 .set-card input:disabled { opacity: .6; cursor: not-allowed; }
-.set-card small { color: var(--secondary-text-color); font-size: 12px; }
+.set-card small { color: var(--fl-ink-dim); font-size: 12px; }
 .set-card .actions { display: flex; justify-content: flex-end; gap: 8px; }
-.saved { color: var(--success-color, #2e7d32); text-align: right; margin: 0; }
+.saved { color: var(--fl-ok); text-align: right; margin: 0; }
 
 /* Statistics tab — docs/06 §6.7, docs/15 §15.6. Every chart here is hand-rolled inline
    SVG (ADR-0006), themed through the same custom properties as the rest of the panel:
    the only colours that are *data* are the filament swatches, which come from the ledger. */
 .st-periods { align-items: center; }
 .st-periodlabel { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; margin-right: 2px; }
+  color: var(--fl-ink-dim); font-weight: 700; margin-right: 2px; }
 .st-period { padding: 6px 14px; font-size: 13px; }
-.st-period.on { background: var(--primary-color); border-color: var(--primary-color);
+.st-period.on { background: var(--fl-accent); border-color: var(--fl-accent);
   color: #fff; font-weight: 500; }
 .st-period:disabled { opacity: .6; cursor: progress; }
 .st-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 10px; }
 .st-card h3 { margin: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--secondary-text-color); font-weight: 700; }
+  color: var(--fl-ink-dim); font-weight: 700; }
 .st-card p { margin: 0; }
 .st-time { padding: 0 0 12px; }
-.st-time .summary { border-bottom: 1px solid var(--divider-color, #eee); }
+.st-time .summary { border-bottom: 1px solid var(--fl-line); }
 .st-time p { margin: 10px 18px 0; }
 
 .chart { display: block; overflow: visible; }
-.chart .lbl { font-size: 12.5px; fill: var(--primary-text-color); }
-.chart .val { font-size: 12.5px; fill: var(--secondary-text-color);
+.chart .lbl { font-size: 12.5px; fill: var(--fl-ink); }
+.chart .val { font-size: 12.5px; fill: var(--fl-ink-dim);
   font-variant-numeric: tabular-nums; }
-.chart .trk { fill: var(--divider-color, #eee); }
+.chart .trk { fill: var(--fl-line); }
 /* The default bar is the theme's own accent; the colour chart overrides it per bar with
    the stored filament colour. The outline is what keeps white filament visible on a light
    card — a swatch with no edge disappears into the background it is meant to sit on. */
-.chart .bar { fill: var(--primary-color); stroke: var(--divider-color, #e0e0e0);
+.chart .bar { fill: var(--fl-accent); stroke: var(--fl-line);
   stroke-width: 1; }
-.chart .seg.ok { fill: var(--success-color, #2e7d32); }
-.chart .seg.warn { fill: var(--warning-color, #e07b00); }
-.chart .seg.bad { fill: var(--error-color, #c62828); }
+.chart .seg.ok { fill: var(--fl-ok); }
+.chart .seg.warn { fill: var(--fl-warn); }
+.chart .seg.bad { fill: var(--fl-bad); }
 .seg-bar { border-radius: 7px; overflow: hidden; }
 .st-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px;
-  color: var(--secondary-text-color); }
+  color: var(--fl-ink-dim); }
 .st-key { display: inline-flex; align-items: center; gap: 6px; }
 .st-key i { width: 9px; height: 9px; border-radius: 2px; }
-.st-key.ok i { background: var(--success-color, #2e7d32); }
-.st-key.warn i { background: var(--warning-color, #e07b00); }
-.st-key.bad i { background: var(--error-color, #c62828); }
+.st-key.ok i { background: var(--fl-ok); }
+.st-key.warn i { background: var(--fl-warn); }
+.st-key.bad i { background: var(--fl-bad); }
 table.ledger.st-top { min-width: 320px; }
 table.ledger.st-top td.what { overflow-wrap: anywhere; }
 
-@media (max-width: 600px) {
-  main { padding: 12px; }
+/* ===================================================================================
+   Motion. Decoration, and it says so: under prefers-reduced-motion every animation below
+   is cut to a single frame rather than merely shortened, because a user who asked for
+   less motion asked for none of this.
+   =================================================================================== */
+/* ---- Ambient ----------------------------------------------------------------------
+   Motes of filament colour drifting up behind the whole panel, and a strand of filament
+   running under the header. Both are fixed-cost: transform and stroke-dashoffset only, so
+   nothing reflows and nothing repaints outside its own layer.
+
+   The layer is a sibling of #root and never repainted, so a mote keeps its position across
+   every navigation instead of snapping back on each paint. */
+/* Absolute against the host, never fixed. Fixed escapes to the viewport — measured doing
+   exactly that on a real instance, drifting motes across Home Assistant's sidebar — and
+   container-type does not reliably contain it. The host is positioned instead, so the
+   layer is bounded by the panel by construction rather than by inference.
+   (No backticks in here: STYLES is a template literal and one would end it.) */
+.ambient { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+.ambient i { position: absolute; bottom: -10px; border-radius: 50%; opacity: 0;
+  animation-name: fl-float; animation-timing-function: linear;
+  animation-iteration-count: infinite; }
+#root { position: relative; z-index: 1; }
+
+.strand { position: absolute; left: 0; right: 0; bottom: -1px; width: 100%; height: 26px;
+  pointer-events: none; }
+.strand path { fill: none; stroke: var(--fl-accent); stroke-width: 1.4;
+  stroke-dasharray: 10 14; opacity: .55; animation: fl-dash 9s linear infinite; }
+
+/* A slow sweep of light across a card. Skewed, so it reads as a highlight travelling over
+   a surface rather than a bar sliding past. */
+.shim { position: absolute; top: -40%; left: -60%; width: 40%; height: 180%;
+  pointer-events: none; transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .05), transparent);
+  animation: fl-shim 6s ease-in-out infinite; }
+.grid > .spool:nth-child(2n) .shim { animation-delay: 1.4s; }
+.grid > .spool:nth-child(3n) .shim { animation-delay: 2.8s; }
+.grid > .spool:nth-child(5n) .shim { animation-delay: 4.1s; }
+
+@keyframes fl-float {
+  0% { transform: translate3d(0, 0, 0); opacity: 0; }
+  12% { opacity: .7; }
+  88% { opacity: .5; }
+  100% { transform: translate3d(40px, -120vh, 0); opacity: 0; }
+}
+@keyframes fl-dash { to { stroke-dashoffset: -600; } }
+@keyframes fl-shim { to { transform: translateX(260%) skewX(-18deg); } }
+@keyframes fl-spin { to { transform: rotate(360deg); } }
+@keyframes fl-view { from { opacity: 0; transform: translateY(12px); } }
+@keyframes fl-pop { from { opacity: 0; transform: translateY(20px) scale(.97); } }
+@keyframes fl-bar { from { transform: scaleX(0); } }
+@keyframes fl-row { from { opacity: 0; transform: translateX(-14px); } }
+@keyframes fl-arc { from { stroke-dashoffset: var(--ring-circ); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ===================================================================================
+   Responsive — to the panel, not to the window (16 §16.2).
+
+   Home Assistant's sidebar takes its width from the same viewport this panel lives in, so
+   a media query answers the wrong question: a 900px window with the sidebar open leaves
+   the panel about 640px, and @media reports 900. Asking the container is what makes
+   pinning and collapsing the sidebar reflow the panel with no reload and no JavaScript.
+   =================================================================================== */
+@container panel (max-width: 600px) {
+  main { padding: 14px max(14px, env(safe-area-inset-right))
+    max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
   .detail { gap: 12px; }
   /* Tighter tabs, never fewer words. Icons in place of labels would buy a few pixels and
      cost the discoverability the whole strip exists for (docs/06 §6.1). */
-  header { padding: 10px 12px 0; }
-  nav button { padding: 8px 11px 10px; font-size: 13.5px; }
+  header { padding: 12px 14px 0; }
+  header h1 { font-size: 19px; }
+  /* 44px minimum on anything tappable: the panel is used one-handed, at a printer. */
+  nav button { padding: 12px 13px; font-size: 13.5px; }
   nav .count { margin-left: 5px; }
-  .st-period { padding: 6px 11px; }
+  .st-period { padding: 10px 12px; }
+  .grid { grid-template-columns: 1fr; gap: 12px; }
+  .stat { flex-basis: calc(50% - 1px); padding: 15px 16px; }
+  .stat .v { font-size: 24px; }
+  .big { font-size: 26px; }
+  .tray-actions button, .trash-acts button, .rowact { min-height: 44px; }
+  .modal { padding: 18px; }
+}
+
+@container panel (min-width: 1000px) {
+  main { padding: 28px max(32px, env(safe-area-inset-right))
+    max(80px, env(safe-area-inset-bottom)) max(32px, env(safe-area-inset-left)); }
 }
 `;
+
+// Before the element is defined, not from `connectedCallback`: the faces belong to the document
+// and the browser can start fetching them while Home Assistant is still deciding to mount a
+// panel. It is the same kind of module-level side effect as the line below it.
+installFonts();
 
 customElements.define("filament-ledger-panel", FilamentLedgerPanel);

@@ -197,6 +197,21 @@ class BambuLabGateway:
         """
         return bool(self._entity_by_slot) or self._printer_device_id is not None
 
+    @property
+    def watched_entity_ids(self) -> frozenset[str]:
+        """Every entity whose change can alter what the Printer tab shows.
+
+        Discovery already resolved these — the tray sensors and the job sensors — and the
+        reconciliation pass already subscribes to the tray half. Exposing the union lets the
+        panel's subscription push a new snapshot when one of *these* changes, rather than
+        the panel asking again on a timer or on every unrelated thing that happens in the
+        house.
+
+        The set is what discovery found. A dormant gateway returns an empty one, and a
+        subscription over nothing correctly never fires.
+        """
+        return frozenset(self._entity_by_slot.values()) | frozenset(self._print_sensors.values())
+
     def current_job_status(self) -> JobStatus:
         """What the printer says about the job right now.
 

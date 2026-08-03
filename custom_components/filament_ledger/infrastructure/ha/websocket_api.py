@@ -9,12 +9,15 @@ that is the whole design — an API that could set one would make the ledger dec
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Final
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.event import async_track_state_change_event
 
 from ...application.adjust_spool import (
     AdjustSpoolCommand,
@@ -54,6 +57,7 @@ from ...domain.value.identifiers import (
     TagUid,
 )
 from ...domain.value.material import Material, MaterialKind
+from .event_bridge import LEDGER_EVENTS
 from .printer_state import PrinterSnapshot
 from .runtime import LedgerConfigEntry, LedgerRuntime, loaded_entries, runtimes
 from .serialisers import (
@@ -74,6 +78,9 @@ from .tray_sync import TraySyncResult
 # reason the mount command bounds it: `SlotIndex` raises on garbage, and an unvalidated
 # adapter would turn a typo into a stack trace instead of a message.
 _SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def async_register_commands(hass: HomeAssistant) -> None:
@@ -103,6 +110,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_printer_state,
         handle_settings_get,
         handle_settings_update,
+        handle_subscribe,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -832,3 +840,120 @@ async def handle_settings_update(
 @callback
 def async_unregister_commands(hass: HomeAssistant) -> None:
     """Websocket commands are process-global; nothing to unwind per entry."""
+
+
+# -- the live subscription ---------------------------------------------------------------
+
+#: How long a burst is allowed to coalesce before the panel is told about it.
+#:
+#: One print finishing raises a movement, possibly a depletion and possibly a confidence
+#: change, and a tray reconciliation can touch four entities at once. Each would otherwise
+#: be a full read model computed and pushed. Short enough that nobody perceives it as lag.
+_PUSH_COOLDOWN_S: Final = 0.3
+
+
+async def _ledger_payload(hass: HomeAssistant) -> dict[str, Any]:
+    """Everything the panel's ledger views read, in one pass.
+
+    The same five reads the panel used to make on every change, computed once here and
+    pushed. The panel no longer asks — which is the entire point: a client that refetches
+    on a signal is still a client that decides when to ask.
+    """
+    queries = _runtime(hass).use_cases.queries
+    totals = await queries.stock()
+    return {
+        "kind": "ledger",
+        "spools": [spool_summary(summary) for summary in await queries.overview()],
+        "stock": {
+            "total_g": whole_grams(totals.total),
+            "spool_count": totals.spool_count,
+            "needs_weighing": totals.needs_weighing,
+            "per_material": {name: whole_grams(g) for name, g in totals.per_material.items()},
+        },
+        "reviews": [pending_review(detail) for detail in await queries.pending_reviews()],
+        "movements": [movement_line(line) for line in await queries.movement_history()],
+        "trash": trash_result(await queries.trash()),
+    }
+
+
+async def _printer_payload(hass: HomeAssistant) -> dict[str, Any]:
+    runtime = _runtime(hass)
+    if runtime.printer is None:
+        return {"kind": "printer", "printer": printer_state(PrinterSnapshot(dormant=True))}
+    return {"kind": "printer", "printer": printer_state(await runtime.printer.execute())}
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
+@websocket_api.async_response
+@guarded
+async def handle_subscribe(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """One subscription, and the backend pushes.
+
+    **Nothing here polls, and nothing on the other end asks twice.** Two things can change
+    what the panel shows, and each has a signal that already exists:
+
+    - **The ledger**, which changes only when this integration writes to it. Its own
+      `filament_ledger_*` events (`event_bridge.LEDGER_EVENTS`) are that moment, exactly.
+    - **The printer**, whose figures belong to the gateway's entities. Discovery already
+      resolved which ones (`BambuLabGateway.watched_entity_ids`), so the subscription
+      watches those and nothing else — not every state change in the house.
+
+    A panel comparing `hass` objects, or asking again on an interval, would be inferring
+    both facts from a distance. The integration knows them; it says so.
+
+    The current state is pushed on subscribe, so a freshly opened panel is filled by the
+    same path that keeps it current, rather than by a separate set of first-load reads that
+    could disagree with it.
+    """
+    entity_ids = sorted(_printer_entity_ids(hass))
+
+    async def push_ledger() -> None:
+        connection.send_message(websocket_api.event_message(msg["id"], await _ledger_payload(hass)))
+
+    async def push_printer() -> None:
+        connection.send_message(
+            websocket_api.event_message(msg["id"], await _printer_payload(hass))
+        )
+
+    ledger = Debouncer(
+        hass, LOGGER, cooldown=_PUSH_COOLDOWN_S, immediate=False, function=push_ledger
+    )
+    printer = Debouncer(
+        hass, LOGGER, cooldown=_PUSH_COOLDOWN_S, immediate=False, function=push_printer
+    )
+
+    @callback
+    def _ledger_changed(_event: Event[Any]) -> None:
+        hass.async_create_task(ledger.async_call())
+
+    @callback
+    def _printer_changed(_event: Event[Any]) -> None:
+        hass.async_create_task(printer.async_call())
+
+    unsubscribes = [hass.bus.async_listen(name, _ledger_changed) for name in sorted(LEDGER_EVENTS)]
+    if entity_ids:
+        unsubscribes.append(async_track_state_change_event(hass, entity_ids, _printer_changed))
+
+    @callback
+    def _unsubscribe() -> None:
+        for unsubscribe in unsubscribes:
+            unsubscribe()
+
+    connection.subscriptions[msg["id"]] = _unsubscribe
+    connection.send_result(msg["id"])
+
+    await push_ledger()
+    await push_printer()
+
+
+def _printer_entity_ids(hass: HomeAssistant) -> frozenset[str]:
+    """Which entities the printer half of the subscription watches.
+
+    Empty when no printer was discovered, which makes the subscription correctly silent
+    rather than absent: the panel still receives ledger pushes, and the Printer tab still
+    renders its honest dormant state.
+    """
+    printer = _runtime(hass).printer
+    return printer.gateway.watched_entity_ids if printer is not None else frozenset()

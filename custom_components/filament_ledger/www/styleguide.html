@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filament Ledger — Styleguide</title>
+<!-- The console on this page is a diagnostic surface; a favicon 404 is noise in it. -->
+<link rel="icon" href="data:,">
+<style>
+  /* Page chrome only. Everything inside a specimen is the panel's own STYLES, untouched. */
+  :root { color-scheme: light dark; --ink: #1c1f24; --dim: #6b7480; --line: #d8dde3; --bg: #f5f7f9; --card: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e6edf3; --dim: #8b9aab; --line: #232b34; --bg: #0d1116; --card: #151b22; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 "Space Grotesk", system-ui, sans-serif; }
+  header.page { position: sticky; top: 0; z-index: 10; background: var(--card);
+    border-bottom: 1px solid var(--line); padding: 14px 20px; display: flex; gap: 16px;
+    align-items: center; flex-wrap: wrap; }
+  header.page h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+  header.page .sub { color: var(--dim); font-size: 13px; flex: 1; min-width: 220px; }
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .controls button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 7px;
+    border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; }
+  .controls button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+  nav.toc { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 24px; }
+  nav.toc a { font-size: 12.5px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line);
+    color: var(--dim); text-decoration: none; }
+  nav.toc a:hover { color: var(--ink); }
+  section.spec { margin: 0 0 34px; scroll-margin-top: 80px; }
+  section.spec > h2 { font-size: 15px; margin: 0 0 3px; letter-spacing: -.01em; }
+  section.spec > p.why { margin: 0 0 10px; color: var(--dim); font-size: 13px; max-width: 70ch; }
+  /* No background here on purpose. A document rule beats :host, so painting the stage would
+     hide the panel's own surface — the one thing a specimen exists to show. */
+  .stage { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    resize: horizontal; min-width: 300px; max-width: 100%; }
+  .stage.narrow { width: 390px; }
+  .broke { padding: 14px 16px; font-size: 13px; color: #b3261e; background: #fdecea;
+    border-radius: 10px; font-family: ui-monospace, monospace; white-space: pre-wrap; }
+  footer.page { padding: 26px 20px 60px; color: var(--dim); font-size: 12.5px; max-width: 70ch; margin: 0 auto; }
+  code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .92em; }
+</style>
+</head>
+<body>
+
+<header class="page">
+  <h1>Filament Ledger — Styleguide</h1>
+  <span class="sub">Every surface the panel renders, driven by the panel's own render methods.
+    No Home Assistant, no websocket, no real data.</span>
+  <div class="controls">
+    <button id="lang-en" aria-pressed="true">EN</button>
+    <button id="lang-es" aria-pressed="false">ES</button>
+    <button id="width-toggle" aria-pressed="false">Phone width</button>
+  </div>
+</header>
+
+<main>
+  <nav class="toc" id="toc"></nav>
+  <div id="specimens"></div>
+</main>
+
+<footer class="page">
+  <p>This page imports <code>STYLES</code> from <code>filament-ledger-panel.js</code> and adopts that
+  exact stylesheet into each specimen's shadow root, then asks a real, unmounted
+  <code>&lt;filament-ledger-panel&gt;</code> instance to render each view from fixtures. There is no second
+  copy of the markup and no second copy of the CSS, so this catalogue cannot drift away from the panel.</p>
+  <p>Specimens are resizable — drag the bottom-right corner of any frame to check a component against a
+  narrower container. See <code>docs/16-visual-system.md</code> §16.4.</p>
+</footer>
+
+<script type="module">
+import { STYLES } from "./filament-ledger-panel.js";
+import { translator } from "./i18n.js";
+
+// ---------------------------------------------------------------------------------------
+// Fixtures. Shapes come from `infrastructure/ha/serialisers.py`, which is the wire contract
+// the panel actually reads. Values are invented; nothing here has ever been in a ledger.
+// ---------------------------------------------------------------------------------------
+
+const iso = (daysAgo, hour = 14) =>
+  new Date(Date.UTC(2026, 6, 30 - daysAgo, hour, 12, 0)).toISOString();
+
+const spool = (over) => ({
+  id: "s-1", name: "Bambu PLA Basic", label: null, vendor: "Bambu Lab",
+  material: "PLA", material_kind: "PLA", colour: "#1f8a4c", colour_hex8: "#1f8a4cff",
+  foreground: "#ffffff", balance_g: 612, balance_exact_g: 612.4, opening_weight_g: 1000,
+  core_weight_g: 250, percentage: 61, state: "ACTIVE", confidence: "HIGH",
+  needs_weighing: false, location: { kind: "AMS_SLOT", slot: 1 }, tag_uid: "A1B2C3D4",
+  tag_source: "DETECTED", movement_count: 9, last_movement_at: iso(1),
+  has_anomaly: false, registered_at: iso(60), ...over,
+});
+
+// One of each state and each confidence, because a catalogue that shows only the happy row
+// is a catalogue that will not warn anybody.
+const SPOOLS = [
+  spool({}),
+  spool({ id: "s-2", name: "Prusament PETG", vendor: "Prusa", material: "PETG",
+    material_kind: "PETG", colour: "#e07b00", balance_g: 214, percentage: 21,
+    confidence: "MEDIUM", location: { kind: "AMS_SLOT", slot: 2 }, tag_source: "MANUAL" }),
+  spool({ id: "s-3", name: "Generic TPU", vendor: null, material: "TPU", material_kind: "TPU",
+    colour: "#111318", foreground: "#ffffff", balance_g: 47, percentage: 5, confidence: "LOW",
+    needs_weighing: true, has_anomaly: true, location: { kind: "STORAGE" }, tag_uid: null,
+    tag_source: null }),
+  spool({ id: "s-4", name: "Sunlu ABS", vendor: "Sunlu", material: "ABS", material_kind: "ABS",
+    colour: "#c62828", balance_g: 1000, percentage: 100, state: "SEALED", movement_count: 1,
+    location: { kind: "STORAGE" } }),
+  spool({ id: "s-5", name: "Old PLA Silk", vendor: "Eryone", material: "PLA",
+    colour: "#8e7cc3", balance_g: 0, percentage: 0, state: "DEPLETED",
+    location: { kind: "STORAGE" }, confidence: "HIGH" }),
+  spool({ id: "s-6", name: "Warped ASA", vendor: null, material: "ASA", material_kind: "ASA",
+    colour: "#607d8b", balance_g: 330, percentage: 33, state: "DISCARDED",
+    location: { kind: "STORAGE" } }),
+];
+
+const STOCK = {
+  total_g: 2203, spool_count: 5, needs_weighing: 1,
+  per_material: { PLA: 612, PETG: 214, TPU: 47, ABS: 1000, ASA: 330 },
+  defaults: { opening_weight_g: 1000, core_weight_g: 250 },
+};
+
+const historyLine = (over) => ({
+  id: "m-1", movement_id: "m-1", type: "CONSUMPTION", label: "Print",
+  amount_g: -28.4, balance_after_g: 612, balance_after_exact_g: 612.4,
+  source: "AUTOMATIC", source_label: "automatic", occurred_at: iso(1),
+  note: null, direction: "DECREASE", voided: false,
+  reassigns_movement_id: null, reinstates_movement_id: null, ...over,
+});
+
+const DETAIL = {
+  ...spool({}),
+  history: [
+    historyLine({}),
+    historyLine({ id: "m-2", movement_id: "m-2", type: "ADJUSTMENT", label: "Reconciliation",
+      amount_g: 2.3, direction: "INCREASE", source: "MANUAL", source_label: "manual",
+      balance_after_g: 640, occurred_at: iso(3), note: "Weighed on the kitchen scale" }),
+    historyLine({ id: "m-3", movement_id: "m-3", type: "CONSUMPTION", label: "Print",
+      amount_g: -74.8, balance_after_g: 638, occurred_at: iso(5), voided: true }),
+    historyLine({ id: "m-4", movement_id: "m-4", type: "VOID_REVERSAL", label: "Reversal",
+      amount_g: 74.8, direction: "INCREASE", balance_after_g: 713, occurred_at: iso(5),
+      voided: true, reinstates_movement_id: "m-3" }),
+    historyLine({ id: "m-5", movement_id: "m-5", type: "DISCARD", label: "Discard",
+      amount_g: -12, balance_after_g: 725, occurred_at: iso(9), source: "MANUAL",
+      source_label: "manual", note: "Purge tower" }),
+    historyLine({ id: "m-6", movement_id: "m-6", type: "OPENING_BALANCE", label: "Opening balance",
+      amount_g: 1000, direction: "INCREASE", balance_after_g: 1000, occurred_at: iso(60),
+      source: "MANUAL", source_label: "manual" }),
+  ],
+};
+
+const MOVEMENTS = [
+  { occurred_at: iso(1), movement_id: "m-1", spool_id: "s-1", spool_name: "Bambu PLA Basic",
+    spool_colour: "#1f8a4c", type: "CONSUMPTION", amount_g: -28.4, direction: "DECREASE",
+    voided: false, source: "AUTOMATIC", job_name: "680106-Box and lid", review_id: null, note: null },
+  { occurred_at: iso(2), movement_id: "m-7", spool_id: "s-2", spool_name: "Prusament PETG",
+    spool_colour: "#e07b00", type: "CONSUMPTION", amount_g: -145.2, direction: "DECREASE",
+    voided: false, source: "REVIEW", job_name: "Bracket v3", review_id: "r-9",
+    note: "Cancelled at layer 88 of 209" },
+  { occurred_at: iso(4), movement_id: "m-3", spool_id: "s-1", spool_name: "Bambu PLA Basic",
+    spool_colour: "#1f8a4c", type: "CONSUMPTION", amount_g: -74.8, direction: "DECREASE",
+    voided: true, source: "AUTOMATIC", job_name: "Failed print", review_id: null, note: null },
+  { occurred_at: iso(9), movement_id: "m-5", spool_id: "s-3", spool_name: "Generic TPU",
+    spool_colour: "#111318", type: "DISCARD", amount_g: -12, direction: "DECREASE",
+    voided: false, source: "MANUAL", job_name: null, review_id: null, note: "Purge tower" },
+];
+
+const REVIEWS = [
+  { id: "r-9", job_id: "j-9", job_name: "Bracket v3", job_state: "CANCELLED",
+    reason: "CANCELLED", estimator: "LINEAR_PROGRESS", opened_at: iso(0, 9),
+    layer_reached: 88, total_layers: 209, progress_pct: 42,
+    raw_gcode_state: "FAILED", raw_print_error: "216173881625542657",
+    estimated_total_g: 47.6,
+    lines: [{ slot: 1, estimated_g: 38.2, spool_id: "s-1" },
+            { slot: 2, estimated_g: 9.4, spool_id: null }] },
+];
+
+const TRASH = {
+  spools: [{ ...spool({ id: "s-7", name: "Mis-registered PLA", colour: "#795548",
+    state: "ACTIVE", location: { kind: "STORAGE" } }), deleted_at: iso(6) }],
+  movements: [
+    { movement_id: "m-3", spool_id: "s-1", spool_name: "Bambu PLA Basic", spool_colour: "#1f8a4c",
+      spool_deleted: false, spool_discarded: false, type: "CONSUMPTION", label: "Print",
+      amount_g: -74.8, occurred_at: iso(5), voided_at: iso(4), reason: "Print never started",
+      had_restitution: true, restorable: true },
+    { movement_id: "m-8", spool_id: "s-6", spool_name: "Warped ASA", spool_colour: "#607d8b",
+      spool_deleted: false, spool_discarded: true, type: "CONSUMPTION", label: "Print",
+      amount_g: -21.5, occurred_at: iso(12), voided_at: iso(11), reason: "Wrong spool charged",
+      had_restitution: true, restorable: false },
+  ],
+};
+
+const STATS = {
+  period: "30d", since: iso(30), empty: false, consumed_g: 1482, wasted_g: 63,
+  prints: { finished: 21, cancelled: 3, failed: 1, total: 25 },
+  reviews: { approved: 3, dismissed: 1, total: 4 },
+  by_colour: [{ colour: "#1f8a4c", grams: 720 }, { colour: "#e07b00", grams: 465 },
+              { colour: "#111318", grams: 190 }, { colour: "#c62828", grams: 107 }],
+  by_material: [{ material: "PLA", grams: 827 }, { material: "PETG", grams: 465 },
+                { material: "TPU", grams: 190 }],
+  top_prints: [
+    { job_id: "j-1", name: "680106-Box and lid", started_at: iso(3), grams: 214 },
+    { job_id: "j-2", name: "Bracket v3", started_at: iso(7), grams: 145 },
+    { job_id: "j-3", name: "Vase mode test", started_at: iso(12), grams: 98 },
+  ],
+  print_time: { total_minutes: 3164, average_minutes: 126, prints: 25 },
+};
+
+const PRINTER = {
+  dormant: false, status: "RUNNING", progress_pct: 42, current_layer: 88, total_layers: 209,
+  job_name: "680106-Box and lid",
+  error: { active: true, code: "216173881625542657" },
+  online: true, connection_mode: "LAN", active_tray: 1,
+  trays: [
+    { slot: 1, status: "matched", tag_uid: "A1B2C3D4", name_hint: "Bambu PLA Basic",
+      material_hint: "PLA", colour_hint: "#1f8a4c", spool_id: "s-1", spool_name: "Bambu PLA Basic" },
+    { slot: 2, status: "unknown_tag", tag_uid: "FF00FF00", name_hint: "Generic PETG",
+      material_hint: "PETG", colour_hint: "#e07b00", spool_id: null, spool_name: null },
+    { slot: 3, status: "empty", tag_uid: null, name_hint: null, material_hint: null,
+      colour_hint: null, spool_id: null, spool_name: null },
+    { slot: 4, status: "ambiguous", tag_uid: "1234ABCD", name_hint: null, material_hint: null,
+      colour_hint: null, spool_id: null, spool_name: null },
+  ],
+};
+
+const SYNC = { dormant: false, slots: PRINTER.trays };
+
+const SETTINGS = {
+  default_opening_weight: 1000, default_core_weight: 250, anomaly_threshold: 15,
+  auto_mount_on_rfid: true,
+};
+
+// ---------------------------------------------------------------------------------------
+// The rig. One unmounted panel instance renders every specimen, so the markup on this page
+// is the panel's markup by construction rather than by discipline.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The one deviation on this page, and it is about containment rather than appearance.
+ *
+ * `.scrim` is `position: fixed; inset: 0` — correct in the panel, where a dialog covers the
+ * window. On a catalogue it escapes its frame, leaves a 2 px specimen behind, and stacks five
+ * overlays on top of the page. Switching to `absolute` inside a positioned stage reproduces
+ * exactly the same layout, scoped to the frame: same centring, same padding, same scrim.
+ *
+ * Nothing else here overrides the panel. If this list ever grows past positioning, the
+ * catalogue has started lying and the growth is the bug.
+ */
+const CONTAIN_DIALOG = `
+:host { position: relative; min-height: 420px; }
+.scrim { position: absolute; }
+.modal { max-height: none; }
+`;
+
+const dialogSheet = new CSSStyleSheet();
+dialogSheet.replaceSync(CONTAIN_DIALOG);
+
+const sheet = new CSSStyleSheet();
+sheet.replaceSync(STYLES);
+
+let lang = "en";
+
+/** A panel that was never connected: the constructor ran, `connectedCallback` did not. */
+function rig(state = {}) {
+  const panel = document.createElement("filament-ledger-panel");
+  panel._lang = lang;
+  panel._t = translator(lang);
+  panel._loading = false;
+  panel._hass = { user: { name: "Martín", is_admin: true } };
+  panel._spools = SPOOLS;
+  panel._stock = STOCK;
+  panel._reviews = REVIEWS;
+  panel._movements = MOVEMENTS;
+  panel._trash = TRASH;
+  panel._stats = STATS;
+  panel._printer = PRINTER;
+  panel._settings = SETTINGS;
+  Object.assign(panel, state);
+  return panel;
+}
+
+const SPECIMENS = [
+  { id: "header", title: "Header and tab strip",
+    why: "The only surface on every view. Eight tabs, the account line, and the count badge that is the one thing allowed to demand attention.",
+    render: () => rig().header() },
+
+  { id: "inventory", title: "Inventory",
+    why: "Spool cards in every state the ledger can produce: active, sealed, depleted, discarded, low confidence, and one carrying an anomaly.",
+    render: () => rig({ _tab: "inventory" }).body() },
+
+  { id: "sync", title: "Sync report",
+    why: "Transient by design — a report of a moment. One row per slot, one per outcome: matched, unknown tag, empty, ambiguous.",
+    render: () => rig({ _sync: SYNC }).syncStrip() },
+
+  { id: "detail", title: "Spool detail and history",
+    why: "The derivation surface: every row visible, voided ones struck through, and the arithmetic still closing on screen.",
+    render: () => rig({ _detail: DETAIL }).body() },
+
+  { id: "history", title: "History",
+    why: "Every entry across every spool, including a voided row and rows with and without a job name.",
+    render: () => rig({ _tab: "history" }).body() },
+
+  { id: "stats", title: "Statistics",
+    why: "Hand-rolled SVG, no chart library. Bars, segments, the period selector and the legend.",
+    render: () => rig({ _tab: "stats" }).body() },
+
+  { id: "review", title: "Review queue",
+    why: "The densest card in the product, and the one used on a phone at the printer. Per-slot editing, an unresolved spool, and an HMS code.",
+    render: () => rig({ _tab: "review" }).body() },
+
+  { id: "ams", title: "AMS",
+    why: "Four slots, two filled and two empty. The empty tray is a state, not an absence.",
+    render: () => rig({ _tab: "ams" }).body() },
+
+  { id: "printer", title: "Printer",
+    why: "Read-only glance. Every figure is nullable and a missing one renders as a dash, never as a zero.",
+    render: () => rig({ _tab: "printer" }).body() },
+
+  { id: "printer-dormant", title: "Printer — dormant",
+    why: "No printer to ask is a different fact from a printer that reported nothing, and it gets the teaching empty state.",
+    render: () => rig({ _tab: "printer", _printer: { dormant: true } }).body() },
+
+  { id: "trash", title: "Trash",
+    why: "Two sections. A voided movement that can come back, and one that cannot because its spool is retired — the explanatory line is the component.",
+    render: () => rig({ _tab: "trash" }).body() },
+
+  { id: "settings", title: "Settings — admin",
+    why: "Form fields, help text, the save action and the saved confirmation.",
+    render: () => rig({ _tab: "settings", _settingsSaved: true }).body() },
+
+  { id: "settings-ro", title: "Settings — read only",
+    why: "A non-admin sees the same figures and no way to change them. Disabled, not hidden.",
+    render: () => rig({ _tab: "settings", _hass: { user: { name: "Guest", is_admin: false } } }).body() },
+
+  { id: "error", title: "Error bar",
+    why: "Dismissible, above the view rather than replacing it — the ledger is still readable while something is wrong.",
+    render: () => rig({ _error: "The printer did not answer in time." }).errorBar() },
+
+  { id: "empty", title: "Empty and loading",
+    why: "Two different sentences. Loading is temporary; empty teaches what would fill it.",
+    render: () => {
+      const p = rig({ _tab: "review", _reviews: [] });
+      return `<div class="empty">${p._t("app.loading")}</div>${p.body()}`;
+    } },
+
+  { id: "dialog-new", title: "Dialog — register a spool",
+    why: "The longest form in the product: selects, numbers, a colour, and the tag provenance rules.",
+    render: () => rig({ _dialog: { kind: "new-spool" } }).dialog() },
+
+  { id: "dialog-edit", title: "Dialog — edit a spool",
+    why: "Prefilled. A DETECTED tag is read-only and a MANUAL one is not, which is a visible difference.",
+    render: () => rig({ _dialog: { kind: "edit-spool", spoolId: "s-1" }, _detail: DETAIL }).dialog() },
+
+  { id: "dialog-weigh", title: "Dialog — weigh",
+    why: "Where the scale meets the ledger, and where the reconciliation difference is shown to one decimal.",
+    render: () => rig({ _dialog: { kind: "weigh" }, _detail: DETAIL }).dialog() },
+
+  { id: "dialog-discard", title: "Dialog — discard",
+    why: "A destructive action, and the confirmation shape every destructive action uses.",
+    render: () => rig({ _dialog: { kind: "discard" }, _detail: DETAIL }).dialog() },
+
+  { id: "dialog-void", title: "Dialog — delete a movement",
+    why: "Corrections are more history: the wording has to say what will be added, not what will disappear.",
+    render: () => rig({ _dialog: { kind: "void-movement", movementId: "m-1" }, _detail: DETAIL }).dialog() },
+];
+
+// ---------------------------------------------------------------------------------------
+// Mounting. A specimen that throws says so in place — a blank section would read as
+// "nothing to show here", which is the one thing this page must never lie about.
+// ---------------------------------------------------------------------------------------
+
+const specimensEl = document.getElementById("specimens");
+const tocEl = document.getElementById("toc");
+let narrow = false;
+
+function paint() {
+  specimensEl.textContent = "";
+  tocEl.textContent = "";
+  for (const spec of SPECIMENS) {
+    const link = document.createElement("a");
+    link.href = `#${spec.id}`;
+    link.textContent = spec.title;
+    tocEl.appendChild(link);
+
+    const section = document.createElement("section");
+    section.className = "spec";
+    section.id = spec.id;
+    const h2 = document.createElement("h2");
+    h2.textContent = spec.title;
+    const why = document.createElement("p");
+    why.className = "why";
+    why.textContent = spec.why;
+    section.append(h2, why);
+
+    const stage = document.createElement("div");
+    stage.className = narrow ? "stage narrow" : "stage";
+    let html;
+    try {
+      html = spec.render();
+    } catch (error) {
+      const broke = document.createElement("div");
+      broke.className = "broke";
+      broke.textContent = `This specimen threw — its fixture is missing something the panel reads.\n\n${error && error.stack ? error.stack : error}`;
+      stage.appendChild(broke);
+      section.appendChild(stage);
+      specimensEl.appendChild(section);
+      continue;
+    }
+    const root = stage.attachShadow({ mode: "open" });
+    // The panel owns its palette now, so there is no theme to approximate: STYLES alone.
+    // The containment sheet comes last and only for dialogs — see CONTAIN_DIALOG.
+    root.adoptedStyleSheets = spec.id.startsWith("dialog-") ? [sheet, dialogSheet] : [sheet];
+    const host = document.createElement("div");
+    host.id = "root";
+    host.innerHTML = html;
+    root.appendChild(host);
+    section.appendChild(stage);
+    specimensEl.appendChild(section);
+  }
+}
+
+function setLang(next) {
+  lang = next;
+  document.getElementById("lang-en").setAttribute("aria-pressed", String(next === "en"));
+  document.getElementById("lang-es").setAttribute("aria-pressed", String(next === "es"));
+  document.documentElement.lang = next;
+  paint();
+}
+
+document.getElementById("lang-en").addEventListener("click", () => setLang("en"));
+document.getElementById("lang-es").addEventListener("click", () => setLang("es"));
+document.getElementById("width-toggle").addEventListener("click", (event) => {
+  narrow = !narrow;
+  event.currentTarget.setAttribute("aria-pressed", String(narrow));
+  paint();
+});
+
+paint();
+</script>
+</body>
+</html>
