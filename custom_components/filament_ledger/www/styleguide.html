@@ -32,7 +32,9 @@
   section.spec { margin: 0 0 34px; scroll-margin-top: 80px; }
   section.spec > h2 { font-size: 15px; margin: 0 0 3px; letter-spacing: -.01em; }
   section.spec > p.why { margin: 0 0 10px; color: var(--dim); font-size: 13px; max-width: 70ch; }
-  .stage { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--card);
+  /* No background here on purpose. A document rule beats :host, so painting the stage would
+     hide the panel's own surface — the one thing a specimen exists to show. */
+  .stage { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
     resize: horizontal; min-width: 300px; max-width: 100%; }
   .stage.narrow { width: 390px; }
   .broke { padding: 14px 16px; font-size: 13px; color: #b3261e; background: #fdecea;
@@ -234,50 +236,6 @@ const SETTINGS = {
 // ---------------------------------------------------------------------------------------
 
 /**
- * Home Assistant's default theme, approximated.
- *
- * The panel currently reads 15 HA custom properties, and outside Home Assistant not one of
- * them is defined — without this the specimens would render as unstyled boxes and this page
- * would be useless as a "before" photograph. Values follow HA's own default light and dark
- * themes closely enough for judging layout and hierarchy; they are not authoritative, and
- * anything that hangs on an exact shade still has to be checked in Home Assistant itself.
- *
- * **This block is what the token pass deletes.** When the panel owns its palette, the only
- * variables left are the panel's own and this sheet becomes empty (16 §16.1).
- */
-const HA_THEME = `
-:host {
-  --primary-color: #03a9f4;
-  --primary-text-color: #212121;
-  --secondary-text-color: #727272;
-  --primary-background-color: #fafafa;
-  --secondary-background-color: #e5e5e5;
-  --card-background-color: #ffffff;
-  --divider-color: rgba(0, 0, 0, .12);
-  --error-color: #db4437;
-  --warning-color: #ffa600;
-  --success-color: #43a047;
-  --app-header-background-color: var(--primary-color);
-  --app-header-text-color: #ffffff;
-  --ha-card-border-radius: 12px;
-  --ha-card-box-shadow: none;
-}
-@media (prefers-color-scheme: dark) {
-  :host {
-    --primary-text-color: #e1e1e1;
-    --secondary-text-color: #9b9b9b;
-    --primary-background-color: #111111;
-    --secondary-background-color: #202020;
-    --card-background-color: #1c1c1c;
-    --divider-color: rgba(225, 225, 225, .12);
-  }
-}
-`;
-
-const themeSheet = new CSSStyleSheet();
-themeSheet.replaceSync(HA_THEME);
-
-/**
  * The one deviation on this page, and it is about containment rather than appearance.
  *
  * `.scrim` is `position: fixed; inset: 0` — correct in the panel, where a dialog covers the
@@ -449,12 +407,9 @@ function paint() {
       continue;
     }
     const root = stage.attachShadow({ mode: "open" });
-    // Theme first, panel second: STYLES must be able to override anything the approximation
-    // sets, exactly as it can inside Home Assistant. The containment sheet comes last and
-    // only for dialogs — see CONTAIN_DIALOG.
-    root.adoptedStyleSheets = spec.id.startsWith("dialog-")
-      ? [themeSheet, sheet, dialogSheet]
-      : [themeSheet, sheet];
+    // The panel owns its palette now, so there is no theme to approximate: STYLES alone.
+    // The containment sheet comes last and only for dialogs — see CONTAIN_DIALOG.
+    root.adoptedStyleSheets = spec.id.startsWith("dialog-") ? [sheet, dialogSheet] : [sheet];
     const host = document.createElement("div");
     host.id = "root";
     host.innerHTML = html;
