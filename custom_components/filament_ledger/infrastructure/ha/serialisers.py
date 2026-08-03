@@ -8,7 +8,7 @@ surfaces can disagree about what 611.7 g looks like.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -16,8 +16,10 @@ from ...application.query import (
     GlobalHistoryLine,
     HistoryLine,
     PendingReviewDetail,
+    PrintTime,
     SpoolDetail,
     SpoolSummary,
+    StatisticsView,
     TrashedMovement,
     TrashView,
     describe_location,
@@ -229,6 +231,84 @@ def _trashed_movement(entry: TrashedMovement) -> dict[str, Any]:
 
 def _iso_or_none(moment: datetime | None) -> str | None:
     return moment.isoformat() if moment is not None else None
+
+
+def statistics_result(view: StatisticsView) -> dict[str, Any]:
+    """One period's figures, as the Stats tab renders them (docs/06 §6.7).
+
+    Every gram figure here is a **sum of exact `Grams` rounded exactly once**, which is
+    this module's standing rule and matters more in aggregate than anywhere else: rounding
+    each of forty prints to the gram and then adding them can be twenty grams out, and a
+    statistics page that disagrees with the history it summarises is worse than no
+    statistics page.
+
+    Whole grams rather than tenths, for the reason §6.8 gives balances: a period's total is
+    a figure somebody reads at a glance, and a tenth on top of a kilogram claims a
+    precision that means nothing to the reader.
+
+    `empty` is computed server-side from the exact values. The panel branches on it to
+    choose the teaching empty state, and a rule that lives only in panel JavaScript is a
+    rule in the one untestable layer (docs/14 §14.8).
+    """
+    return {
+        "period": view.period.value,
+        "since": _iso_or_none(view.since),
+        "empty": view.is_empty,
+        "consumed_g": whole_grams(view.consumed),
+        "wasted_g": whole_grams(view.wasted),
+        "prints": {
+            "finished": view.prints.finished,
+            "cancelled": view.prints.cancelled,
+            "failed": view.prints.failed,
+            "total": view.prints.total,
+        },
+        "reviews": {
+            "approved": view.reviews.approved,
+            "dismissed": view.reviews.dismissed,
+            "total": view.reviews.total,
+        },
+        "by_colour": [
+            {"colour": entry.colour.display_hex, "grams": whole_grams(entry.grams)}
+            for entry in view.by_colour
+        ],
+        "by_material": [
+            {"material": entry.material, "grams": whole_grams(entry.grams)}
+            for entry in view.by_material
+        ],
+        "top_prints": [
+            {
+                "job_id": entry.job_id,
+                "name": entry.name,
+                "started_at": entry.started_at.isoformat(),
+                "grams": whole_grams(entry.grams),
+            }
+            for entry in view.top_prints
+        ],
+        "print_time": _print_time(view.print_time),
+    }
+
+
+def _print_time(measured: PrintTime | None) -> dict[str, Any] | None:
+    """Total and average print time in whole minutes, or **null** when nothing in the
+    period had a measurable duration.
+
+    Null rather than zeros: a period with no timed print has no print time, and a card
+    reading `0 min` would be a claim about the printer rather than about the data. The
+    minute is the unit because that is the precision a print duration is remembered in —
+    and both figures round from the exact `timedelta`, the average from the exact total
+    rather than from the rounded one.
+    """
+    if measured is None:
+        return None
+    return {
+        "total_minutes": _minutes(measured.total),
+        "average_minutes": _minutes(measured.average),
+        "prints": measured.prints,
+    }
+
+
+def _minutes(span: timedelta) -> int:
+    return int((Decimal(span.total_seconds()) / 60).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 def tray_sync_result(result: TraySyncResult) -> dict[str, Any]:

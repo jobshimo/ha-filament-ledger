@@ -7,6 +7,9 @@ surface ever rounds before it sums.
 
 from __future__ import annotations
 
+from datetime import timedelta
+from typing import cast
+
 import pytest
 
 from custom_components.filament_ledger.application.adjust_spool import (
@@ -14,14 +17,26 @@ from custom_components.filament_ledger.application.adjust_spool import (
     DiscardFilamentCommand,
     DiscardMode,
 )
-from custom_components.filament_ledger.application.query import Queries
+from custom_components.filament_ledger.application.query import (
+    PrintTime,
+    Queries,
+    StatisticsPeriod,
+)
+from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import TagUid
+from custom_components.filament_ledger.domain.value.identifiers import (
+    PrintJobId,
+    SlotIndex,
+    TagUid,
+)
+from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.infrastructure.ha.serialisers import (
+    _print_time,
     grams,
     history_line,
     spool_detail,
     spool_summary,
+    statistics_result,
     stock_grams,
     stock_per_material,
     whole_grams,
@@ -158,3 +173,58 @@ class TestHistory:
         history = payload["history"]
         assert isinstance(history, list)
         assert [line["type"] for line in history] == ["MANUAL_ADJUSTMENT", "OPENING_BALANCE"]
+
+
+class TestStatisticsRounding:
+    """The rule that matters more in aggregate than anywhere else: accumulate exact
+    `Grams`, round exactly once. Rounding forty prints individually and then adding them
+    can be twenty grams out, and a statistics page that disagrees with the history it
+    summarises is worse than no statistics page at all."""
+
+    async def test_the_total_rounds_the_sum_and_never_the_prints(self, harness: Harness) -> None:
+        """Three 0.4 g prints are 1.2 g, which is 1 g. Rounding each first would call it 0."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        for index in range(3):
+            await harness.ledger.use_cases.record_print_consumption.execute(
+                PrintJob(
+                    id=PrintJobId(f"job-{index}"),
+                    name=f"tiny-{index}.3mf",
+                    state=PrintJobState.FINISHED,
+                    started_at=EPOCH,
+                    ended_at=EPOCH,
+                    reported_usage={SlotIndex(1): Grams.of("0.4")},
+                )
+            )
+
+        payload = statistics_result(
+            await harness.ledger.use_cases.queries.statistics(StatisticsPeriod.ALL_TIME)
+        )
+
+        assert payload["consumed_g"] == 1
+        assert payload["by_colour"] == [{"colour": "#000000", "grams": 1}]
+        assert payload["by_material"] == [{"material": "PLA", "grams": 1}]
+        # Each print is 0.4 g on its own, and each rounds to nothing — which is exactly
+        # why the total above may not be built out of these.
+        assert [row["grams"] for row in cast("list[dict[str, object]]", payload["top_prints"])] == [
+            0,
+            0,
+            0,
+        ]
+
+    def test_print_time_reports_whole_minutes_rounded_half_up(self) -> None:
+        payload = _print_time(PrintTime(total=timedelta(seconds=90), prints=1))
+
+        assert payload == {"total_minutes": 2, "average_minutes": 2, "prints": 1}
+
+    def test_the_average_divides_the_exact_total_not_the_rounded_one(self) -> None:
+        """Two prints of 45 seconds are 90 seconds — 2 minutes total, 1 minute each.
+        An average taken from the rounded total would report 1 minute as well by luck;
+        this one is right by construction."""
+        payload = _print_time(PrintTime(total=timedelta(seconds=150), prints=4))
+
+        assert payload == {"total_minutes": 3, "average_minutes": 1, "prints": 4}
+
+    def test_no_measurable_duration_serialises_as_null_never_as_zeros(self) -> None:
+        """A card of zeros would be a claim about the printer rather than about the data."""
+        assert _print_time(None) is None

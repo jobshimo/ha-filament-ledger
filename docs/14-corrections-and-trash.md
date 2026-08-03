@@ -522,7 +522,7 @@ Everywhere else, defaults hide what the owner deleted:
 | Spool detail (`query.py:167-178`) | shown in full | reachable from Trash, shown in full | shown, styled voided |
 | Needs-weighing count (`query.py:251`) | excluded (not in overview) | excluded | n/a |
 | Review card spool picker (`panel:730-735`) | excluded already | excluded | n/a |
-| Waste statistics (future, [15 §15.6](15-public-release.md)) | `DISCARD` movements **count as waste** | excluded from everything | a voided `DISCARD` is not waste — the void says it never happened |
+| Statistics (`query.py` · `Queries.statistics`, shipped — [06 §6.7](06-ui-spec.md)) | `DISCARD` movements **count as waste**, and the spool's prints stay counted | excluded from everything | a voided `DISCARD` is not waste — the void says it never happened |
 
 A movement is *hidden as voided* iff it has an open void row, or it is the
 `VOID_REVERSAL` of one. A closed chapter (reinstated) shows all three rows in the global

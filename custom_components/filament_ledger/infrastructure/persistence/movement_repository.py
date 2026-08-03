@@ -108,6 +108,26 @@ class SqliteMovementRepository:
         )
         return [_to_movement(row) for row in rows]
 
+    async def list_in_period(self, since: datetime | None) -> list[Movement]:
+        """Oldest first, bounded by time rather than by a row count.
+
+        The comparison is a string comparison, which is exactly why every timestamp in
+        this schema is written through `_iso`: the same UTC ISO-8601 layout sorts
+        lexicographically in the order it sorts chronologically. `list_since` above has
+        relied on that since the first migration; this read is the cross-spool form.
+        """
+        if since is None:
+            rows = await self.database.fetch_all(
+                f"SELECT {COLUMNS} FROM movement ORDER BY occurred_at, rowid"
+            )
+        else:
+            rows = await self.database.fetch_all(
+                f"SELECT {COLUMNS} FROM movement "
+                f"WHERE occurred_at >= ? ORDER BY occurred_at, rowid",
+                (_iso(since),),
+            )
+        return [_to_movement(row) for row in rows]
+
     async def count_for_spool(self, spool_id: SpoolId) -> int:
         row = await self.database.fetch_one(
             "SELECT COUNT(*) AS n FROM movement WHERE spool_id = ?", (spool_id,)

@@ -111,6 +111,19 @@ class SqliteReviewRepository:
         )
         return [_to_review(row) for row in rows]
 
+    async def list_resolved(self, since: datetime | None) -> list[PendingReview]:
+        """Oldest resolution first. The state filter and the timestamp filter say the same
+        thing twice on purpose: the entity refuses to hold one without the other, and a row
+        that somehow held only one would be a record contradicting itself rather than a
+        review this count should include."""
+        sql = f"SELECT {COLUMNS} FROM pending_review WHERE state != ? AND resolved_at IS NOT NULL"
+        params: list[object] = [ReviewState.PENDING.value]
+        if since is not None:
+            sql += " AND resolved_at >= ?"
+            params.append(_iso(since))
+        rows = await self.database.fetch_all(f"{sql} ORDER BY resolved_at, rowid", params)
+        return [_to_review(row) for row in rows]
+
     async def save(self, review: PendingReview) -> None:
         estimated, resolution = _lines_to_columns(review.lines)
         await self.database.execute(

@@ -175,7 +175,9 @@ flagged for final scoping before implementation:
   (default on for new installs, off for upgrades)
 - HACS packaging, brands submission, semantic releases, user documentation
 - JSON/CSV export, and the optional Spoolman exporter ([ADR-0002](adr/0002-reject-spoolman-as-foundation.md))
-- Statistics view — hand-rolled SVG, per [ADR-0006](adr/0006-vanilla-panel.md)'s no-library rule
+- Statistics view — **shipped early**, hand-rolled SVG per
+  [ADR-0006](adr/0006-vanilla-panel.md)'s no-library rule ([06 §6.7](06-ui-spec.md)); the
+  cost series still waits on the price field above
 - Multi-printer — the largest item, gated behind its own design pass
   ([15 §15.7](15-public-release.md))
 

@@ -45,7 +45,7 @@ class Percentage:
 
     @property
     def rounded(self) -> int:
-        """Whole percent, rounded to nearest — the display rule in docs/06-ui-spec.md §6.7."""
+        """Whole percent, rounded to nearest — the display rule in docs/06-ui-spec.md §6.8."""
         return int(self.value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
     def __str__(self) -> str:

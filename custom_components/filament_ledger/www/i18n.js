@@ -75,6 +75,7 @@ const EN = {
   // -- tabs --------------------------------------------------------------------------
   "tab.inventory": "Inventory",
   "tab.history": "History",
+  "tab.stats": "Stats",
   "tab.review": "Review",
   "tab.ams": "AMS",
   "tab.printer": "Printer",
@@ -218,6 +219,55 @@ const EN = {
   "history.deleted": "deleted",
   "history.reassignTitle": "Move this charge to another spool",
   "history.voidTitle": "Delete this entry and return the grams",
+
+  // -- statistics (docs/06 §6.7, docs/15 §15.6) --------------------------------------
+  // Every figure on this tab is computed in the application layer and arrives finished:
+  // the panel draws, it never aggregates. These strings are the labels on those figures
+  // and the sentences that say what they do and do not count.
+  "stats.periodLabel": "Period",
+  "stats.period30d": "30 days",
+  "stats.period90d": "90 days",
+  "stats.periodall": "All time",
+  "stats.consumed": "Printed",
+  "stats.wasted": "Wasted",
+  "stats.printsFinished": "Prints finished",
+  "stats.reviewsResolved": "Reviews resolved",
+  "stats.printTime": "Print time",
+  "stats.printTimeAverage": "Average print",
+  "stats.printTimeAcross":
+    "Measured across [[count]] prints that recorded both a start and an end — not " +
+    "estimated, and not every job in the period.",
+  "stats.duration": "[[hours]] h [[minutes]] min",
+  "stats.durationMinutes": "[[minutes]] min",
+  "stats.byColour": "Filament by colour",
+  "stats.byMaterial": "Filament by material",
+  "stats.outcomes": "How prints ended",
+  "stats.outcomeFinished": "finished",
+  "stats.outcomeCancelled": "cancelled",
+  "stats.outcomeFailed": "failed",
+  "stats.reviewsApproved": "approved",
+  "stats.reviewsDismissed": "dismissed",
+  "stats.reviewsHeading": "Decisions you made",
+  "stats.topPrints": "Biggest prints",
+  "stats.colPrint": "Print",
+  "stats.colWhen": "Started",
+  "stats.colFilament": "Filament",
+  "stats.noConsumption": "No filament left a spool in this period.",
+  "stats.noTopPrints": "No consumption in this period is linked to a print yet.",
+  "stats.noOutcomes": "No print ended in this period.",
+  "stats.noReviews": "No review was decided in this period.",
+  "stats.emptyTitle": "Nothing to count yet.",
+  "stats.emptyBody":
+    "This page adds up what the ledger already holds: how much filament your prints used, " +
+    "how much was thrown away, which colours and materials go fastest, and how your prints " +
+    "ended. It fills itself in as you print — nothing here is typed in by hand.",
+  "stats.emptyFoot":
+    "Try <b>All time</b> if you have printed before but not recently. An empty page here " +
+    "means the ledger has nothing in this period, never that a figure failed to load.",
+  "stats.foot":
+    "Counted from the ledger, never estimated. A spool you deleted counts in nothing here, " +
+    "a deleted entry counts in nothing, and a discard counts as waste rather than as " +
+    "printing — the same rules the rest of the panel follows.",
 
   // -- review ------------------------------------------------------------------------
   "review.emptyTitle": "Nothing to review.",
@@ -518,6 +568,7 @@ const ES = {
   // -- pestañas ----------------------------------------------------------------------
   "tab.inventory": "Inventario",
   "tab.history": "Historial",
+  "tab.stats": "Estadísticas",
   "tab.review": "Revisión",
   "tab.ams": "AMS",
   "tab.printer": "Impresora",
@@ -653,6 +704,55 @@ const ES = {
   "history.deleted": "eliminada",
   "history.reassignTitle": "Mover este cargo a otra bobina",
   "history.voidTitle": "Eliminar esta entrada y devolver los gramos",
+
+  // -- estadísticas (docs/06 §6.7, docs/15 §15.6) ------------------------------------
+  "stats.periodLabel": "Período",
+  "stats.period30d": "30 días",
+  "stats.period90d": "90 días",
+  "stats.periodall": "Todo el registro",
+  "stats.consumed": "Impreso",
+  "stats.wasted": "Desperdiciado",
+  "stats.printsFinished": "Impresiones terminadas",
+  "stats.reviewsResolved": "Revisiones resueltas",
+  "stats.printTime": "Tiempo de impresión",
+  "stats.printTimeAverage": "Impresión promedio",
+  "stats.printTimeAcross":
+    "Medido sobre [[count]] impresiones que registraron inicio y final: no es una " +
+    "estimación, y no incluye todos los trabajos del período.",
+  "stats.duration": "[[hours]] h [[minutes]] min",
+  "stats.durationMinutes": "[[minutes]] min",
+  "stats.byColour": "Filamento por color",
+  "stats.byMaterial": "Filamento por material",
+  "stats.outcomes": "Cómo terminaron las impresiones",
+  "stats.outcomeFinished": "terminadas",
+  "stats.outcomeCancelled": "canceladas",
+  "stats.outcomeFailed": "fallidas",
+  "stats.reviewsApproved": "aprobadas",
+  "stats.reviewsDismissed": "descartadas",
+  "stats.reviewsHeading": "Decisiones que tomó",
+  "stats.topPrints": "Impresiones más grandes",
+  "stats.colPrint": "Impresión",
+  "stats.colWhen": "Inicio",
+  "stats.colFilament": "Filamento",
+  "stats.noConsumption": "En este período no salió filamento de ninguna bobina.",
+  "stats.noTopPrints":
+    "Todavía no hay consumo de este período asociado a una impresión concreta.",
+  "stats.noOutcomes": "En este período no terminó ninguna impresión.",
+  "stats.noReviews": "En este período no se resolvió ninguna revisión.",
+  "stats.emptyTitle": "Todavía no hay nada que contar.",
+  "stats.emptyBody":
+    "Esta página suma lo que el registro ya contiene: cuánto filamento usaron sus " +
+    "impresiones, cuánto se descartó, qué colores y materiales se gastan más rápido y cómo " +
+    "terminaron las impresiones. Se completa sola a medida que imprime: aquí no se escribe " +
+    "nada a mano.",
+  "stats.emptyFoot":
+    "Pruebe <b>Todo el registro</b> si ha impreso antes pero no últimamente. Una página " +
+    "vacía significa que el registro no tiene nada en este período, nunca que un dato no " +
+    "se haya podido cargar.",
+  "stats.foot":
+    "Calculado a partir del registro, nunca estimado. Una bobina que eliminó no cuenta en " +
+    "nada, una entrada eliminada tampoco, y un descarte cuenta como desperdicio y no como " +
+    "impresión: las mismas reglas que sigue el resto del panel.",
 
   // -- revisión ----------------------------------------------------------------------
   "review.emptyTitle": "Nada que revisar.",

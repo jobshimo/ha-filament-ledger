@@ -23,6 +23,7 @@ from ...application.adjust_spool import (
 )
 from ...application.errors import ApplicationError
 from ...application.move_spool import UNSET, TagEdit
+from ...application.query import StatisticsPeriod
 from ...application.reassign_movement import ReassignMovementCommand
 from ...application.reconcile_spool import ReconcileSpoolCommand
 from ...application.register_spool import RegisterSpoolCommand
@@ -61,6 +62,7 @@ from .serialisers import (
     printer_state,
     spool_detail,
     spool_summary,
+    statistics_result,
     trash_result,
     tray_sync_result,
     whole_grams,
@@ -97,6 +99,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_spools_delete,
         handle_spools_restore,
         handle_trash,
+        handle_statistics,
         handle_printer_state,
         handle_settings_get,
         handle_settings_update,
@@ -689,6 +692,37 @@ async def handle_trash(
     """Deleted spools and open void chapters — a view over facts, not a holding pen."""
     runtime = _runtime(hass)
     connection.send_result(msg["id"], trash_result(await runtime.use_cases.queries.trash()))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/statistics",
+        # Bounded to the three the read model defines, like every adapter input: an
+        # unknown period would reach `StatisticsPeriod` as a plain `ValueError`, which
+        # `guarded` deliberately does not catch, and a typo must be a message rather than
+        # a stack trace. Optional, and absent means the default the tab opens on.
+        vol.Optional("period"): vol.In([period.value for period in StatisticsPeriod]),
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_statistics(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """One period's figures, computed in the application layer (docs/15 §15.6).
+
+    **The period is applied server-side.** Sending the whole ledger for the panel to
+    filter would put the visibility law of docs/14 §14.4.5 into panel JavaScript, which is
+    the one layer this project cannot test — and would grow the payload with the ledger.
+
+    Nothing is written, so `async_refresh` is deliberately not called: there is nothing for
+    the entities to hear about a page being looked at.
+    """
+    runtime = _runtime(hass)
+    period = StatisticsPeriod(msg.get("period", StatisticsPeriod.LAST_30_DAYS))
+    connection.send_result(
+        msg["id"], statistics_result(await runtime.use_cases.queries.statistics(period))
+    )
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/printer/state"})

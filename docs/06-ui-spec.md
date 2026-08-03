@@ -4,7 +4,11 @@ The panel is a sidebar entry in Home Assistant. It follows HA's own design langu
 cards, same typography, same theme variables — so it reads as part of Home Assistant rather
 than a foreign application embedded in it.
 
-Five views. No more. Every additional screen is a place the user has to learn.
+Six views, and every one of them earns its tab. Every additional screen is a place the user
+has to learn, so a new one arrives only when an existing view would have to lie to hold it.
+Three further tabs — Printer, Trash and Settings — are specified in
+[14 — Corrections and Trash](14-corrections-and-trash.md) §14.5, §14.4.4 and §14.6.4 rather
+than here; they are surfaces onto facts the views below already own.
 
 ---
 
@@ -13,15 +17,35 @@ Five views. No more. Every additional screen is a place the user has to learn.
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Filament Ledger                                                     │
-│  ┌────────────┬─────────────┬──────────────┬──────────────────────┐  │
-│  │ Inventory  │ History     │ Review  ⑵    │ AMS                  │  │
-│  └────────────┴─────────────┴──────────────┴──────────────────────┘  │
+│  ┌───────────┬──────────┬────────┬───────────┬─────┬─────────────┐   │
+│  │ Inventory │ History  │ Stats  │ Review ⑵  │ AMS │ Printer   … │   │
+│  └───────────┴──────────┴────────┴───────────┴─────┴─────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 **Review** carries a count badge and is the only tab that demands attention. When it is at
 zero it stays visible but unhighlighted — a tab that appears and disappears is a tab the user
 cannot build a habit around.
+
+**Stats sits beside History** because the two answer one question at two zoom levels:
+History is every entry, Stats is what those entries add up to.
+
+### On a phone, where the strip does not fit
+
+The panel repaints by replacing its markup wholesale ([ADR-0006](adr/0006-vanilla-panel.md)),
+which builds a brand-new tab strip scrolled hard to the left on every navigation. Left alone
+that is a real defect: tap a tab near the right-hand end and it highlights itself somewhere
+off-screen, so the panel appears to have ignored the tap. Two rules fix it, and both apply
+after *every* paint because the nodes are new every time:
+
+- **The active tab is scrolled into view, centred, instantly.** Not smoothly — a scroll
+  animation on every single navigation reads as jitter rather than as polish.
+- **A fade shows at whichever end still has tabs beyond it**, and at neither end when the
+  strip fits. The strip admits there is more to see rather than ending in a hard edge that
+  looks like the end of the list.
+
+Labels are never traded for icons. Density is worth less than knowing what a tab is before
+tapping it; the padding tightens on narrow screens instead.
 
 ---
 
@@ -510,7 +534,104 @@ The view serves the newest hundred entries. It is a window, not an export.
 
 ---
 
-## 6.7 Cross-cutting rules
+## 6.7 View 6 — Stats
+
+What the ledger adds up to. §6.6 answers *"what has been happening?"* entry by entry; this
+view answers *"where is my filament going?"* — which colour empties fastest, how much ends
+up in the bin, how often a print gets as far as finishing.
+
+It shipped ahead of its release ([15 §15.6](15-public-release.md)) because the data was
+already there: every figure below is a sum over movements the ledger has been keeping since
+day one, and none of it needed a new fact to be recorded.
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  PERIOD   [ 30 days ]  [ 90 days ]  [ All time ]                     │
+│                                                                      │
+│  PRINTED      WASTED     PRINTS FINISHED    REVIEWS RESOLVED         │
+│  1 284 g      96 g       11                 3                        │
+│                                                                      │
+│  PRINT TIME             AVERAGE PRINT                                │
+│  38 h 12 min            3 h 28 min                                   │
+│  Measured across 11 prints that recorded both a start and an end.    │
+│                                                                      │
+│  FILAMENT BY COLOUR                                                  │
+│    ███ #8323FF                                            812 g      │
+│    ████████████████████████████████████████                          │
+│    ███ #FFFFF0                                            340 g      │
+│    ████████████████                                                  │
+│                                                                      │
+│  HOW PRINTS ENDED                                                    │
+│    ████████████████████████████████████▏███▏██                       │
+│    ■ 11 finished   ■ 1 cancelled   ■ 1 failed                        │
+│                                                                      │
+│  BIGGEST PRINTS                                                      │
+│    vase_final.gcode.3mf          3 days ago            84 g          │
+│    bracket_v3.gcode.3mf          8 days ago            71 g          │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Period: 30 days, 90 days, all time. Nothing finer.** No date picker, and no month-on-month
+comparison. A household ledger is months old at best, and a custom range invites comparisons
+between windows whose sample sizes make them meaningless. Thirty days is the default because
+it is the window a person actually plans a filament order in.
+
+**The period is applied server-side.** The panel sends the window and receives finished
+figures; it never receives the ledger and filters it. Two reasons, both hard: the payload
+would grow with the ledger, and the visibility rules below would end up re-implemented in
+panel JavaScript, which is the one layer this project cannot test
+([14 §14.8](14-corrections-and-trash.md)).
+
+**Everything obeys [14 §14.4.5](14-corrections-and-trash.md), without exception.** A spool
+retracted as *registered by mistake* contributes to nothing — not a total, not a bar, not a
+row. An open void chapter drops out with its reversal, which is arithmetically neutral
+because the two sum to zero. A discard is **waste**, never printing: filament that left the
+spool without producing anything, and folding it into consumption would flatter every figure
+on the page. A *discarded* spool's prints stay counted, because waste is history.
+
+**Consumption is attributed to the entry as written.** A later reassignment moves a charge
+between spools in the balances; the colour and material bars keep the attribution the
+consumption entry carried. The totals are identical either way — a reassignment is a pair
+that nets to zero — and the alternative draws a negative bar whenever the entry being
+corrected fell outside the window.
+
+**Print time is measured, not estimated.** `print_job` has carried `started_at` and
+`ended_at` since the first migration ([08 §8.1](08-data-model.md)), so the duration is a
+subtraction rather than an inference. It covers only jobs with a *positive* duration, which
+excludes exactly one row: the one written when a restart swallowed a print's start and both
+timestamps became the moment the ending arrived. That row's duration is zero, and zero is not
+how long a print took. The card says how many prints the figures cover, and **when nothing in
+the period can be measured the card is absent entirely** — a row of dashes teaches nothing.
+
+**Charts are hand-rolled inline SVG.** [ADR-0006](adr/0006-vanilla-panel.md) stands: no
+framework, no bundler, no chart library. Bars are drawn relative to the largest value rather
+than to the total, because the question is *which colour goes fastest* and not *what share of
+the whole*. The colour chart paints each bar in the filament's own stored hex — the one place
+in the panel where a chart colour is data rather than theme — with an outline, so white
+filament is visible on a white card. Everything else takes its colours from Home Assistant's
+CSS custom properties, so light, dark and custom themes work without a line of per-theme code.
+
+### Empty state
+
+```
+       Nothing to count yet.
+
+       This page adds up what the ledger already holds: how much
+       filament your prints used, how much was thrown away, which
+       colours and materials go fastest, and how your prints ended.
+       It fills itself in as you print — nothing here is typed in
+       by hand.
+
+       Try All time if you have printed before but not recently.
+```
+
+The last line matters. An empty statistics page is the one empty state a user is most likely
+to read as breakage, so it names the thing to try next and says outright that an empty page
+means an empty period rather than a figure that failed to load.
+
+---
+
+## 6.8 Cross-cutting rules
 
 **Colour is the primary identifier.** Every reference to a spool anywhere shows its swatch.
 Text labels are secondary because the user's mental model is visual.

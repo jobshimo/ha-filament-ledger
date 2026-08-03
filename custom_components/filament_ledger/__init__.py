@@ -116,6 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         reviews=reviews,
         jobs=jobs,
         voids=voids,
+        clock=clock,
         confidence=ConfidenceEvaluator(),
         anomalies=anomalies,
     )

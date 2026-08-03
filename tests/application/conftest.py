@@ -179,7 +179,14 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             delete_spool=DeleteSpool(spools, clock, events, database),
             restore_spool=RestoreSpool(spools, events, database),
             queries=Queries(
-                spools=spools, movements=movements, reviews=reviews, jobs=jobs, voids=voids
+                spools=spools,
+                movements=movements,
+                reviews=reviews,
+                jobs=jobs,
+                voids=voids,
+                # The same clock every use case writes timestamps with, so a period
+                # boundary in a test is measured against the ledger the test built.
+                clock=clock,
             ),
         ),
         clock=clock,

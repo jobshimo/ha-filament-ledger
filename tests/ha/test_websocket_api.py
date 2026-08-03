@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import cast
 
 import pytest
@@ -73,6 +74,7 @@ REVIEWS_APPROVE = "filament_ledger/reviews/approve"
 REVIEWS_DISMISS = "filament_ledger/reviews/dismiss"
 MOVEMENTS = "filament_ledger/movements"
 TRAYS_SYNC = "filament_ledger/trays/sync"
+STATISTICS = "filament_ledger/statistics"
 
 
 @dataclass
@@ -277,6 +279,8 @@ class TestSchemasRejectMalformedMessages:
             pytest.param(MOVEMENTS, {"limit": "many"}, id="movements-with-a-textual-limit"),
             pytest.param(MOVEMENTS, {"limit": 0}, id="movements-with-a-zero-limit"),
             pytest.param(TRAYS_SYNC, {"surprise": 1}, id="trays-sync-accepts-no-fields-at-all"),
+            pytest.param(STATISTICS, {"period": "forever"}, id="statistics-with-an-unknown-period"),
+            pytest.param(STATISTICS, {"period": 30}, id="statistics-with-a-numeric-period"),
         ],
     )
     def test_the_message_never_reaches_a_handler(
@@ -1057,6 +1061,114 @@ class TestMovements:
         (only,) = await ws.result_list(MOVEMENTS, limit=1)
 
         assert only["note"] == "newest"
+
+
+class TestStatistics:
+    """One period's figures, computed server-side (docs/15 §15.6).
+
+    The harness clock never moves, so every timestamp below is an exact offset from
+    `EPOCH` — which is what lets these assertions pin the whole payload rather than poke
+    at a key or two.
+    """
+
+    async def a_recorded_print(
+        self,
+        harness: Harness,
+        *,
+        job_id: str = "job-vase",
+        name: str = "vase_final.gcode.3mf",
+        used: str = "84.1",
+        minutes: int = 95,
+    ) -> None:
+        """A completed job through UC-04 — the websocket has no command that records one,
+        because recording is the gateway's job."""
+        await harness.ledger.use_cases.record_print_consumption.execute(
+            PrintJob(
+                id=PrintJobId(job_id),
+                name=name,
+                state=PrintJobState.FINISHED,
+                started_at=EPOCH,
+                ended_at=EPOCH + timedelta(minutes=minutes),
+                reported_usage={SlotIndex(1): Grams.of(used)},
+            )
+        )
+
+    async def test_a_fresh_ledger_answers_the_documented_empty_shape(self, ws: WsClient) -> None:
+        """Zeros and nulls, never absent keys: the panel branches on `empty` to choose its
+        teaching state, and on `print_time` being null to omit the card entirely."""
+        assert await ws.result_dict(STATISTICS) == {
+            "period": "30d",
+            "since": (EPOCH - timedelta(days=30)).isoformat(),
+            "empty": True,
+            "consumed_g": 0,
+            "wasted_g": 0,
+            "prints": {"finished": 0, "cancelled": 0, "failed": 0, "total": 0},
+            "reviews": {"approved": 0, "dismissed": 0, "total": 0},
+            "by_colour": [],
+            "by_material": [],
+            "top_prints": [],
+            "print_time": None,
+        }
+
+    async def test_the_panel_sees_the_documented_statistics_shape(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Everything the Stats tab renders, in one payload."""
+        spool_id = await a_created_spool(ws, label="PLA Basic Black")
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await self.a_recorded_print(harness)
+        await ws.result_dict(
+            DISCARD, spool_id=spool_id, mode="partial", reason="tangled", amount_g=12.4
+        )
+
+        assert await ws.result_dict(STATISTICS) == {
+            "period": "30d",
+            "since": (EPOCH - timedelta(days=30)).isoformat(),
+            "empty": False,
+            # 84.1 g printed and 12.4 g binned, each rounded once, on the two sides of the
+            # line docs/14 §14.4.5 draws: a discard is waste, never printing.
+            "consumed_g": 84,
+            "wasted_g": 12,
+            "prints": {"finished": 1, "cancelled": 0, "failed": 0, "total": 1},
+            "reviews": {"approved": 0, "dismissed": 0, "total": 0},
+            "by_colour": [{"colour": "#000000", "grams": 84}],
+            "by_material": [{"material": "PLA", "grams": 84}],
+            "top_prints": [
+                {
+                    "job_id": "job-vase",
+                    "name": "vase_final.gcode.3mf",
+                    "started_at": EPOCH.isoformat(),
+                    "grams": 84,
+                }
+            ],
+            "print_time": {"total_minutes": 95, "average_minutes": 95, "prints": 1},
+        }
+
+    async def test_the_period_is_applied_server_side(self, ws: WsClient, harness: Harness) -> None:
+        """The whole point of the parameter: the browser never filters, so it never needs
+        the ledger, and the visibility law stays in one testable place."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await harness.ledger.use_cases.record_print_consumption.execute(
+            PrintJob(
+                id=PrintJobId("job-old"),
+                name="last_winter.gcode.3mf",
+                state=PrintJobState.FINISHED,
+                started_at=EPOCH - timedelta(days=200),
+                ended_at=EPOCH - timedelta(days=200) + timedelta(minutes=60),
+                reported_usage={SlotIndex(1): Grams.of(500)},
+            )
+        )
+
+        assert (await ws.result_dict(STATISTICS))["consumed_g"] == 0
+        assert (await ws.result_dict(STATISTICS, period="90d"))["consumed_g"] == 0
+        assert (await ws.result_dict(STATISTICS, period="all"))["consumed_g"] == 500
+
+    async def test_all_time_reports_no_cut_off_date(self, ws: WsClient) -> None:
+        payload = await ws.result_dict(STATISTICS, period="all")
+
+        assert payload["period"] == "all"
+        assert payload["since"] is None
 
 
 class TestTraysSync:

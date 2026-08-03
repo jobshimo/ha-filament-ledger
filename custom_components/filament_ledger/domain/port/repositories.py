@@ -117,6 +117,21 @@ class MovementRepository(Protocol):
 
     async def list_since(self, spool_id: SpoolId, moment: datetime) -> list[Movement]: ...
 
+    async def list_in_period(self, since: datetime | None) -> list[Movement]:
+        """Every movement that occurred at or after `since`, oldest first — all of them
+        when `since` is `None`.
+
+        The statistics read model's one pass over the ledger. Unlike `list_recent` it is
+        bounded by *time* rather than by a row count, because a period's totals must not
+        depend on how many entries happen to fit under a limit: a hundred-row window over
+        a busy month would silently under-report the month.
+
+        Oldest first, like the per-spool reads and unlike `list_recent`. Nothing here
+        derives a running balance, but accumulating in the order things happened is the
+        order a reader would check the arithmetic in.
+        """
+        ...
+
     async def count_for_spool(self, spool_id: SpoolId) -> int: ...
 
 
@@ -166,6 +181,16 @@ class PrintJobRepository(Protocol):
 
     async def list_recent(self, limit: int) -> list[PrintJob]: ...
 
+    async def list_in_period(self, since: datetime | None) -> list[PrintJob]:
+        """Every job that *started* at or after `since` — all of them when `None`.
+
+        Started rather than ended, deliberately: a job is one event to the person reading
+        a period's statistics, and the day they remember is the day they pressed print.
+        A job still `RUNNING` comes back too — it has no outcome yet, and the read model
+        is the one that decides what to do with that.
+        """
+        ...
+
 
 class ReviewRepository(Protocol):
     """Deliberately no `find_pending_for_job`: `list_pending` returns the whole open queue,
@@ -176,5 +201,15 @@ class ReviewRepository(Protocol):
     async def get(self, review_id: ReviewId) -> PendingReview | None: ...
 
     async def list_pending(self) -> list[PendingReview]: ...
+
+    async def list_resolved(self, since: datetime | None) -> list[PendingReview]:
+        """Every review resolved at or after `since` — all of them when `None`.
+
+        The counterpart to `list_pending`, and the only read that looks at the queue's
+        past. Statistics count approvals against dismissals: how often the estimate was
+        accepted is the honest measure of how much the estimator is trusted, and neither
+        number is derivable from the movements alone — a dismissal writes none.
+        """
+        ...
 
     async def save(self, review: PendingReview) -> None: ...

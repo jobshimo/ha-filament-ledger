@@ -208,6 +208,28 @@ rows are present and marked.
 
 ## 15.6 Statistics view
 
+> **Shipped early, ahead of this release.** The Stats tab exists: period selector,
+> totals, by-colour and by-material bars, print outcomes, biggest prints and measured
+> print time, all served by one `filament_ledger/statistics` command over a read model
+> in `application/query.py`. It is specified as built in [06 §6.7](06-ui-spec.md), which
+> is now the document of record for it; this section keeps the contract it was built
+> against and the two items still outstanding.
+>
+> **Still outstanding, and both waiting on §15.1's price field:**
+>
+> - **Cost totals.** No figure on the tab is in currency, because no spool stores a
+>   price. Nothing was approximated in the meantime — an invented cost is worse than
+>   an absent one.
+> - **The waste-to-consumption ratio as a cost.** Waste ships as its own gram total
+>   beside consumption, which is the honest half of the story; what it *cost* waits with
+>   everything else.
+>
+> **Deliberately not built, and not waiting on anything:** consumption *by month* as a
+> time series. Three fixed windows answer the question a household actually asks, and a
+> monthly series over a ledger that is months old compares samples too small to mean
+> anything ([06 §6.7](06-ui-spec.md) states the reasoning). It stays available to
+> reconsider once a ledger with years in it exists.
+
 **Motivation.** "Consumption analytics and trends" was explicitly deferred
 ([10 — Roadmap](10-roadmap.md)) until the core was proven and the data existed. The
 data now exists — months of movements with types, sources, jobs and (after §15.1)
@@ -236,6 +258,13 @@ costs.
 a voided print charge is absent from its month; a discard shows in waste, a deleted
 spool nowhere; the view renders in light and dark themes with no chart library in the
 repository.
+
+**Acceptance, as met.** `tests/application/test_statistics.py` builds each of those
+scenarios through the real use cases on real SQLite — a deleted spool's consumption
+counted nowhere, an open void chapter dropping out with its reversal, a discard in waste
+and never in consumption, a discarded spool's prints still counted — and
+`tests/ha/test_websocket_api.py::TestStatistics` pins the whole payload. No chart library
+entered the repository; the charts are `<svg>` elements built by the render functions.
 
 ---
 
@@ -308,7 +337,8 @@ against it and fails on divergence; no other file may carry a version.
 Within v1.1, order by dependency and cuttability: **15.4 HACS packaging** first (brands
 review has lead time, and everything else benefits from release automation), then
 **15.3 attribution** and **15.2 alerts** (small, self-contained), then **15.1 cost**
-and **15.5 export**, then **15.6 statistics** (wants cost data), and **15.7
+and **15.5 export**, then what remains of **15.6 statistics** — the view itself shipped
+early ([06 §6.7](06-ui-spec.md)), and only its cost figures still want §15.1 — and **15.7
 multi-printer** last, behind its own design pass. Every item is independently
 shippable; the roadmap's phase test — stop anywhere and what exists is worth having —
 applies within the release too ([10 — Roadmap](10-roadmap.md)).

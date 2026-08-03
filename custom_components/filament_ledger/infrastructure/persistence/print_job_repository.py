@@ -122,3 +122,17 @@ class SqlitePrintJobRepository:
             (limit,),
         )
         return [_to_job(row) for row in rows]
+
+    async def list_in_period(self, since: datetime | None) -> list[PrintJob]:
+        """Oldest first, by start. The ISO layout `_iso` writes sorts chronologically as
+        a string, which is what makes the bound a plain comparison."""
+        if since is None:
+            rows = await self.database.fetch_all(
+                f"SELECT {COLUMNS} FROM print_job ORDER BY started_at, rowid"
+            )
+        else:
+            rows = await self.database.fetch_all(
+                f"SELECT {COLUMNS} FROM print_job WHERE started_at >= ? ORDER BY started_at, rowid",
+                (_iso(since),),
+            )
+        return [_to_job(row) for row in rows]

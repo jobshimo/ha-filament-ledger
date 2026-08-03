@@ -39,6 +39,9 @@ const MATERIALS = ["PLA", "PETG", "ABS", "ASA", "TPU", "PC", "PA", "PVA", "SUPPO
 const TABS = [
   "inventory",
   "history",
+  // Beside History, because the two answer the same question at two zoom levels: History
+  // is every entry, Stats is what those entries add up to (docs/06 §6.7).
+  "stats",
   "review",
   "ams",
   // Between AMS and Trash: a glance at the machine sits with the daily surfaces, and the
@@ -63,6 +66,29 @@ const NOT_VOIDABLE = new Set(["OPENING_BALANCE", "VOID_REVERSAL"]);
  * the other is exactly the optimistic lie this project exists to prevent.
  */
 const DASH = "—";
+
+/**
+ * The three windows the Stats tab offers, in the order it offers them. The values are the
+ * backend's own `StatisticsPeriod` (`application/query.py`), so the panel never invents a
+ * period the read model does not know — and the labels come from `stats.period<value>`.
+ */
+const STATS_PERIODS = ["30d", "90d", "all"];
+
+/** The default window, and the one the tab opens on. */
+const DEFAULT_STATS_PERIOD = "30d";
+
+/**
+ * The height of one bar-chart row in SVG user units — label, value and bar together. The
+ * charts carry no `viewBox`, so a user unit is a CSS pixel and this is a real height.
+ */
+const STATS_BAR_ROW = 34;
+
+/**
+ * How wide the fade at each end of the tab strip is, and the slack below which the strip
+ * counts as scrolled to that end. One pixel of slack absorbs the sub-pixel scroll offsets
+ * a zoomed browser produces, which would otherwise leave a fade showing at a hard end.
+ */
+const TAB_FADE_SLACK = 1;
 
 const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
 const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
@@ -129,6 +155,19 @@ class FilamentLedgerPanel extends HTMLElement {
     this._settings = null;
     this._settingsLoading = false;
     this._settingsSaved = false;
+    // The Stats tab, fetched the same way and for the same reason: a period's figures are
+    // a question the user asked, not something to recompute on every ledger refresh. The
+    // chosen period is a state field exactly like `_tab` — the innerHTML re-render throws
+    // the buttons away on every paint, so the selection has to live somewhere the DOM is
+    // rebuilt *from* rather than in the DOM itself.
+    this._stats = null;
+    this._statsLoading = false;
+    this._statsPeriod = DEFAULT_STATS_PERIOD;
+    // One window listener for the whole lifetime of the element, bound once here so
+    // `disconnectedCallback` can remove the very function `connectedCallback` added.
+    // The tab strip is recreated on every render; `window` is not, and a listener added
+    // per render would accumulate one copy per navigation.
+    this._onViewportResize = () => this._paintTabOverflow();
     // Resolved once here so the very first paint is already in the right language; `set
     // hass` re-resolves as soon as the profile is known.
     this._applyLanguage();
@@ -228,7 +267,60 @@ class FilamentLedgerPanel extends HTMLElement {
     // Review cards are edited in place — a full re-render per keystroke would steal the
     // focus mid-number — so edits patch the card directly instead of going through render().
     this._root.addEventListener("input", (event) => this._onInput(event));
+    // Passive: this listener only reads geometry and toggles two classes, and saying so
+    // lets the browser keep scrolling off the main thread.
+    window.addEventListener("resize", this._onViewportResize, { passive: true });
     this.render();
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("resize", this._onViewportResize);
+  }
+
+  /**
+   * Keep the tab strip usable on a phone, after every render.
+   *
+   * The panel repaints by replacing `innerHTML` (ADR-0006), so every navigation builds a
+   * brand-new strip scrolled hard to the left — on a narrow screen the tab the user just
+   * tapped could end up off-screen, highlighted where nobody can see it. Two things fix
+   * that, and both have to happen after *every* paint because the nodes are new every
+   * time:
+   *
+   * 1. The active tab is brought into view, centred, **instantly**. A smooth scroll would
+   *    animate on every single navigation, which reads as jitter rather than as polish.
+   * 2. A fade is shown at whichever end still has tabs beyond it, so the strip admits
+   *    there is more to see. `scroll` is listened for on the strip itself — a node that is
+   *    discarded with the next `innerHTML` swap, so nothing accumulates — while the
+   *    viewport's `resize` goes to the single listener registered in `connectedCallback`,
+   *    which calls back through `_paintTabOverflow` and always finds the current strip.
+   */
+  _syncTabStrip() {
+    const nav = this._root?.querySelector("nav");
+    if (!nav) return;
+    const active = nav.querySelector("button.on");
+    if (active) {
+      try {
+        // `block: "nearest"` so a horizontal correction never scrolls the page vertically.
+        active.scrollIntoView({ block: "nearest", inline: "center", behavior: "instant" });
+      } catch {
+        // An engine with no `scrollIntoView`, or one that rejects `instant` as an unknown
+        // enum member, gets the same centring by arithmetic. Caught rather than
+        // feature-detected because the failure mode is a thrown `TypeError` from inside
+        // `render()`, which would take the whole paint down with it.
+        nav.scrollLeft = active.offsetLeft - (nav.clientWidth - active.offsetWidth) / 2;
+      }
+    }
+    nav.addEventListener("scroll", this._onViewportResize, { passive: true });
+    this._paintTabOverflow();
+  }
+
+  /** Show a fade at each end that still has tabs beyond it. Cheap enough to run on scroll. */
+  _paintTabOverflow() {
+    const nav = this._root?.querySelector("nav");
+    if (!nav) return;
+    const furthest = nav.scrollWidth - nav.clientWidth;
+    nav.classList.toggle("fade-start", nav.scrollLeft > TAB_FADE_SLACK);
+    nav.classList.toggle("fade-end", nav.scrollLeft < furthest - TAB_FADE_SLACK);
   }
 
   async call(type, payload = {}) {
@@ -291,6 +383,7 @@ class FilamentLedgerPanel extends HTMLElement {
         // Exactly one command per opening, and none at all for the other tabs: neither
         // surface rides the general refresh, and no timer exists (docs/14 §14.5).
         if (id === "printer") this._printerLoading = true;
+        if (id === "stats") this._statsLoading = true;
         if (id === "settings") {
           this._settingsLoading = true;
           // The notice belongs to the save that produced it, not to the tab.
@@ -298,12 +391,21 @@ class FilamentLedgerPanel extends HTMLElement {
         }
         this.render();
         if (id === "printer") this._loadPrinter();
+        if (id === "stats") this._loadStats();
         if (id === "settings") this._loadSettings();
         break;
       case "refresh-printer":
         this._printerLoading = true;
         this.render();
         this._loadPrinter();
+        break;
+      case "stats-period":
+        // The selection lives on the instance, not in the DOM the next render replaces.
+        // Re-picking the period already shown is a deliberate refresh, not a no-op.
+        this._statsPeriod = id;
+        this._statsLoading = true;
+        this.render();
+        this._loadStats();
         break;
       case "set-language":
         // A device preference, not ledger state: no backend call, and the panel repaints
@@ -455,6 +557,36 @@ class FilamentLedgerPanel extends HTMLElement {
       this._error = error.message || String(error);
     }
     this._printerLoading = false;
+    this.render();
+  }
+
+  /**
+   * One period's statistics (docs/15 §15.6).
+   *
+   * Called on opening the tab and on every period change, and nowhere else — the figures
+   * are a question the user asked, and recomputing them on every ledger refresh would put
+   * a full-ledger aggregation behind every button press in the panel. Reading writes
+   * nothing, so this deliberately does not go through `guarded`.
+   *
+   * The period travels as a parameter and is applied **server-side**: filtering in the
+   * browser would mean shipping the whole ledger and re-implementing the visibility law
+   * of docs/14 §14.4.5 in the one layer this project cannot test (docs/14 §14.8).
+   */
+  async _loadStats() {
+    // A monotonic token, not the period value: in an A→B→A tap sequence the first A's
+    // reply is indistinguishable from the current A's by value alone, so a reordered
+    // stale payload could land. Only the latest request may write.
+    const token = (this._statsRequest = (this._statsRequest || 0) + 1);
+    try {
+      const stats = await this.call("statistics", { period: this._statsPeriod });
+      if (token !== this._statsRequest) return;
+      this._stats = stats;
+      this._error = null;
+    } catch (error) {
+      if (token !== this._statsRequest) return;
+      this._error = error.message || String(error);
+    }
+    this._statsLoading = false;
     this.render();
   }
 
@@ -852,6 +984,8 @@ class FilamentLedgerPanel extends HTMLElement {
       </main>
       ${this._dialog ? this.dialog() : ""}
     `;
+    // After the paint, never before: the strip being measured has to exist first.
+    this._syncTabStrip();
   }
 
   /**
@@ -906,6 +1040,7 @@ class FilamentLedgerPanel extends HTMLElement {
   body() {
     if (this._detail) return this.detailView();
     if (this._tab === "history") return this.historyView();
+    if (this._tab === "stats") return this.statsView();
     if (this._tab === "review") return this.reviewView();
     if (this._tab === "ams") return this.amsView();
     if (this._tab === "printer") return this.printerView();
@@ -1199,6 +1334,274 @@ class FilamentLedgerPanel extends HTMLElement {
       );
     }
     return buttons.join("");
+  }
+
+  // -- statistics --------------------------------------------------------------------
+
+  /**
+   * What the ledger adds up to, over one period (docs/06 §6.7, docs/15 §15.6).
+   *
+   * **The panel draws; it does not aggregate.** Every figure below arrives finished from
+   * `filament_ledger/statistics`, already obeying the visibility law of docs/14 §14.4.5
+   * and already rounded exactly once. There is no arithmetic in this view beyond turning
+   * a gram figure into a bar width, which is a drawing concern.
+   *
+   * The period buttons read `this._statsPeriod`, not the DOM: a render replaces every
+   * node in the strip, so a selection stored in the markup would be lost on the next
+   * paint — the same reason `_tab` is a field.
+   */
+  statsView() {
+    const t = this._t;
+    const stats = this._stats;
+    if (!stats) {
+      // Nothing yet, for one of two reasons. While the first read is in flight, say so;
+      // if it failed, the error bar above has already said what happened, and the period
+      // buttons stay live so trying again is one tap rather than a tab round-trip.
+      return `<section class="stack">
+        ${this.statsPeriods()}
+        ${this._statsLoading ? `<div class="empty">${t("app.loading")}</div>` : ""}
+      </section>`;
+    }
+
+    if (stats.empty) {
+      return `
+        <section class="stack">
+          ${this.statsPeriods()}
+          <div class="empty teach">
+            <h2>${t("stats.emptyTitle")}</h2>
+            <p>${t("stats.emptyBody")}</p>
+            <p class="muted small">${t("stats.emptyFoot")}</p>
+          </div>
+        </section>`;
+    }
+
+    return `
+      <section class="stack">
+        ${this.statsPeriods()}
+        ${this.statsTotals(stats)}
+        ${this.statsPrintTime(stats.print_time)}
+        ${this.statsChart(t("stats.byColour"), this.statsColourRows(stats.by_colour))}
+        ${this.statsChart(t("stats.byMaterial"), this.statsMaterialRows(stats.by_material))}
+        ${this.statsOutcomes(stats)}
+        ${this.statsTopPrints(stats.top_prints)}
+        <p class="muted small">${t("stats.foot")}</p>
+      </section>`;
+  }
+
+  /** The three windows, as buttons rather than a select: nothing to lose focus on. */
+  statsPeriods() {
+    const t = this._t;
+    const buttons = STATS_PERIODS.map(
+      (period) => `
+        <button class="st-period ${this._statsPeriod === period ? "on" : ""}"
+          data-action="stats-period" data-id="${esc(period)}"
+          ${this._statsLoading ? "disabled" : ""}>${t(`stats.period${period}`)}</button>`,
+    ).join("");
+    return `<div class="bar st-periods">
+      <span class="st-periodlabel">${t("stats.periodLabel")}</span>${buttons}
+    </div>`;
+  }
+
+  statsTotals(stats) {
+    const t = this._t;
+    const stat = (key, value) =>
+      `<div class="stat"><div class="k">${key}</div><div class="v">${value}</div></div>`;
+    return `
+      <div class="card summary">
+        ${stat(t("stats.consumed"), esc(grams(stats.consumed_g)))}
+        ${stat(t("stats.wasted"), esc(grams(stats.wasted_g)))}
+        ${stat(t("stats.printsFinished"), esc(stats.prints?.finished ?? 0))}
+        ${stat(t("stats.reviewsResolved"), esc(stats.reviews?.total ?? 0))}
+      </div>`;
+  }
+
+  /**
+   * Total and average print time — **absent entirely when nothing could be measured.**
+   *
+   * The backend sends null rather than zeros for a period with no timed print, and this
+   * renders nothing at all rather than a card of dashes: a figure the data cannot support
+   * is not improved by drawing a box around it (docs/14 §14.5's rule, applied here).
+   */
+  statsPrintTime(printTime) {
+    if (!printTime) return "";
+    const t = this._t;
+    const fact = (key, value) =>
+      `<div class="stat"><div class="k">${key}</div><div class="v">${value}</div></div>`;
+    return `
+      <div class="card st-time">
+        <div class="summary">
+          ${fact(t("stats.printTime"), esc(this.duration(printTime.total_minutes)))}
+          ${fact(t("stats.printTimeAverage"), esc(this.duration(printTime.average_minutes)))}
+        </div>
+        <p class="muted small">${t("stats.printTimeAcross", { count: printTime.prints })}</p>
+      </div>`;
+  }
+
+  /** A whole number of minutes, as hours and minutes. Never a decimal hour. */
+  duration(minutes) {
+    const total = Math.max(0, Math.round(Number(minutes) || 0));
+    const hours = Math.floor(total / 60);
+    return hours
+      ? this._t("stats.duration", { hours, minutes: total % 60 })
+      : this._t("stats.durationMinutes", { minutes: total });
+  }
+
+  /** The colour chart's rows, each bar painted in the colour it stands for. */
+  statsColourRows(entries) {
+    return (entries ?? []).map((entry) => ({
+      label: esc(entry.colour),
+      grams: entry.grams,
+      // The one place a bar's fill is data rather than theme: the user thinks in colours,
+      // and a palette of our own would be an invented answer to a question the ledger
+      // already knows (docs/06 §6.7 — colour is the primary identifier).
+      style: `fill:${esc(entry.colour)}`,
+    }));
+  }
+
+  statsMaterialRows(entries) {
+    return (entries ?? []).map((entry) => ({
+      label: esc(entry.material),
+      grams: entry.grams,
+      style: "",
+    }));
+  }
+
+  /**
+   * One horizontal bar chart, as inline SVG built by hand (ADR-0006 — no chart library,
+   * no bundler, ever).
+   *
+   * There is no `viewBox` on purpose. A rect's `width` may be a percentage, which resolves
+   * against the SVG's own box, so the bars reflow with the card while the labels stay at
+   * their natural size — a viewBox would scale the text with the width and make it
+   * illegible on a phone and oversized on a desktop.
+   *
+   * Bars are drawn relative to the largest value, not to the total: the question this
+   * chart answers is *which colour goes fastest*, and a share-of-total chart answers a
+   * different one badly. A non-zero value never renders as an invisible sliver — the
+   * minimum width is what keeps a 3 g row from looking like a 0 g row.
+   */
+  statsChart(heading, rows) {
+    const t = this._t;
+    if (!rows.length) {
+      return this.statsCard(heading, `<p class="muted small">${t("stats.noConsumption")}</p>`);
+    }
+    const largest = Math.max(...rows.map((row) => Number(row.grams) || 0), 1);
+    const bars = rows
+      .map((row, index) => {
+        const share = Math.max(2, ((Number(row.grams) || 0) / largest) * 100);
+        return `
+        <g transform="translate(0,${index * STATS_BAR_ROW})">
+          <text class="lbl" x="0" y="12">${row.label}</text>
+          <text class="val" x="100%" y="12" text-anchor="end">${esc(grams(row.grams))}</text>
+          <rect class="trk" x="0" y="19" width="100%" height="9" rx="4.5"></rect>
+          <rect class="bar" x="0" y="19" width="${share.toFixed(3)}%" height="9" rx="4.5"
+            style="${row.style}"></rect>
+        </g>`;
+      })
+      .join("");
+    const svg = `<svg class="chart" width="100%" height="${rows.length * STATS_BAR_ROW}"
+      role="img" aria-label="${heading}">${bars}</svg>`;
+    return this.statsCard(heading, svg);
+  }
+
+  /**
+   * How prints ended and how reviews were decided, each as one compact segmented bar.
+   *
+   * A segmented bar rather than a pie: three shares side by side are read by comparing
+   * lengths, which people do accurately, instead of by comparing angles, which they do
+   * not. A count of zero contributes no segment at all — an empty segment would need a
+   * label pointing at nothing.
+   */
+  statsOutcomes(stats) {
+    const t = this._t;
+    const prints = stats.prints ?? {};
+    const reviews = stats.reviews ?? {};
+    return `
+      ${this.statsCard(
+        t("stats.outcomes"),
+        this.statsSegments(
+          [
+            { label: t("stats.outcomeFinished"), count: prints.finished ?? 0, tone: "ok" },
+            { label: t("stats.outcomeCancelled"), count: prints.cancelled ?? 0, tone: "warn" },
+            { label: t("stats.outcomeFailed"), count: prints.failed ?? 0, tone: "bad" },
+          ],
+          t("stats.outcomes"),
+          t("stats.noOutcomes"),
+        ),
+      )}
+      ${this.statsCard(
+        t("stats.reviewsHeading"),
+        this.statsSegments(
+          [
+            { label: t("stats.reviewsApproved"), count: reviews.approved ?? 0, tone: "ok" },
+            { label: t("stats.reviewsDismissed"), count: reviews.dismissed ?? 0, tone: "warn" },
+          ],
+          t("stats.reviewsHeading"),
+          t("stats.noReviews"),
+        ),
+      )}`;
+  }
+
+  statsSegments(segments, aria, empty) {
+    const present = segments.filter((segment) => Number(segment.count) > 0);
+    const total = present.reduce((sum, segment) => sum + Number(segment.count), 0);
+    if (!total) return `<p class="muted small">${empty}</p>`;
+    let offset = 0;
+    const rects = present
+      .map((segment) => {
+        const share = (Number(segment.count) / total) * 100;
+        const rect = `<rect class="seg ${segment.tone}" x="${offset.toFixed(3)}%" y="0"
+          width="${share.toFixed(3)}%" height="14"></rect>`;
+        offset += share;
+        return rect;
+      })
+      .join("");
+    const legend = present
+      .map(
+        (segment) =>
+          `<span class="st-key ${segment.tone}"><i></i>${esc(segment.count)} ${segment.label}</span>`,
+      )
+      .join("");
+    return `
+      <svg class="chart seg-bar" width="100%" height="14" role="img" aria-label="${aria}">
+        ${rects}
+      </svg>
+      <div class="st-legend">${legend}</div>`;
+  }
+
+  /** The heaviest prints of the period, joined to the jobs that consumed them. */
+  statsTopPrints(prints) {
+    const t = this._t;
+    const rows = prints ?? [];
+    if (!rows.length) {
+      return this.statsCard(t("stats.topPrints"), `<p class="muted small">${t("stats.noTopPrints")}</p>`);
+    }
+    const body = rows
+      .map(
+        (row) => `
+        <tr>
+          <td class="what">${esc(row.name)}</td>
+          <td class="when" title="${esc(row.started_at)}">${this.when(row.started_at)}</td>
+          <td class="amt">${esc(grams(row.grams))}</td>
+        </tr>`,
+      )
+      .join("");
+    return this.statsCard(
+      t("stats.topPrints"),
+      `<div class="scroll">
+        <table class="ledger st-top">
+          <thead><tr>
+            <th>${t("stats.colPrint")}</th><th>${t("stats.colWhen")}</th>
+            <th class="r">${t("stats.colFilament")}</th>
+          </tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>`,
+    );
+  }
+
+  statsCard(heading, contents) {
+    return `<div class="card st-card"><h3>${heading}</h3>${contents}</div>`;
   }
 
   // -- review ------------------------------------------------------------------------
@@ -2315,10 +2718,26 @@ header h1 { margin: 0; font-size: 20px; font-weight: 400; }
 .who-name { font-weight: 500; }
 .who-admin { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
   border: 1px solid currentColor; border-radius: 999px; padding: 1px 7px; opacity: .9; }
-nav { display: flex; gap: 4px; overflow-x: auto; }
+nav { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+nav::-webkit-scrollbar { display: none; }
 nav button { background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
   color: inherit; opacity: .75; font: inherit; font-size: 14px; padding: 8px 16px 10px; white-space: nowrap; }
 nav button.on { opacity: 1; border-bottom-color: currentColor; font-weight: 500; }
+
+/* The overflow affordance: a fade at whichever end still has tabs beyond it, toggled from
+   the strip's own scroll position. A mask rather than an overlay, because a mask is
+   painted over the element's box and therefore stays put while the tabs scroll under it —
+   a pseudo-element inside a scrolling container would slide away with the content. The
+   classes are set by _paintTabOverflow; with neither, nothing is masked at all. Note the
+   absence of backticks in this comment: STYLES is itself a template literal, and one
+   backtick in here ends it. */
+nav.fade-start { -webkit-mask-image: linear-gradient(to right, transparent, #000 26px);
+  mask-image: linear-gradient(to right, transparent, #000 26px); }
+nav.fade-end { -webkit-mask-image: linear-gradient(to left, transparent, #000 26px);
+  mask-image: linear-gradient(to left, transparent, #000 26px); }
+nav.fade-start.fade-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 26px, #000 calc(100% - 26px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
 nav .count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px;
   margin-left: 7px; border-radius: 9px; background: var(--error-color, #c62828); color: #fff; font-size: 11px; font-weight: 700; }
 
@@ -2585,7 +3004,58 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 .set-card .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .saved { color: var(--success-color, #2e7d32); text-align: right; margin: 0; }
 
-@media (max-width: 600px) { main { padding: 12px; } .detail { gap: 12px; } }
+/* Statistics tab — docs/06 §6.7, docs/15 §15.6. Every chart here is hand-rolled inline
+   SVG (ADR-0006), themed through the same custom properties as the rest of the panel:
+   the only colours that are *data* are the filament swatches, which come from the ledger. */
+.st-periods { align-items: center; }
+.st-periodlabel { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--secondary-text-color); font-weight: 700; margin-right: 2px; }
+.st-period { padding: 6px 14px; font-size: 13px; }
+.st-period.on { background: var(--primary-color); border-color: var(--primary-color);
+  color: #fff; font-weight: 500; }
+.st-period:disabled { opacity: .6; cursor: progress; }
+.st-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 10px; }
+.st-card h3 { margin: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--secondary-text-color); font-weight: 700; }
+.st-card p { margin: 0; }
+.st-time { padding: 0 0 12px; }
+.st-time .summary { border-bottom: 1px solid var(--divider-color, #eee); }
+.st-time p { margin: 10px 18px 0; }
+
+.chart { display: block; overflow: visible; }
+.chart .lbl { font-size: 12.5px; fill: var(--primary-text-color); }
+.chart .val { font-size: 12.5px; fill: var(--secondary-text-color);
+  font-variant-numeric: tabular-nums; }
+.chart .trk { fill: var(--divider-color, #eee); }
+/* The default bar is the theme's own accent; the colour chart overrides it per bar with
+   the stored filament colour. The outline is what keeps white filament visible on a light
+   card — a swatch with no edge disappears into the background it is meant to sit on. */
+.chart .bar { fill: var(--primary-color); stroke: var(--divider-color, #e0e0e0);
+  stroke-width: 1; }
+.chart .seg.ok { fill: var(--success-color, #2e7d32); }
+.chart .seg.warn { fill: var(--warning-color, #e07b00); }
+.chart .seg.bad { fill: var(--error-color, #c62828); }
+.seg-bar { border-radius: 7px; overflow: hidden; }
+.st-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px;
+  color: var(--secondary-text-color); }
+.st-key { display: inline-flex; align-items: center; gap: 6px; }
+.st-key i { width: 9px; height: 9px; border-radius: 2px; }
+.st-key.ok i { background: var(--success-color, #2e7d32); }
+.st-key.warn i { background: var(--warning-color, #e07b00); }
+.st-key.bad i { background: var(--error-color, #c62828); }
+table.ledger.st-top { min-width: 320px; }
+table.ledger.st-top td.what { overflow-wrap: anywhere; }
+
+@media (max-width: 600px) {
+  main { padding: 12px; }
+  .detail { gap: 12px; }
+  /* Tighter tabs, never fewer words. Icons in place of labels would buy a few pixels and
+     cost the discoverability the whole strip exists for (docs/06 §6.1). */
+  header { padding: 10px 12px 0; }
+  nav button { padding: 8px 11px 10px; font-size: 13.5px; }
+  nav .count { margin-left: 5px; }
+  .st-period { padding: 6px 11px; }
+}
 `;
 
 customElements.define("filament-ledger-panel", FilamentLedgerPanel);

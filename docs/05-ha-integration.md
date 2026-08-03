@@ -207,6 +207,7 @@ filament_ledger/spools/reconcile     → NewBalance          (UC-08)
 filament_ledger/spools/discard       → ok                  (UC-09)
 filament_ledger/spools/adjust        → ok                  (UC-10)
 filament_ledger/movements            → MovementRow[]       (UC-12 across all spools, newest first)
+filament_ledger/statistics           → Statistics          (one period's totals — 06 §6.7)
 filament_ledger/trays/sync           → TraySyncOutcome     (the startup reconciliation pass, on demand)
 filament_ledger/slots/state          → SlotState[]
 filament_ledger/subscribe            → live event stream
@@ -218,6 +219,14 @@ round-trip would buy latency and nothing else. `movements` is the different ques
 History view asks: the newest entries across **every** spool, each joined to its spool's
 name and colour and — when `job_id` is set — its print job's name. It carries no running
 balances, because no balance is derivable from a cross-spool slice.
+
+`statistics` takes an optional `period` — `30d`, `90d` or `all`, defaulting to `30d` — and
+answers with one period's finished figures: grams printed and wasted, print and review
+outcomes, consumption grouped by colour and by material, the biggest prints, and measured
+print time. **The window is applied server-side**, so the panel never receives the ledger
+and never re-implements the visibility rules of [14 §14.4.5](14-corrections-and-trash.md)
+in the one layer that has no tests. Nothing is written, so the command does not refresh the
+coordinator: looking at a page changes nothing.
 
 `trays/sync` re-runs the same pass `async_setup_entry` runs at startup — `DetectSpool` once
 per tray the gateway currently sees — and reports a per-slot outcome: `empty`, `mounted`,

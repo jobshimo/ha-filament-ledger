@@ -11,14 +11,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 
 from ..domain.model.movement import Movement
 from ..domain.model.movement_void import MovementVoid
 from ..domain.model.pending_review import PendingReview
 from ..domain.model.print_job import PrintJob
 from ..domain.model.spool import Spool
+from ..domain.port.clock import Clock
 from ..domain.port.repositories import (
     MovementRepository,
     MovementVoidRepository,
@@ -36,6 +38,8 @@ from ..domain.value.grams import Grams
 from ..domain.value.identifiers import MovementId, PrintJobId, SpoolId
 from ..domain.value.location import AmsSlot, ExternalSpool, Location, Storage
 from ..domain.value.movement_type import MovementSource, MovementType
+from ..domain.value.print_job_state import PrintJobState
+from ..domain.value.review import ReviewState
 from ..domain.value.spool_state import SpoolState
 from .errors import SpoolNotFoundError
 
@@ -212,6 +216,163 @@ class LedgerSnapshot:
     pending_review_count: int
 
 
+class StatisticsPeriod(StrEnum):
+    """How far back the statistics view looks.
+
+    Three answers and no date pickers. A window this coarse is what a filament ledger can
+    actually answer honestly — the ledger is months old at best, and a custom range would
+    invite comparisons across periods whose sample sizes make them meaningless.
+    """
+
+    LAST_30_DAYS = "30d"
+    LAST_90_DAYS = "90d"
+    ALL_TIME = "all"
+
+    @property
+    def days(self) -> int | None:
+        """How many days back, or `None` for all of it."""
+        return _PERIOD_DAYS[self]
+
+    def since(self, now: datetime) -> datetime | None:
+        """The cut-off this period implies at `now` — `None` means no cut-off at all."""
+        days = self.days
+        return None if days is None else now - timedelta(days=days)
+
+
+_PERIOD_DAYS: dict[StatisticsPeriod, int | None] = {
+    StatisticsPeriod.LAST_30_DAYS: 30,
+    StatisticsPeriod.LAST_90_DAYS: 90,
+    StatisticsPeriod.ALL_TIME: None,
+}
+
+# What counts as filament *used*: a print the printer carried out, and an estimate a person
+# approved. Nothing inferred and unconfirmed ever reaches the ledger, so an
+# `ESTIMATED_CONSUMPTION` row is by construction a confirmed one
+# (docs/adr/0004-approval-queue-for-estimates.md).
+_CONSUMPTION_TYPES = frozenset({MovementType.PRINT_CONSUMPTION, MovementType.ESTIMATED_CONSUMPTION})
+
+# What counts as filament *wasted* (docs/14 §14.4.5). `PURGE_WASTE` is listed even though no
+# use case writes one yet: the type exists, and a statistic that would silently ignore it the
+# day one is written is a statistic that goes quietly wrong.
+_WASTE_TYPES = frozenset({MovementType.DISCARD, MovementType.PURGE_WASTE})
+
+# How many prints the top-consumers table names. Five is a glance; twenty is a report.
+TOP_PRINT_COUNT = 5
+
+
+@dataclass(frozen=True, slots=True)
+class ColourConsumption:
+    """One bar of the by-colour chart. The colour is the real stored value, so the panel
+    paints the swatch the user recognises rather than a palette entry we invented."""
+
+    colour: Colour
+    grams: Grams
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialConsumption:
+    material: str
+    grams: Grams
+
+
+@dataclass(frozen=True, slots=True)
+class TopPrint:
+    """One row of the biggest-prints table, joined to the job that consumed it."""
+
+    job_id: PrintJobId
+    name: str
+    started_at: datetime
+    grams: Grams
+
+
+@dataclass(frozen=True, slots=True)
+class PrintOutcomes:
+    """How the period's jobs ended.
+
+    A job still `RUNNING` is deliberately in none of the three: it has not ended, so it has
+    no outcome, and counting it anywhere would be reporting a result that does not exist.
+    """
+
+    finished: int = 0
+    cancelled: int = 0
+    failed: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.finished + self.cancelled + self.failed
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewOutcomes:
+    """How the period's doubts were settled. Neither number is derivable from the
+    movements: a dismissal writes none, which is the whole point of dismissing."""
+
+    approved: int = 0
+    dismissed: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.approved + self.dismissed
+
+
+@dataclass(frozen=True, slots=True)
+class PrintTime:
+    """Measured print time, and how many prints it was measured over.
+
+    Derived from `print_job.started_at`/`ended_at` — both real columns since migration
+    0001 — so this is a measurement, not an estimate. It covers **only jobs with a
+    positive duration**, which excludes exactly one thing: the row `TrackPrintJob` writes
+    when a restart swallowed a print's start and `started_at` and `ended_at` are both the
+    moment the ending arrived. That row's duration is zero, and zero is not how long a
+    print took. `prints` travels beside the total so the panel can say what the average is
+    an average *of* rather than implying it covers every job in the period.
+    """
+
+    total: timedelta
+    prints: int
+
+    @property
+    def average(self) -> timedelta:
+        return self.total / self.prints
+
+
+@dataclass(frozen=True, slots=True)
+class StatisticsView:
+    """Everything the Stats tab renders, for one period (docs/06 §6.7, docs/15 §15.6).
+
+    Computed here rather than in the panel, deliberately: an aggregation is a query, and
+    panel JavaScript is the one layer this project cannot test (docs/14 §14.8).
+
+    The visibility law of docs/14 §14.4.5 governs every figure below — a deleted spool's
+    movements count in nothing, an open void chapter's two rows drop out as a pair, and a
+    discard is waste rather than consumption.
+    """
+
+    period: StatisticsPeriod
+    since: datetime | None
+    consumed: Grams
+    wasted: Grams
+    prints: PrintOutcomes
+    reviews: ReviewOutcomes
+    by_colour: list[ColourConsumption]
+    by_material: list[MaterialConsumption]
+    top_prints: list[TopPrint]
+    # `None` when nothing in the period had a measurable duration. A card of dashes teaches
+    # nothing; an absent card says the honest thing by saying nothing.
+    print_time: PrintTime | None
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the period contains nothing at all — computed on the exact grams, not on
+        the rounded ones, so 0.4 g of consumption is not reported as an empty period."""
+        return (
+            self.consumed.is_zero
+            and self.wasted.is_zero
+            and self.prints.total == 0
+            and self.reviews.total == 0
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Queries:
     spools: SpoolRepository
@@ -219,6 +380,10 @@ class Queries:
     reviews: ReviewRepository
     jobs: PrintJobRepository
     voids: MovementVoidRepository
+    # Read models are timeless except for one question — *how far back?* — and a period
+    # relative to "now" needs the same port every use case already reads time from, so the
+    # cut-off is a value a test can set rather than a call to the wall clock.
+    clock: Clock
     confidence: ConfidenceEvaluator = field(default_factory=ConfidenceEvaluator)
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
 
@@ -419,6 +584,134 @@ class Queries:
             trashed.append(TrashedMovement(void=chapter, movement=movement, spool=spool))
 
         return TrashView(spools=summaries, movements=trashed)
+
+    async def statistics(
+        self, period: StatisticsPeriod = StatisticsPeriod.LAST_30_DAYS
+    ) -> StatisticsView:
+        """What the ledger says about one period (docs/15 §15.6, shipped early).
+
+        One time-bounded pass over the movements, one over the jobs, one over the resolved
+        reviews. The visibility law of docs/14 §14.4.5 is applied here, once, so no chart
+        can disagree with another about which grams were real:
+
+        - **Open void chapters drop out** — the voided entry and its reversal both. They
+          sum to zero, so nothing hidden could have changed a number shown.
+        - **A deleted spool's movements count in nothing**, driven by the spool's state
+          rather than by per-movement rows: retracting a registration is one fact about
+          the spool. A *discarded* spool's movements stay, because waste is history.
+        - **Discards are waste, never consumption.** They are filament that left the
+          spool without printing anything, and folding them into consumption would flatter
+          every number on the page.
+
+        Consumption is attributed to the spool the consumption entry names. A later
+        `REASSIGNMENT` moves the charge in the balances but not in these buckets — the pair
+        is not counted here at all, because counting its two signed legs would draw a
+        negative bar for any correction whose original entry fell outside the period. The
+        totals are unaffected either way (the pair nets to zero); only the colour and
+        material attribution of a corrected charge stays with the entry as written.
+        """
+        since = period.since(self.clock.now())
+        chapters = await self.open_chapters()
+
+        consumed = Grams.zero()
+        wasted = Grams.zero()
+        by_colour: dict[Colour, Grams] = {}
+        by_material: dict[str, Grams] = {}
+        per_job: dict[PrintJobId, Grams] = {}
+        spools: dict[SpoolId, Spool | None] = {}
+
+        for movement in await self.movements.list_in_period(since):
+            if chapters.covers(movement):
+                continue
+            if movement.spool_id not in spools:
+                spools[movement.spool_id] = await self.spools.get(movement.spool_id)
+            spool = spools[movement.spool_id]
+            if spool is None or spool.is_deleted:
+                continue
+            # Magnitude, not sign. Every type counted here is a decrease by definition, and
+            # a chart of negative bars would be arithmetic showing through as decoration.
+            amount = abs(movement.amount)
+            if movement.type in _WASTE_TYPES:
+                wasted = wasted + amount
+            elif movement.type in _CONSUMPTION_TYPES:
+                consumed = consumed + amount
+                by_colour[spool.colour] = by_colour.get(spool.colour, Grams.zero()) + amount
+                material = spool.material.display_name
+                by_material[material] = by_material.get(material, Grams.zero()) + amount
+                if movement.job_id is not None:
+                    per_job[movement.job_id] = per_job.get(movement.job_id, Grams.zero()) + amount
+
+        jobs = await self.jobs.list_in_period(since)
+        durations = [
+            job.ended_at - job.started_at
+            for job in jobs
+            if job.ended_at is not None and job.ended_at > job.started_at
+        ]
+
+        return StatisticsView(
+            period=period,
+            since=since,
+            consumed=consumed,
+            wasted=wasted,
+            prints=PrintOutcomes(
+                finished=_count(jobs, PrintJobState.FINISHED),
+                cancelled=_count(jobs, PrintJobState.CANCELLED),
+                failed=_count(jobs, PrintJobState.FAILED),
+            ),
+            reviews=await self._review_outcomes(since),
+            by_colour=[
+                ColourConsumption(colour=colour, grams=amount)
+                for colour, amount in _descending(by_colour)
+            ],
+            by_material=[
+                MaterialConsumption(material=material, grams=amount)
+                for material, amount in _descending(by_material)
+            ],
+            top_prints=await self._top_prints(per_job),
+            print_time=(
+                PrintTime(total=sum(durations, timedelta()), prints=len(durations))
+                if durations
+                else None
+            ),
+        )
+
+    async def _review_outcomes(self, since: datetime | None) -> ReviewOutcomes:
+        resolved = await self.reviews.list_resolved(since)
+        return ReviewOutcomes(
+            approved=sum(1 for review in resolved if review.state is ReviewState.APPROVED),
+            dismissed=sum(1 for review in resolved if review.state is ReviewState.DISMISSED),
+        )
+
+    async def _top_prints(self, per_job: dict[PrintJobId, Grams]) -> list[TopPrint]:
+        """The heaviest few jobs, each joined to the name the user recognises.
+
+        At most `TOP_PRINT_COUNT` reads, and they are `get` rather than a filter over the
+        period's job list: a print that started in March and was approved in April belongs
+        in April's biggest prints, and its job row is outside the period's window.
+        A job row that has gone missing is skipped rather than crashing the tab — the same
+        policy every other join in this module applies, and the foreign key backs it.
+        """
+        top: list[TopPrint] = []
+        for job_id, amount in sorted(
+            per_job.items(), key=lambda item: (-item[1].milligrams, item[0])
+        )[:TOP_PRINT_COUNT]:
+            job = await self.jobs.get(job_id)
+            if job is None:  # pragma: no cover - the movement's foreign key backs this
+                continue
+            top.append(
+                TopPrint(job_id=job_id, name=job.name, started_at=job.started_at, grams=amount)
+            )
+        return top
+
+
+def _count(jobs: Sequence[PrintJob], state: PrintJobState) -> int:
+    return sum(1 for job in jobs if job.state is state)
+
+
+def _descending[K](totals: dict[K, Grams]) -> list[tuple[K, Grams]]:
+    """Biggest first. Ties break on insertion order, which is the order the ledger was
+    read in — stable across calls, and never arbitrary."""
+    return sorted(totals.items(), key=lambda item: -item[1].milligrams)
 
 
 def movement_label(movement: Movement) -> str:
