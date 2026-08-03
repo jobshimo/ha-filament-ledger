@@ -225,6 +225,13 @@ half-restyled and unusable.
 Then `develop` → `staging`, verified whole on a real instance, then `staging` → `main` and a
 tag, per [RELEASING](../RELEASING.md).
 
+**This ships as v1.1.** It is a minor: no schema change, no websocket command change, nothing a
+user has to do on upgrade beyond looking at it. The release notes owe one thing the generated
+notes cannot supply — that the panel no longer follows the Home Assistant theme, stated as a
+decision rather than left to be discovered ([ADR-0008](adr/0008-panel-visual-identity.md)). The
+feature set formerly called v1.1 is now v1.2 ([15](15-public-release.md),
+[10 — Roadmap](10-roadmap.md) Phase 7).
+
 Preserving class names in step 4 deserves its reason stated. The alternative — new class names,
 with markup migrating tab by tab — means every intermediate commit leaves some tabs styled and
 others not. Restyling in place costs some fidelity to the mock, which steps 5 and 6 then pay

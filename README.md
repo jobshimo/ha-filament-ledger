@@ -444,8 +444,8 @@ when something changes:
 | [12 — Field Notes](docs/12-field-notes.md) | What the real printer actually reports |
 | [13 — Phase 2 Brief](docs/13-phase-2-brief.md) | The automatic-deduction phase, as briefed |
 | [14 — Corrections & Trash](docs/14-corrections-and-trash.md) | The v1.0 correction surface |
-| [15 — Public Release](docs/15-public-release.md) | v1.1: cost, alerts, packaging, multi-printer |
-| [16 — The Visual System](docs/16-visual-system.md) | The panel's own identity, tokens and styleguide |
+| [15 — Public Release](docs/15-public-release.md) | v1.2: cost, alerts, packaging, multi-printer |
+| [16 — The Visual System](docs/16-visual-system.md) | v1.1: the panel's own identity, tokens and styleguide |
 | [ADRs](docs/adr/) | Architecture decision records |
 
 Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first; it is short, and it
