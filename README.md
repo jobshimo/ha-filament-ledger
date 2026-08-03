@@ -424,8 +424,8 @@ uv run pytest tests/domain    # should pass in under a second
 uv run pytest -q              # the whole suite: 898 tests
 ```
 
-The design is written down before it is built. [docs/](docs/) holds the contract — fifteen
-numbered documents and seven ADRs — and it is the document, not the code, that is amended first
+The design is written down before it is built. [docs/](docs/) holds the contract — sixteen
+numbered documents and eight ADRs — and it is the document, not the code, that is amended first
 when something changes:
 
 | Document | Contents |
@@ -445,6 +445,7 @@ when something changes:
 | [13 — Phase 2 Brief](docs/13-phase-2-brief.md) | The automatic-deduction phase, as briefed |
 | [14 — Corrections & Trash](docs/14-corrections-and-trash.md) | The v1.0 correction surface |
 | [15 — Public Release](docs/15-public-release.md) | v1.1: cost, alerts, packaging, multi-printer |
+| [16 — The Visual System](docs/16-visual-system.md) | The panel's own identity, tokens and styleguide |
 | [ADRs](docs/adr/) | Architecture decision records |
 
 Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first; it is short, and it
