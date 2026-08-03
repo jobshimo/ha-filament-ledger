@@ -1,8 +1,11 @@
 # 06 — UI Specification
 
-The panel is a sidebar entry in Home Assistant. It follows HA's own design language — same
-cards, same typography, same theme variables — so it reads as part of Home Assistant rather
-than a foreign application embedded in it.
+The panel is a sidebar entry in Home Assistant, and it has a visual identity of its own — its
+own palette, typefaces, spacing and motion, on a fixed dark surface that does not follow the
+user's theme. [16 — The Visual System](16-visual-system.md) specifies it and
+[ADR-0008](adr/0008-panel-visual-identity.md) records why the earlier theme-native position was
+reversed. Everything below describes what the panel shows and why; the visual system describes
+what it looks like.
 
 Six views, and every one of them earns its tab. Every additional screen is a place the user
 has to learn, so a new one arrives only when an existing view would have to lie to hold it.
@@ -655,18 +658,64 @@ Precision follows what the number can actually support:
 Internally everything stays in integer milligrams regardless ([08 §8.1](08-data-model.md)).
 Rounding is a display concern and it never touches stored values.
 
+**The view is live, and the backend is what says so.** A figure on screen is a claim about the
+ledger *now*. The panel opens **one subscription** — `filament_ledger/subscribe` — and the
+integration pushes a payload whenever something changes. A print finishing, a review resolved,
+a correction made in another browser: each reaches every open panel without a reload and
+without anyone asking.
+
+Two things can change what the panel shows, and the server knows both:
+
+- **The ledger**, which changes only when this integration writes to it. Its own
+  `filament_ledger_*` events ([05 §5.5](05-ha-integration.md)) are that moment, exactly.
+- **The printer**, whose figures belong to the gateway's entities. Discovery already resolved
+  which ones, so the subscription watches *those* and nothing else
+  ([14 §14.5](14-corrections-and-trash.md)).
+
+**The panel never polls, and never infers.** No interval, no comparing of `hass` objects
+between assignments — Home Assistant hands one over whenever anything in the house changes, and
+treating that as news about this integration is how a panel ends up polling while insisting it
+does not. The client holds no list of event names either: it used to, and a copy is a thing
+that drifts. The set lives once, in `event_bridge.LEDGER_EVENTS`, checked against that module's
+own source by a test.
+
+The push carries state rather than a nudge. Five read models used to be five round trips per
+change per open panel; they are one payload now, computed once for whoever is listening.
+
+Two rules bound it. **A burst costs one push** — one print finishing raises a movement, maybe a
+depletion, maybe a confidence change. And **an update never interrupts the person at the
+keyboard**: the panel repaints by replacing markup wholesale
+([ADR-0006](adr/0006-vanilla-panel.md)), so one arriving while a dialog is open or a field has
+focus is *held*, not dropped, and shown the moment the surface is idle. A stale number is a
+smaller wrong than a number that ate what somebody was typing into it.
+
+**Arriving at a view is animated; being updated in one is not.** The entry transition runs on a
+change of view and nowhere else — replaying it on every update is what a live panel looks like
+when it flickers.
+
 **Confidence is never hidden.** Any surface showing a balance shows its confidence alongside.
 A number presented without its reliability invites false trust.
 
 **Destructive actions confirm; corrective ones do not.** Discard confirms. Reconciliation does
 not — it only ever adds a compensating entry, and nothing is lost.
 
-**Theme-native.** HA CSS custom properties throughout, so light, dark, and custom themes work
-without any per-theme code.
+**One appearance.** The panel renders its own fixed dark identity rather than the user's Home
+Assistant theme ([ADR-0008](adr/0008-panel-visual-identity.md)). Light, dark and custom themes
+all produce the same panel. Every value comes from a token declared once on `:host`
+([16 §16.3](16-visual-system.md)); nothing downstream hard-codes a colour, a radius or a
+duration.
 
-**Responsive.** Cards reflow to a single column on narrow screens. The review queue is
-routinely used on a phone, standing at the printer with the failed part in hand — that is the
-layout to get right first.
+**Responsive to the panel, not to the window.** Cards reflow to a single column when the panel
+is narrow — which is not the same as the window being narrow, because Home Assistant's sidebar
+takes its width from the same viewport. Every responsive rule is a container query against the
+host ([16 §16.2](16-visual-system.md)), so pinning or collapsing the sidebar reflows the panel
+without a reload. The review queue is routinely used on a phone, standing at the printer with
+the failed part in hand — that is the layout to get right first.
 
 **Accessible.** Confidence is never conveyed by colour alone; the dot always carries a text
-label. All interactive elements are keyboard reachable, all inputs are labelled.
+label. All interactive elements are keyboard reachable, all inputs are labelled. Anything
+tappable is at least 44 px tall — the panel is used one-handed, at a printer. Motion is
+decoration: under `prefers-reduced-motion` the decorative animation stops and transitions
+collapse to near zero. Because the panel no longer inherits a theme, a user cannot fix our
+contrast from their side, which makes the palette's contrast our obligation rather than
+theirs.
