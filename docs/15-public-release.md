@@ -186,17 +186,16 @@ discipline, not code.
 - **⬜ HACS default-store inclusion** (`hacs/default`) — blocked on brands and on a
   first published release. Until then the README documents the custom-repository path,
   which needs nothing from anybody else and is a normal way to ship.
-- **⬜ Semantic releases via GitHub Actions**: tag-driven; the workflow verifies the gate
-  suite (pytest, ruff, mypy, hassfest) on the tagged SHA, updates nothing by hand. Not
-  built — `ci.yml` runs on push and pull request only, nothing runs on a tag.
-  `RELEASING.md` documents the manual sequence and names this gap rather than implying
-  a safety net that is not there.
-- **⬜ Version discipline in `manifest.json`**: the `version` field
-  (`manifest.json:13`, currently `0.2.0`) is the single version of record; the release
-  tag must equal it, and the workflow fails the release when they diverge — two
-  versions that can disagree will. The *rule* is now written in `RELEASING.md` and
-  `CONTRIBUTING.md` (no pull request bumps the version; that is a release-time edit);
-  the *enforcement* waits on the workflow above.
+- **✅ Semantic releases via GitHub Actions**: `release.yml` runs on every `vX.Y.Z` tag,
+  refuses a tag that disagrees with `manifest.json`, and publishes the release with
+  generated notes. The gate suite runs in `ci.yml` on every push and pull request, so a
+  tag on `main` is a SHA the gates already passed. `RELEASING.md` documents the sequence.
+- **✅ Version discipline in `manifest.json`**: the `version` field
+  (`manifest.json`, `1.0.0` since the first public release) is the single version of
+  record. The *rule* is written in `RELEASING.md` and `CONTRIBUTING.md` (no pull request
+  bumps the version; that is a release-time edit) and the *enforcement* is the workflow
+  above, which refuses a tag that disagrees with the manifest — two versions that can
+  disagree will, so one of them fails the build instead.
 
 **Acceptance shape.** A clean HACS install on a fresh HA instance reaches a working
 panel with zero manual file operations; the release workflow refuses a tag whose

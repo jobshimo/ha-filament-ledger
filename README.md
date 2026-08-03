@@ -94,10 +94,14 @@ sensors should work. **None of them have been tested.** If you run a P1, X1 or A
 as unverified and check the History view after your first print before trusting it. Reports are
 welcome — that is what the issue templates are for.
 
-**One printer per instance.** The config flow allows a single entry, and the gateway takes the
-first printer it finds in the registry and logs a warning naming the ones it ignored. A ledger
-is one inventory; a second one would be a second source of truth about the same shelf.
-Multi-printer support is designed but not built ([docs/15 §15.7](docs/15-public-release.md)).
+**One printer per instance — a multi-printer release is on the roadmap.** Today the config flow
+allows a single entry, and the gateway takes the first printer it finds in the registry and logs
+a warning naming the ones it ignored. **Support for more than one printer is planned for a
+future release**, specified in [docs/15 §15.7](docs/15-public-release.md) and scheduled behind
+its own design pass — it is the largest item on the list and has not been built yet. The
+foundation is already right: spools belong to no printer by design, because the tag travels with
+the reel, so what the change adds is a printer dimension to slots and print jobs. Until it
+ships, a ledger is one inventory on one machine.
 
 **No printer at all is a supported mode.** Without `ha-bambulab` the integration installs and
 runs as a manual inventory: register spools, weigh them, discard them, read the history. You
@@ -444,7 +448,8 @@ when something changes:
 | [ADRs](docs/adr/) | Architecture decision records |
 
 Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first; it is short, and it
-explains the four gates and the one checklist that CI cannot run for you. Releases are cut per
+explains the branch model (**open pull requests against `develop`**), the four gates, and the
+one checklist that CI cannot run for you. Releases are cut from `main` per
 [RELEASING.md](RELEASING.md).
 
 ## Licence

@@ -1,0 +1,70 @@
+name: Release
+
+# Tag-driven, per RELEASING.md and docs/15 §15.4: pushing a tag `vX.Y.Z` publishes the
+# GitHub release HACS users install from. The one safety net that matters is the
+# tag/manifest agreement check — a release whose tag says 1.0.0 while the manifest says
+# 0.2.0 would install as the wrong version and confuse every upgrade that follows.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  # The only workflow in this repository allowed to write, and only to create the release.
+  contents: write
+
+jobs:
+  release:
+    name: Publish the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The reachability check below needs history, not just the tagged commit.
+          fetch-depth: 0
+
+      - name: The tag must be on main
+        # `ci.yml` proves a commit; it cannot prove which commit got tagged. Without this
+        # step a tag cut from develop, from a hotfix branch, or from a detached local
+        # commit publishes straight to HACS installs, and the claim that a release is a
+        # gated SHA becomes an assumption nobody checks.
+        #
+        # The history this needs comes from `fetch-depth: 0` on the checkout above; the
+        # fetch here only makes sure `origin/main` names today's main rather than whatever
+        # the checkout happened to record. Never pass `--depth 0` to git: it reads as "no
+        # depth given", so it would quietly fail to restore history if the checkout above
+        # were ever shallowed.
+        run: |
+          git fetch origin main --quiet
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            printf '::error::%s is not on main. Releases are cut from main, which is the only branch the gates and the review gate protect.\n' "$GITHUB_REF_NAME"
+            exit 1
+          fi
+          printf '%s is on main.\n' "$GITHUB_REF_NAME"
+
+      - name: Tag and manifest must agree
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          MANIFEST=$(python3 -c "import json; print(json.load(open('custom_components/filament_ledger/manifest.json'))['version'])")
+          if [ "$TAG" != "$MANIFEST" ]; then
+            echo "::error::Tag v${TAG} does not match manifest version ${MANIFEST}. Bump the manifest first (RELEASING.md)."
+            exit 1
+          fi
+          echo "Tag v${TAG} matches the manifest."
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Idempotent on purpose: re-running this job from the Actions UI — the natural
+          # reaction to a transient failure — must not fail because the release it is
+          # retrying already exists. Notes are never overwritten; a release edited by hand
+          # after publication keeps what the human wrote.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            printf 'Release %s already exists; leaving it untouched.\n' "$GITHUB_REF_NAME"
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Filament Ledger $GITHUB_REF_NAME" \
+            --generate-notes

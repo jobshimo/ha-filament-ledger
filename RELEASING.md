@@ -44,24 +44,27 @@ git commit -am "chore: release v1.0.0"
 
 ### 3. Tag it
 
-The tag is `v` plus the manifest version, exactly:
+The version bump reaches `main` the way everything else does — `develop` → `staging` → `main`
+(see [CONTRIBUTING.md](CONTRIBUTING.md#the-branch-model)); a maintainer without ruleset-bypass
+cannot push to `main` directly, and should not want to. Once the bump is merged, tag that
+commit. The tag is `v` plus the manifest version, exactly:
 
 ```bash
+git checkout main && git pull
 git tag v1.0.0
-git push origin main --follow-tags
+git push origin v1.0.0
 ```
 
-If the tag and the manifest disagree, HACS will install one version and report another. Check
-them against each other before pushing; this is the one step with no safety net today (see
-*Still manual*, below).
+If the tag and the manifest disagree, HACS will install one version and report another.
+`.github/workflows/release.yml` is the safety net: it runs on the pushed tag, refuses to
+publish when the tag and `manifest.json` disagree, and creates the GitHub release with
+generated notes when they do agree — step 4 happens by itself.
 
-### 4. Publish the GitHub release
+### 4. The release publishes itself — then edit the notes
 
-```bash
-gh release create v1.0.0 --title "v1.0.0" --notes-file notes.md
-```
-
-Or the web UI — **Releases → Draft a new release → choose the tag**. What the notes must contain:
+`release.yml` creates the release with generated notes the moment the tag lands. Generated
+notes are a commit list, not a changelog — edit the release afterwards (**Releases → the new
+release → Edit**) so the notes contain:
 
 - **What changed**, in the user's language. "Reassign a charge to another spool" beats
   "`ReassignMovement` use case".
@@ -83,15 +86,18 @@ Migrations run on the next start. There is nothing else to do.
 
 ---
 
-## Still manual
+## What the automation does and does not do
 
 Worth knowing before the first release, so nothing is assumed that is not true:
 
-- **There is no release workflow.** `.github/workflows/ci.yml` runs the quality gates on pushes
-  and pull requests; nothing runs on a tag. The tag-driven workflow that re-verifies the gates on
-  the tagged SHA and **fails the release when the tag and `manifest.json` disagree** is specified
-  in [docs/15 §15.4](docs/15-public-release.md) and not built. Until it exists, step 3's check is
-  a human one.
+- **`.github/workflows/release.yml` publishes the release.** On every `vX.Y.Z` tag it refuses
+  a tag that is not an ancestor of `main`, refuses a tag that disagrees with `manifest.json`,
+  and then creates the release with generated notes — skipping cleanly if that release already
+  exists, so re-running the job is safe. The quality gates run in `ci.yml` on every push and
+  pull request; the ancestry check is what makes "a tag on `main` is a gated SHA" a fact rather
+  than a hope.
+- **It does not write your release notes.** Generated notes are a commit list. Edit the
+  release afterwards — the checklist above says what the notes owe a user.
 - **Nothing bumps the version for you.** Do not let a pull request bump `manifest.json`; that is
   a release-time edit, and CONTRIBUTING.md says so.
 

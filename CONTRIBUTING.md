@@ -17,6 +17,26 @@ declares **no runtime dependencies** — SQLite is in the standard library, `ha-
 consumed through the Home Assistant bus rather than imported, and the domain depends on nothing
 at all. Please keep it that way.
 
+## The branch model
+
+Three branches, and pull requests flow one way:
+
+```
+develop  →  staging  →  main
+```
+
+- **`develop`** is where work lands. Open your pull request against this one unless you have a
+  reason not to; it is the default branch for contributions.
+- **`staging`** is what is about to be released — `develop` merges here when it is ready to be
+  tried as a whole.
+- **`main`** is what users install. A pull request into `main` is refused by CI unless it comes
+  from `staging`, and releases are tagged from `main` only.
+
+The rule exists because a released integration writes to a database that holds somebody's
+inventory. Two gates between a good idea and a stranger's ledger is not bureaucracy; it is the
+minimum a data-owning integration owes the people running it. Maintainers approve what merges;
+the repository owner can bypass the rules when a release or a hotfix needs it.
+
 ## The four gates
 
 CI runs these on every push and pull request. Run them locally first; they take under a minute.

