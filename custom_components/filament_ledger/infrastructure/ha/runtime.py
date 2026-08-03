@@ -17,6 +17,7 @@ from ...application.query import LedgerSnapshot
 from ...application.use_cases import UseCases
 from ...const import DOMAIN
 from ..persistence.database import Database
+from .tray_sync import TraySync
 
 
 @dataclass
@@ -31,6 +32,10 @@ class LedgerRuntime:
     default_opening_weight_g: int
     default_core_weight_g: int
     known_spool_ids: set[str] = field(default_factory=set)
+    # The on-demand reconciliation pass, wired by the composition root. `None` only in
+    # test harnesses that install no printer; production always constructs one, and a
+    # printerless install answers through the gateway's own dormant flag instead.
+    sync_trays: TraySync | None = None
 
     async def async_refresh(self) -> None:
         await self.coordinator.async_request_refresh()

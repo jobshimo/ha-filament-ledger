@@ -4,7 +4,7 @@ The panel is a sidebar entry in Home Assistant. It follows HA's own design langu
 cards, same typography, same theme variables — so it reads as part of Home Assistant rather
 than a foreign application embedded in it.
 
-Four views. No more. Every additional screen is a place the user has to learn.
+Five views. No more. Every additional screen is a place the user has to learn.
 
 ---
 
@@ -13,9 +13,9 @@ Four views. No more. Every additional screen is a place the user has to learn.
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Filament Ledger                                                     │
-│  ┌────────────┬──────────────┬─────────────┬──────────────────────┐  │
-│  │ Inventory  │ Review  ⑵    │ AMS         │ History              │  │
-│  └────────────┴──────────────┴─────────────┴──────────────────────┘  │
+│  ┌────────────┬─────────────┬──────────────┬──────────────────────┐  │
+│  │ Inventory  │ History     │ Review  ⑵    │ AMS                  │  │
+│  └────────────┴─────────────┴──────────────┴──────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -88,6 +88,17 @@ The default landing view. Answers "what do I have?" without a click.
 Location (`All` / `In AMS` / `Storage` / `Discarded`), material, free-text over label, vendor
 and colour name. Grid or list toggle; the list layout adds columns for last movement and
 confidence.
+
+### Sync with printer
+
+A **⟳ Sync with printer** button sits beside *+ New spool*. It runs the same reconciliation
+pass startup runs — every tray the printer currently reports, through the same detection
+rules — and renders a transient per-slot outcome strip: mounted spools by name, unknown tags
+with a **Register…** action that opens the new-spool form pre-filled from the tray's hints
+(§6.4), ambiguous tags left for the user because the system does not pick, unreadable tags
+named as such. With no printer connected the strip says so honestly — *"No printer connected —
+nothing to sync"* — instead of spinning or inventing four empty slots. The strip is a report
+of a moment: dismissing it, switching tabs, or syncing again replaces it.
 
 ### Empty state
 
@@ -446,7 +457,60 @@ form contains no balance field at all; that is not an omission but the point.
 
 ---
 
-## 6.6 Cross-cutting rules
+## 6.6 View 5 — History
+
+The whole ledger at once, newest first. §6.5 answers *"where did this spool's balance come
+from?"*; this view answers *"what has been happening?"* — the last print, the correction
+made yesterday, the discard nobody remembers. One table, every spool together:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  All movements                                                       │
+│                                                                      │
+│   today 14:02   ███ PLA Basic Black                                  │
+│                 Estimate (confirmed)        − 28.4 g    confirmed    │
+│                 bracket_v3 · weighed the waste                       │
+│                                                                      │
+│   today 09:15   ███ PLA Basic Black                                  │
+│                 Print                       − 84.1 g    auto         │
+│                 vase_final                                           │
+│                                                                      │
+│   3 days ago    ███ PLA Matte Ivory                                  │
+│                 Reconciliation              +  6.2 g    confirmed    │
+│                                                                      │
+│   8 days ago    ███ PETG HF Orange                                   │
+│                 Opening balance          + 1 000.0 g    confirmed    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+Each row: **when** (relative, with the exact ISO timestamp a hover away), the **spool** —
+swatch first, because the user thinks in colours — the **entry** as a human label (*Print*,
+*Estimate (confirmed)*, *Adjustment*, *Reconciliation*, *Opening balance*, *Discard*,
+*Purge*), the **signed amount** at one decimal with decreases in red, a **source badge**
+(*auto* / *confirmed*), and the **job name** and **note** when the movement carries them.
+The estimate label keeps its parenthetical on every row — an approved estimate must never
+read like a measurement, even three views away from the review that approved it.
+
+**No running balance column.** A balance only derives within one spool's history; a
+cross-spool slice has no arithmetic to show, and a column of numbers that do not reconcile
+against their neighbours would teach the reader that the arithmetic is approximate. The row
+links to its spool, where §6.5 does the deriving.
+
+The view serves the newest hundred entries. It is a window, not an export.
+
+### Empty state
+
+```
+       No movements yet.
+
+       Every gram that enters or leaves any spool lands here,
+       newest first. Register a spool and its opening balance
+       becomes the first row.
+```
+
+---
+
+## 6.7 Cross-cutting rules
 
 **Colour is the primary identifier.** Every reference to a spool anywhere shows its swatch.
 Text labels are secondary because the user's mental model is visual.

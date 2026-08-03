@@ -206,13 +206,26 @@ filament_ledger/reviews/dismiss      → ok                  (UC-07)
 filament_ledger/spools/reconcile     → NewBalance          (UC-08)
 filament_ledger/spools/discard       → ok                  (UC-09)
 filament_ledger/spools/adjust        → ok                  (UC-10)
+filament_ledger/movements            → MovementRow[]       (UC-12 across all spools, newest first)
+filament_ledger/trays/sync           → TraySyncOutcome     (the startup reconciliation pass, on demand)
 filament_ledger/slots/state          → SlotState[]
 filament_ledger/subscribe            → live event stream
 ```
 
-Movement history is not a separate command. `spools/get` returns the full `SpoolDetail`,
-history included, because the panel always shows the two together — a second round-trip
-would buy latency and nothing else.
+*Per-spool* movement history is not a separate command. `spools/get` returns the full
+`SpoolDetail`, history included, because the panel always shows the two together — a second
+round-trip would buy latency and nothing else. `movements` is the different question the
+History view asks: the newest entries across **every** spool, each joined to its spool's
+name and colour and — when `job_id` is set — its print job's name. It carries no running
+balances, because no balance is derivable from a cross-spool slice.
+
+`trays/sync` re-runs the same pass `async_setup_entry` runs at startup — `DetectSpool` once
+per tray the gateway currently sees — and reports a per-slot outcome: `empty`, `mounted`,
+`detected` (auto-mount off), `unknown_tag`, `ambiguous_tag` or `no_tag`, with the tag and
+the tray's name/material/colour hints so the panel's register form can pre-fill. A dormant
+gateway answers `{dormant: true, slots: []}` — the honest no-printer flag, not four
+invented empty slots. The `filament_ledger.sync_trays` service runs the same pass
+fire-and-forget.
 
 `spools/update` edits metadata — label, vendor, colour, material, core weight — and **cannot
 alter a balance**. There is no endpoint that sets a balance directly. Changing a balance

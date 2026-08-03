@@ -1,7 +1,9 @@
 """Service registration.
 
 Every service maps one-to-one to a use case. No service performs two operations, and no use
-case is reachable through two services.
+case is reachable through two services. `sync_trays` is the narrow exception the constant
+documents: it runs the startup reconciliation pass — `DetectSpool` once per tray — which is
+one operation repeated over what the printer reports, not two operations.
 
 `reason` is required on discard and adjust. The requirement is enforced in the domain as
 well — a service schema is a user-interface convenience, not a guarantee.
@@ -34,6 +36,7 @@ from ...const import (
     SERVICE_MOUNT_SPOOL,
     SERVICE_RECONCILE_SPOOL,
     SERVICE_REGISTER_SPOOL,
+    SERVICE_SYNC_TRAYS,
     SERVICE_UNMOUNT_SPOOL,
 )
 from ...domain.error import DomainError
@@ -124,6 +127,8 @@ DISMISS_REVIEW_SCHEMA = vol.Schema(
         vol.Optional("note"): cv.string,
     }
 )
+
+SYNC_TRAYS_SCHEMA = vol.Schema({})
 
 
 def _runtime(hass: HomeAssistant) -> LedgerRuntime:
@@ -252,6 +257,15 @@ def async_register_services(hass: HomeAssistant) -> None:
             )
         await runtime.async_refresh()
 
+    async def sync_trays(call: ServiceCall) -> None:
+        """Fire-and-forget: the same reconciliation pass the panel button runs. The
+        per-slot outcome is the websocket command's business — an automation calling
+        this wants the ledger healed, not a report."""
+        runtime = _runtime(hass)
+        if runtime.sync_trays is not None:
+            await runtime.sync_trays.execute()
+            await runtime.async_refresh()
+
     for name, handler, schema in (
         (SERVICE_REGISTER_SPOOL, register_spool, REGISTER_SCHEMA),
         (SERVICE_RECONCILE_SPOOL, reconcile_spool, RECONCILE_SCHEMA),
@@ -261,6 +275,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_UNMOUNT_SPOOL, unmount_spool, UNMOUNT_SCHEMA),
         (SERVICE_APPROVE_REVIEW, approve_review, APPROVE_REVIEW_SCHEMA),
         (SERVICE_DISMISS_REVIEW, dismiss_review, DISMISS_REVIEW_SCHEMA),
+        (SERVICE_SYNC_TRAYS, sync_trays, SYNC_TRAYS_SCHEMA),
     ):
         hass.services.async_register(DOMAIN, name, handler, schema=schema)
 

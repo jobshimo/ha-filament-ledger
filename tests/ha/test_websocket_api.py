@@ -17,6 +17,7 @@ import voluptuous as vol
 from homeassistant.components.websocket_api import DOMAIN as WEBSOCKET_DOMAIN
 from homeassistant.core import HomeAssistant
 
+from custom_components.filament_ledger.application.detect_spool import DetectSpool
 from custom_components.filament_ledger.application.review_queue import OpenPendingReviewCommand
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
@@ -27,16 +28,32 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     SlotIndex,
     SpoolId,
 )
+from custom_components.filament_ledger.domain.value.location import AmsSlot, Storage
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import EstimatorKind, ReviewReason
+from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
+from custom_components.filament_ledger.infrastructure.ha.tray_sync import TraySync
 from custom_components.filament_ledger.infrastructure.ha.websocket_api import (
     async_register_commands,
 )
+from custom_components.filament_ledger.infrastructure.persistence.spool_repository import (
+    SqliteSpoolRepository,
+)
 
 from ..application.conftest import EPOCH
-from .conftest import FakeHass, Harness, as_hass
+from .conftest import FakeHass, Harness, a_spool, as_hass
+
+# The captured reference instance: the same registry rows and tray attributes the gateway
+# suite drives, because the sync command is that gateway feeding that ledger.
+from .test_bambu_gateway import (
+    REGISTRY_ROWS,
+    TRAY_1_TAG,
+    TRAY_ATTRIBUTES,
+    plant_registry,
+    tray_state,
+)
 
 LIST = "filament_ledger/spools/list"
 GET = "filament_ledger/spools/get"
@@ -51,6 +68,8 @@ UNMOUNT = "filament_ledger/spools/unmount"
 REVIEWS_LIST = "filament_ledger/reviews/list"
 REVIEWS_APPROVE = "filament_ledger/reviews/approve"
 REVIEWS_DISMISS = "filament_ledger/reviews/dismiss"
+MOVEMENTS = "filament_ledger/movements"
+TRAYS_SYNC = "filament_ledger/trays/sync"
 
 
 @dataclass
@@ -252,6 +271,9 @@ class TestSchemasRejectMalformedMessages:
                 id="approve-assigning-below-the-first-slot",
             ),
             pytest.param(REVIEWS_DISMISS, {}, id="dismiss-without-a-review-id"),
+            pytest.param(MOVEMENTS, {"limit": "many"}, id="movements-with-a-textual-limit"),
+            pytest.param(MOVEMENTS, {"limit": 0}, id="movements-with-a-zero-limit"),
+            pytest.param(TRAYS_SYNC, {"surprise": 1}, id="trays-sync-accepts-no-fields-at-all"),
         ],
     )
     def test_the_message_never_reaches_a_handler(
@@ -747,3 +769,247 @@ class TestReviewsDismiss:
     async def test_an_unknown_review_cannot_be_dismissed(self, ws: WsClient) -> None:
         code, _message = await ws.error(REVIEWS_DISMISS, review_id="nope")
         assert code == "ReviewNotFoundError"
+
+
+class TestMovements:
+    async def test_an_empty_ledger_is_an_empty_history(self, ws: WsClient) -> None:
+        assert await ws.result_list(MOVEMENTS) == []
+
+    async def test_the_panel_sees_the_documented_row_shape(self, ws: WsClient) -> None:
+        """Everything the History table renders (docs/06 §6.6), in one payload, newest
+        first: amounts signed at one decimal, source verbatim, the nullable trio null."""
+        spool_id = await a_created_spool(ws, label="PLA Basic Black")
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-100, reason="lamp shade")
+
+        assert await ws.result_list(MOVEMENTS) == [
+            {
+                "occurred_at": EPOCH.isoformat(),
+                "spool_name": "PLA Basic Black",
+                "spool_colour": "#000000",
+                "type": "MANUAL_ADJUSTMENT",
+                "amount_g": -100.0,
+                "source": "USER_CONFIRMED",
+                "job_name": None,
+                "review_id": None,
+                "note": "lamp shade",
+            },
+            {
+                "occurred_at": EPOCH.isoformat(),
+                "spool_name": "PLA Basic Black",
+                "spool_colour": "#000000",
+                "type": "OPENING_BALANCE",
+                "amount_g": 1000.0,
+                "source": "USER_CONFIRMED",
+                "job_name": None,
+                "review_id": None,
+                "note": "Registered",
+            },
+        ]
+
+    async def test_an_approved_estimate_carries_its_job_name_and_review_id(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The linkage the movement rows already store, resolved for the table: `job_id`
+        becomes the name the user recognises, `review_id` travels verbatim."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        review_id = await an_open_review(harness)
+        await ws.result_dict(REVIEWS_APPROVE, review_id=review_id)
+
+        newest = (await ws.result_list(MOVEMENTS))[0]
+
+        assert newest == {
+            "occurred_at": EPOCH.isoformat(),
+            "spool_name": "Bambu Lab PLA",
+            "spool_colour": "#000000",
+            "type": "ESTIMATED_CONSUMPTION",
+            "amount_g": -71.0,
+            "source": "USER_CONFIRMED",
+            "job_name": "bracket_v3.gcode.3mf",
+            "review_id": review_id,
+            "note": "Slot 1 of a reviewed print",
+        }
+
+    async def test_the_limit_caps_from_the_newest_end(self, ws: WsClient) -> None:
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-1, reason="older")
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-2, reason="newest")
+
+        (only,) = await ws.result_list(MOVEMENTS, limit=1)
+
+        assert only["note"] == "newest"
+
+
+class TestTraysSync:
+    """The startup reconciliation pass on demand: the captured gateway feeding the real
+    ledger, with the per-slot outcome the panel's strip renders."""
+
+    def wire(self, harness: Harness, auto_mount: bool = True) -> None:
+        """Install the reference instance and the pass, as the composition root wires it.
+
+        The harness ledger wires `DetectSpool` with the production default; the
+        auto-mount-off scenario builds its own with the flag flipped, the way the
+        application suite does — the fixture stays one honest wiring, not a matrix.
+        """
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        detect_spool = (
+            harness.ledger.use_cases.detect_spool
+            if auto_mount
+            else DetectSpool(
+                SqliteSpoolRepository(harness.ledger.database),
+                harness.ledger.events,
+                harness.ledger.database,
+                auto_mount=False,
+            )
+        )
+        harness.runtime.sync_trays = TraySync(
+            gateway=BambuLabGateway(as_hass(harness.hass)),
+            detect_spool=detect_spool,
+            spools=SqliteSpoolRepository(harness.ledger.database),
+        )
+
+    async def test_without_a_wired_pass_the_reply_is_the_honest_dormant_flag(
+        self, ws: WsClient
+    ) -> None:
+        """The harness installs no printer, exactly like a test bench — the panel gets
+        the flag it renders as "no printer connected", never a spinner."""
+        assert await ws.result_dict(TRAYS_SYNC) == {"dormant": True, "slots": []}
+
+    async def test_a_dormant_gateway_reports_dormant_not_four_empty_slots(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """`ha-bambulab` installed but no tray entities: the pass exists, the gateway
+        under it is dormant, and absence of a printer is not an absence of spools."""
+        plant_registry(
+            harness.hass, [row for row in REGISTRY_ROWS if row["translation_key"] != "tray"]
+        )
+        harness.runtime.sync_trays = TraySync(
+            gateway=BambuLabGateway(as_hass(harness.hass)),
+            detect_spool=harness.ledger.use_cases.detect_spool,
+            spools=SqliteSpoolRepository(harness.ledger.database),
+        )
+
+        assert await ws.result_dict(TRAYS_SYNC) == {"dormant": True, "slots": []}
+
+    async def test_the_pass_heals_the_ledger_and_reports_every_slot(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The reference drift, on demand: tray 1 carries a registered tag while the
+        ledger says storage. The sync mounts it, reports it mounted, names the unknown
+        tags, and refuses the unreadable one — and the entities hear about the mutation."""
+        spool_id = await a_spool(harness.ledger, tag_uid=TRAY_1_TAG, label="PLA Basic Black")
+        self.wire(harness)
+        refreshes = harness.coordinator.refresh_count
+
+        result = await ws.result_dict(TRAYS_SYNC)
+
+        assert result["dormant"] is False
+        slots = cast("list[dict[str, object]]", result["slots"])
+        assert [(entry["slot"], entry["status"]) for entry in slots] == [
+            (1, "mounted"),
+            (2, "unknown_tag"),
+            (3, "no_tag"),
+            (4, "unknown_tag"),
+        ]
+        assert slots[0]["spool_id"] == spool_id
+        assert slots[0]["spool_name"] == "PLA Basic Black"
+        location = (
+            await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        ).summary.spool.location
+        assert location == AmsSlot(SlotIndex(1))
+        assert harness.coordinator.refresh_count == refreshes + 1
+
+    async def test_an_unknown_tag_travels_with_the_register_form_hints(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Full equality on the slot the panel's Register… action feeds from: tag, name,
+        material and colour, exactly as the tray reported them (docs/06 §6.4)."""
+        self.wire(harness)
+
+        result = await ws.result_dict(TRAYS_SYNC)
+
+        slots = cast("list[dict[str, object]]", result["slots"])
+        assert slots[3] == {
+            "slot": 4,
+            "status": "unknown_tag",
+            "tag_uid": "4289A97100000100",
+            "name_hint": "Bambu PLA Matte",
+            "material_hint": "PLA",
+            "colour_hint": "#FFFFFF",
+            "spool_id": None,
+            "spool_name": None,
+        }
+        # Reported, never created: an unknown tag must not become a spool (UC-02).
+        assert await ws.result_list(LIST) == []
+
+    async def test_with_auto_mount_off_a_sighting_is_reported_never_acted_on(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The `detected` row, full equality: the tag resolved to exactly one spool, the
+        user asked the system not to move spools, so the pass names it and touches
+        nothing — reporting `mounted` would be a lie, hiding it would waste the sighting."""
+        spool_id = await a_spool(harness.ledger, tag_uid=TRAY_1_TAG, label="PLA Basic Purple")
+        self.wire(harness, auto_mount=False)
+
+        result = await ws.result_dict(TRAYS_SYNC)
+
+        slots = cast("list[dict[str, object]]", result["slots"])
+        assert slots[0] == {
+            "slot": 1,
+            "status": "detected",
+            "tag_uid": "3C45C3DB00000100",
+            "name_hint": "Bambu PLA Basic",
+            "material_hint": "PLA",
+            "colour_hint": "#5E43B7",
+            "spool_id": spool_id,
+            "spool_name": "PLA Basic Purple",
+        }
+        location = (
+            await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        ).summary.spool.location
+        assert location == Storage()
+
+    async def test_an_ambiguous_tag_asks_instead_of_guessing(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Two spools from one batch legally share a tag. The pass refuses to pick — the
+        row carries no spool, and neither candidate moves off the shelf."""
+        first = await a_spool(harness.ledger, tag_uid=TRAY_1_TAG, label="first")
+        second = await a_spool(
+            harness.ledger, tag_uid=TRAY_1_TAG, label="second", confirm_duplicate_tag=True
+        )
+        self.wire(harness)
+
+        result = await ws.result_dict(TRAYS_SYNC)
+
+        slots = cast("list[dict[str, object]]", result["slots"])
+        assert slots[0] == {
+            "slot": 1,
+            "status": "ambiguous_tag",
+            "tag_uid": "3C45C3DB00000100",
+            "name_hint": "Bambu PLA Basic",
+            "material_hint": "PLA",
+            "colour_hint": "#5E43B7",
+            "spool_id": None,
+            "spool_name": None,
+        }
+        for candidate in (first, second):
+            location = (
+                await harness.ledger.use_cases.queries.detail(SpoolId(candidate))
+            ).summary.spool.location
+            assert location == Storage()
+
+    async def test_the_pass_is_idempotent_like_the_startup_pass_it_reuses(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Two syncs in a row: the second replays unchanged trays, writes nothing, and
+        reports the same outcomes — the panel's button is safe to lean on."""
+        await a_spool(harness.ledger, tag_uid=TRAY_1_TAG)
+        self.wire(harness)
+
+        first = await ws.result_dict(TRAYS_SYNC)
+        second = await ws.result_dict(TRAYS_SYNC)
+
+        assert second == first

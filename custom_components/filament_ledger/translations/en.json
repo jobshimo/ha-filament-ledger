@@ -112,6 +112,10 @@
         "review_id": { "name": "Review", "description": "Which pending review." },
         "note": { "name": "Note", "description": "Why nothing is recorded — a first-layer failure, a false positive." }
       }
+    },
+    "sync_trays": {
+      "name": "Sync with printer",
+      "description": "Re-read every AMS tray and reconcile the ledger with what the printer reports right now. Known tags mount their spools, unknown tags are reported, and nothing is invented. The same pass runs automatically at startup."
     }
   }
 }

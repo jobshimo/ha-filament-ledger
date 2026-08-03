@@ -76,6 +76,18 @@ class SqliteMovementRepository:
         )
         return [_to_movement(row) for row in rows]
 
+    async def list_recent(self, limit: int) -> list[Movement]:
+        """Newest first, across every spool — the global history view's read.
+
+        `rowid DESC` breaks timestamp ties by insertion order reversed, so two entries
+        written in one transaction render in the order they happened, not arbitrarily.
+        """
+        rows = await self.database.fetch_all(
+            f"SELECT {COLUMNS} FROM movement ORDER BY occurred_at DESC, rowid DESC LIMIT ?",
+            (limit,),
+        )
+        return [_to_movement(row) for row in rows]
+
     async def count_for_spool(self, spool_id: SpoolId) -> int:
         row = await self.database.fetch_one(
             "SELECT COUNT(*) AS n FROM movement WHERE spool_id = ?", (spool_id,)

@@ -104,7 +104,7 @@ class TestPercentage:
         [("0.612", 61), ("0.847", 85), ("0.3397", 34), ("0.0667", 7), ("0.421", 42)],
     )
     def test_rounds_to_nearest_whole_percent(self, ratio: str, expected: int) -> None:
-        """docs/06-ui-spec.md §6.6. Four layers of sixty is 7%, not 6%."""
+        """docs/06-ui-spec.md §6.7. Four layers of sixty is 7%, not 6%."""
         assert Percentage.from_ratio(Decimal(ratio)).rounded == expected
 
     def test_string_form(self) -> None:

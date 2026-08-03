@@ -27,9 +27,10 @@ from ..domain.port.repositories import (
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance, running_balances
 from ..domain.service.confidence_evaluator import ConfidenceEvaluator
+from ..domain.value.colour import Colour
 from ..domain.value.confidence import Confidence
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import SpoolId
+from ..domain.value.identifiers import PrintJobId, SpoolId
 from ..domain.value.location import AmsSlot, ExternalSpool, Location, Storage
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.spool_state import SpoolState
@@ -71,6 +72,22 @@ class HistoryLine:
 class SpoolDetail:
     summary: SpoolSummary
     lines: list[HistoryLine]
+
+
+@dataclass(frozen=True, slots=True)
+class GlobalHistoryLine:
+    """One ledger entry joined to what the global history table renders beside it.
+
+    The movement names its spool and job by id; the table renders a swatch, a name and a
+    job title. The read model serves the join so the panel never keeps an id→spool map of
+    its own — and unlike `HistoryLine` there is no running balance here, because no
+    balance is derivable from a cross-spool slice.
+    """
+
+    movement: Movement
+    spool_name: str
+    spool_colour: Colour
+    job_name: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +176,41 @@ class Queries:
                 for line in reversed(running_balances(history))
             ],
         )
+
+    async def movement_history(self, limit: int = 100) -> list[GlobalHistoryLine]:
+        """UC-12 across every spool: the newest `limit` entries, newest first.
+
+        Spools and jobs are fetched once per distinct id, not once per row — a hundred
+        prints from one spool is one spool read. A movement whose spool row is missing
+        cannot be written by any use case — every append happens in the unit of work that
+        saved the spool, and the schema's foreign key backs it — so such a row is skipped
+        rather than crashing the whole view, the same policy `pending_reviews` applies.
+        A missing job row is different: `job_id` is nullable by design, and a movement
+        without one simply carries no job name.
+        """
+        lines: list[GlobalHistoryLine] = []
+        spools: dict[SpoolId, Spool | None] = {}
+        jobs: dict[PrintJobId, PrintJob | None] = {}
+        for movement in await self.movements.list_recent(limit):
+            if movement.spool_id not in spools:
+                spools[movement.spool_id] = await self.spools.get(movement.spool_id)
+            spool = spools[movement.spool_id]
+            if spool is None:
+                continue
+            job = None
+            if movement.job_id is not None:
+                if movement.job_id not in jobs:
+                    jobs[movement.job_id] = await self.jobs.get(movement.job_id)
+                job = jobs[movement.job_id]
+            lines.append(
+                GlobalHistoryLine(
+                    movement=movement,
+                    spool_name=spool.display_name,
+                    spool_colour=spool.colour,
+                    job_name=job.name if job is not None else None,
+                )
+            )
+        return lines
 
     async def pending_reviews(self) -> list[PendingReviewDetail]:
         """The open queue, oldest first, each review joined to its job.

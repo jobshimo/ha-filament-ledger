@@ -25,6 +25,7 @@ from custom_components.filament_ledger.const import (
     SERVICE_MOUNT_SPOOL,
     SERVICE_RECONCILE_SPOOL,
     SERVICE_REGISTER_SPOOL,
+    SERVICE_SYNC_TRAYS,
     SERVICE_UNMOUNT_SPOOL,
 )
 from custom_components.filament_ledger.domain.error import SpoolDiscardedError
@@ -35,15 +36,28 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     ReviewId,
     SlotIndex,
 )
+from custom_components.filament_ledger.domain.value.location import AmsSlot
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
+from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
 from custom_components.filament_ledger.infrastructure.ha.services import (
     async_register_services,
+)
+from custom_components.filament_ledger.infrastructure.ha.tray_sync import TraySync
+from custom_components.filament_ledger.infrastructure.persistence.spool_repository import (
+    SqliteSpoolRepository,
 )
 
 from ..application.conftest import EPOCH
 from .conftest import FakeHass, Harness, a_spool, as_hass
+from .test_bambu_gateway import (
+    REGISTRY_ROWS,
+    TRAY_1_TAG,
+    TRAY_ATTRIBUTES,
+    plant_registry,
+    tray_state,
+)
 
 
 @dataclass
@@ -98,6 +112,7 @@ class TestRegistration:
             SERVICE_UNMOUNT_SPOOL,
             SERVICE_APPROVE_REVIEW,
             SERVICE_DISMISS_REVIEW,
+            SERVICE_SYNC_TRAYS,
         }
 
     def test_registering_twice_changes_nothing(
@@ -302,6 +317,35 @@ class TestEachServiceReachesTheLedger:
             SERVICE_REGISTER_SPOOL, material="PLA", colour="000000", opening_weight=1000
         )
         assert harness.coordinator.refresh_count == 1
+
+    async def test_sync_trays_runs_the_reconciliation_pass(
+        self, services: ServiceGateway, harness: Harness
+    ) -> None:
+        """Fire-and-forget, end to end: the captured registry, a registered tag sitting
+        in storage, one service call — and the ledger says AMS slot 1, entities told."""
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        spool_id = await a_spool(harness.ledger, tag_uid=TRAY_1_TAG)
+        harness.runtime.sync_trays = TraySync(
+            gateway=BambuLabGateway(as_hass(harness.hass)),
+            detect_spool=harness.ledger.use_cases.detect_spool,
+            spools=SqliteSpoolRepository(harness.ledger.database),
+        )
+
+        await services.call(SERVICE_SYNC_TRAYS)
+
+        location = (await harness.ledger.use_cases.queries.detail(spool_id)).summary.spool.location
+        assert location == AmsSlot(SlotIndex(1))
+        assert harness.coordinator.refresh_count == 1
+
+    async def test_sync_trays_without_a_wired_pass_is_a_quiet_no_op(
+        self, services: ServiceGateway, harness: Harness
+    ) -> None:
+        """The harness installs no printer; the service neither raises nor pretends a
+        pass ran — no refresh, because nothing could have changed."""
+        await services.call(SERVICE_SYNC_TRAYS)
+        assert harness.coordinator.refresh_count == 0
 
 
 class TestRefusalsBecomeHomeAssistantErrors:

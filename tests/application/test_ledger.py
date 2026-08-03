@@ -375,6 +375,9 @@ class UnappendableMovements:
     async def list_since(self, spool_id: SpoolId, moment: datetime) -> list[Movement]:
         return await self.inner.list_since(spool_id, moment)
 
+    async def list_recent(self, limit: int) -> list[Movement]:
+        return await self.inner.list_recent(limit)
+
     async def count_for_spool(self, spool_id: SpoolId) -> int:
         return await self.inner.count_for_spool(spool_id)
 

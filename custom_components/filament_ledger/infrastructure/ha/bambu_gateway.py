@@ -125,6 +125,16 @@ class BambuLabGateway:
         self._slot_by_entity = {entity_id: slot for slot, entity_id in self._entity_by_slot.items()}
         self._print_sensors, self._printer_device_id = _discover_print_sensors(hass)
 
+    @property
+    def dormant(self) -> bool:
+        """Whether discovery found no trays — `ha-bambulab` absent or not yet set up.
+
+        The on-demand sync reads this to answer honestly: a dormant gateway has no trays
+        to report, which is a different fact from four empty ones. Reloading the entry
+        after the upstream integration appears re-runs discovery, per the module policy.
+        """
+        return not self._entity_by_slot
+
     def subscribe(self, listener: TrayListener) -> None:
         """Register a listener for tray changes. Registration itself does no I/O.
 

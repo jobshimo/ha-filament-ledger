@@ -39,7 +39,15 @@ from ...domain.value.identifiers import (
 )
 from ...domain.value.material import Material, MaterialKind
 from .runtime import LedgerRuntime, runtimes
-from .serialisers import pending_review, spool_detail, spool_summary, whole_grams
+from .serialisers import (
+    movement_line,
+    pending_review,
+    spool_detail,
+    spool_summary,
+    tray_sync_result,
+    whole_grams,
+)
+from .tray_sync import TraySyncResult
 
 # A slot key as it crosses the wire. JSON object keys are strings, so `Coerce(int)` is
 # what reads `"2"` — and the range is bounded here as well as in the domain, for the same
@@ -63,6 +71,8 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_reviews_list,
         handle_reviews_approve,
         handle_reviews_dismiss,
+        handle_trays_sync,
+        handle_movements,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -420,6 +430,48 @@ async def handle_reviews_dismiss(
     )
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/trays/sync"})
+@websocket_api.async_response
+@guarded
+async def handle_trays_sync(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The startup reconciliation pass, on demand, with the per-slot outcome reported.
+
+    A runtime without a wired pass — or a dormant gateway underneath one — answers with
+    the honest `dormant` flag instead of four invented empty slots: absence of a printer
+    is not an absence of spools, and the panel says so instead of spinning.
+    """
+    runtime = _runtime(hass)
+    if runtime.sync_trays is None:
+        connection.send_result(msg["id"], tray_sync_result(TraySyncResult(dormant=True, slots=[])))
+        return
+    result = await runtime.sync_trays.execute()
+    # The pass can mount and unmount spools, which makes it a mutation path like every
+    # other command here — the entities hear about it without waiting for the next poll.
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], tray_sync_result(result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/movements",
+        # Bounded like every adapter input: a limit of zero would render an empty history
+        # over a full ledger, and an unbounded one invites the panel to ask for everything.
+        vol.Optional("limit"): vol.All(vol.Coerce(int), vol.Range(min=1, max=500)),
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_movements(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The global history, newest first — UC-12 across every spool (docs/05 §5.6)."""
+    runtime = _runtime(hass)
+    lines = await runtime.use_cases.queries.movement_history(limit=int(msg.get("limit", 100)))
+    connection.send_result(msg["id"], [movement_line(line) for line in lines])
 
 
 @callback

@@ -45,6 +45,9 @@ SERVICE_MOUNT_SPOOL: Final = "mount_spool"
 SERVICE_UNMOUNT_SPOOL: Final = "unmount_spool"
 SERVICE_APPROVE_REVIEW: Final = "approve_review"
 SERVICE_DISMISS_REVIEW: Final = "dismiss_review"
+# The one exception to "one service per use case", and a narrow one: the service runs the
+# same reconciliation pass startup runs — DetectSpool per tray — not a second operation.
+SERVICE_SYNC_TRAYS: Final = "sync_trays"
 
 # Events on the Home Assistant bus, prefixed so they never collide with another integration.
 EVENT_PREFIX: Final = f"{DOMAIN}_"

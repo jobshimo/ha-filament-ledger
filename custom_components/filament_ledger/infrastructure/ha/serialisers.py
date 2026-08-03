@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...application.query import (
+    GlobalHistoryLine,
     HistoryLine,
     PendingReviewDetail,
     SpoolDetail,
@@ -21,6 +22,12 @@ from ...application.query import (
     source_label,
 )
 from ...domain.value.grams import Grams, total
+
+if TYPE_CHECKING:
+    # Type-only: `tray_sync` imports the gateway, which imports Home Assistant — and the
+    # application test suite imports this module on machines without it. The functions
+    # below only read attributes, so the types can stay annotations that never execute.
+    from .tray_sync import SlotSyncOutcome, TraySyncResult
 
 
 def grams(value: Grams) -> float:
@@ -103,6 +110,57 @@ def history_line(line: HistoryLine) -> dict[str, Any]:
         "source_label": source_label(movement.source),
         "occurred_at": movement.occurred_at.isoformat(),
         "note": movement.note,
+    }
+
+
+def movement_line(line: GlobalHistoryLine) -> dict[str, Any]:
+    """One row of the global history table (docs/06 §6.6).
+
+    Amounts carry one decimal and their sign, per this module's rule — the direction is
+    data, not decoration. `job_name`, `review_id` and `note` are nullable: most rows have
+    none of the three, and the table renders their absence rather than inventing filler.
+    """
+    movement = line.movement
+    return {
+        "occurred_at": movement.occurred_at.isoformat(),
+        "spool_name": line.spool_name,
+        "spool_colour": line.spool_colour.display_hex,
+        "type": movement.type.value,
+        "amount_g": grams(movement.amount),
+        "source": movement.source.value,
+        "job_name": line.job_name,
+        "review_id": movement.review_id,
+        "note": movement.note,
+    }
+
+
+def tray_sync_result(result: TraySyncResult) -> dict[str, Any]:
+    """What one on-demand sync reports (docs/05 §5.6), slot by slot.
+
+    `dormant` is the honest no-printer flag the panel branches on: an empty `slots` with
+    `dormant` false means the printer reported no usable trays, which is a different fact
+    from there being no printer to ask.
+    """
+    return {
+        "dormant": result.dormant,
+        "slots": [_slot_sync(outcome) for outcome in result.slots],
+    }
+
+
+def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
+    """The hints ride along for `unknown_tag`: the register form pre-fills from them, so
+    the user confirms the one number the tray cannot report (docs/06 §6.4)."""
+    reading = outcome.reading
+    spool = outcome.spool
+    return {
+        "slot": reading.slot.value,
+        "status": outcome.status.value,
+        "tag_uid": reading.tag.value if reading.tag else None,
+        "name_hint": reading.name,
+        "material_hint": reading.material,
+        "colour_hint": reading.colour.display_hex if reading.colour else None,
+        "spool_id": spool.id if spool else None,
+        "spool_name": spool.display_name if spool else None,
     }
 
 

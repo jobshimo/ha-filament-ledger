@@ -72,6 +72,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .infrastructure.ha.panel import async_register_panel
     from .infrastructure.ha.runtime import LedgerRuntime
     from .infrastructure.ha.services import async_register_services
+    from .infrastructure.ha.tray_sync import TraySync
     from .infrastructure.ha.websocket_api import async_register_commands
     from .infrastructure.persistence.database import Database
     from .infrastructure.persistence.movement_repository import SqliteMovementRepository
@@ -174,6 +175,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # idempotent use case instead of falling into a gap.
     gateway = BambuLabGateway(hass)
 
+    # The reconciliation pass as an object: startup runs it once below, and the panel's
+    # sync button and the `sync_trays` service run the very same wiring on demand.
+    sync_trays = TraySync(gateway=gateway, detect_spool=use_cases.detect_spool, spools=spools)
+
     entry.runtime_data = LedgerRuntime(
         database=database,
         use_cases=use_cases,
@@ -183,6 +188,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             settings.get(CONF_DEFAULT_OPENING_WEIGHT, DEFAULT_OPENING_WEIGHT_G)
         ),
         default_core_weight_g=int(settings.get(CONF_DEFAULT_CORE_WEIGHT, DEFAULT_CORE_WEIGHT_G)),
+        sync_trays=sync_trays,
     )
 
     async def _tray_changed(reading: TrayReading) -> None:
@@ -208,9 +214,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # Assistant was off (the port's own contract), so the drift accumulated in the dark —
     # a spool loaded by hand, a reel swapped — is healed here, before the first refresh
     # reports the ledger as current. `DetectSpool` is idempotent, so replaying an
-    # unchanged tray writes nothing.
-    for reading in (await gateway.current_trays()).values():
-        await use_cases.detect_spool.execute(reading)
+    # unchanged tray writes nothing. The per-slot outcome the pass reports is the panel's
+    # business, not startup's, so it is ignored here — a handful of bounded reads is a
+    # cheaper price than a second code path through the same reconciliation.
+    await sync_trays.execute()
 
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

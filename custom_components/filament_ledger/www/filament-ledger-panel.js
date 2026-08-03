@@ -31,9 +31,26 @@ const ESTIMATORS = {
 
 const TABS = [
   { id: "inventory", label: "Inventory" },
+  { id: "history", label: "History" },
   { id: "review", label: "Review" },
   { id: "ams", label: "AMS" },
 ];
+
+/**
+ * How each MovementType reads in the global history (docs/06 §6.6). Deliberately terser
+ * than the per-spool labels: the History table shows every spool together, so each word
+ * has to earn its column width. "Estimate (confirmed)" keeps the provenance visible — an
+ * approved estimate must never read like a measurement.
+ */
+const HISTORY_LABELS = {
+  PRINT_CONSUMPTION: "Print",
+  ESTIMATED_CONSUMPTION: "Estimate (confirmed)",
+  MANUAL_ADJUSTMENT: "Adjustment",
+  RECONCILIATION: "Reconciliation",
+  OPENING_BALANCE: "Opening balance",
+  DISCARD: "Discard",
+  PURGE_WASTE: "Purge",
+};
 
 const esc = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) =>
@@ -79,10 +96,14 @@ class FilamentLedgerPanel extends HTMLElement {
     this._spools = [];
     this._stock = null;
     this._reviews = [];
+    this._movements = [];
     this._detail = null;
     this._error = null;
     this._loading = true;
     this._dialog = null;
+    // The last sync's per-slot outcome. Transient by design: dismissed by hand, replaced
+    // by the next sync, dropped on a tab change — a report of a moment, not state.
+    this._sync = null;
   }
 
   set hass(hass) {
@@ -113,16 +134,19 @@ class FilamentLedgerPanel extends HTMLElement {
   async refresh() {
     try {
       this._error = null;
-      const [spools, stock, reviews] = await Promise.all([
+      const [spools, stock, reviews, movements] = await Promise.all([
         this.call("spools/list"),
         this.call("stock"),
         this.call("reviews/list"),
+        this.call("movements"),
       ]);
       this._spools = spools;
       this._stock = stock;
       // The one source of truth for everything review-shaped: the cards, the tab badge
       // and the "n pending" count all read this list.
       this._reviews = reviews;
+      // Already newest first from the backend, already joined to spool and job names.
+      this._movements = movements;
       if (this._detail) this._detail = await this.call("spools/get", { spool_id: this._detail.id });
     } catch (error) {
       this._error = error.message || String(error);
@@ -154,8 +178,24 @@ class FilamentLedgerPanel extends HTMLElement {
       case "tab":
         this._tab = id;
         this._detail = null;
+        this._sync = null;
         this.render();
         break;
+      case "sync-trays":
+        this._syncTrays();
+        break;
+      case "sync-dismiss":
+        this._sync = null;
+        this.render();
+        break;
+      case "sync-register": {
+        // The existing create dialog, pre-filled with everything the tray reported —
+        // the user confirms the one number the RFID cannot know (docs/06 §6.4).
+        const outcome = (this._sync?.slots ?? []).find((o) => String(o.slot) === slot);
+        this._dialog = { kind: "new-spool", prefill: outcome ?? null, fromSync: true };
+        this.render();
+        break;
+      }
       case "open":
         this.guarded(async () => {
           this._detail = await this.call("spools/get", { spool_id: id });
@@ -211,9 +251,10 @@ class FilamentLedgerPanel extends HTMLElement {
     const spoolId = this._detail?.id;
 
     switch (form.dataset.form) {
-      case "new-spool":
-        this.guarded(() =>
-          this.call("spools/create", {
+      case "new-spool": {
+        const fromSync = Boolean(this._dialog?.fromSync);
+        this.guarded(async () => {
+          await this.call("spools/create", {
             material: data.material,
             material_other: data.material_other || undefined,
             colour: data.colour,
@@ -221,9 +262,14 @@ class FilamentLedgerPanel extends HTMLElement {
             core_weight_g: Number(data.core_weight_g),
             vendor: data.vendor || null,
             label: data.label || null,
-          }),
-        );
+            tag_uid: data.tag_uid || undefined,
+          });
+          // Registered from the outcome strip: re-run the pass so the new tag mounts
+          // and the strip reports the slot as it now is, instead of going stale.
+          if (fromSync) this._sync = await this.call("trays/sync");
+        });
         break;
+      }
       case "weigh":
         this.guarded(() =>
           this.call("spools/reconcile", {
@@ -315,6 +361,7 @@ class FilamentLedgerPanel extends HTMLElement {
 
   body() {
     if (this._detail) return this.detailView();
+    if (this._tab === "history") return this.historyView();
     if (this._tab === "review") return this.reviewView();
     if (this._tab === "ams") return this.amsView();
     return this.inventoryView();
@@ -322,14 +369,31 @@ class FilamentLedgerPanel extends HTMLElement {
 
   // -- inventory ---------------------------------------------------------------------
 
+  /** Run the pass, keep the outcome for the strip, then refresh what it changed. */
+  async _syncTrays() {
+    try {
+      this._sync = await this.call("trays/sync");
+      await this.refresh();
+    } catch (error) {
+      this._error = error.message || String(error);
+      this.render();
+    }
+  }
+
   inventoryView() {
     if (!this._spools.length) {
       return `
-        <div class="empty teach">
-          <h2>No spools yet.</h2>
-          <p>Register the filament you own, and the ledger starts tracking every gram that leaves it.</p>
-          <button class="primary" data-action="dialog" data-id="new-spool">Register your first spool</button>
-        </div>`;
+        <section class="stack">
+          ${this.syncStrip()}
+          <div class="empty teach">
+            <h2>No spools yet.</h2>
+            <p>Register the filament you own, and the ledger starts tracking every gram that leaves it.</p>
+            <button class="primary" data-action="dialog" data-id="new-spool">Register your first spool</button>
+            <p class="muted small">Printer already loaded?
+              <button class="link" data-action="sync-trays">⟳ Sync with printer</button>
+              reads the trays and offers to register what it finds.</p>
+          </div>
+        </section>`;
     }
 
     const stat = (key, value, alert) =>
@@ -344,9 +408,73 @@ class FilamentLedgerPanel extends HTMLElement {
         </div>
         <div class="bar">
           <button class="primary" data-action="dialog" data-id="new-spool">+ New spool</button>
+          <button data-action="sync-trays">⟳ Sync with printer</button>
         </div>
+        ${this.syncStrip()}
         <div class="grid">${this._spools.map((s) => this.spoolCard(s)).join("")}</div>
       </section>`;
+  }
+
+  /** The last sync's outcome, one line per slot the printer reported. Transient. */
+  syncStrip() {
+    const sync = this._sync;
+    if (!sync) return "";
+    const dismiss = `<button class="sync-dismiss" data-action="sync-dismiss">Dismiss</button>`;
+    if (sync.dormant) {
+      // The honest no-printer answer — not a spinner, not four invented empty slots.
+      return `
+        <div class="card sync-strip">
+          <div class="sync-head"><b>No printer connected — nothing to sync.</b>${dismiss}</div>
+          <p class="muted small">The ledger reads trays through the Bambu Lab integration.
+            Once it is set up, reload Filament Ledger and this button reports real trays.</p>
+        </div>`;
+    }
+    if (!sync.slots.length) {
+      return `
+        <div class="card sync-strip">
+          <div class="sync-head"><b>The printer reported no usable trays right now.</b>${dismiss}</div>
+          <p class="muted small">A tray whose sensor is unavailable is omitted, never guessed empty.
+            Try again once the printer is reachable.</p>
+        </div>`;
+    }
+    const rows = sync.slots.map((o) => this.syncRow(o)).join("");
+    return `
+      <div class="card sync-strip">
+        <div class="sync-head"><b>Synced with the printer</b>${dismiss}</div>
+        ${rows}
+      </div>`;
+  }
+
+  syncRow(outcome) {
+    const slot = `<span class="sync-slot">Slot ${esc(outcome.slot)}</span>`;
+    const hints = [outcome.name_hint, outcome.material_hint].filter(Boolean).map(esc).join(" · ");
+    const swatch = outcome.colour_hint
+      ? `<span class="sync-dot" style="background:${esc(outcome.colour_hint)}"></span>`
+      : "";
+    switch (outcome.status) {
+      case "empty":
+        return `<div class="sync-row">${slot}<span class="muted">empty</span></div>`;
+      case "mounted":
+        return `<div class="sync-row">${slot}${swatch}<span>${esc(outcome.spool_name)}</span>
+          <span class="muted">mounted</span></div>`;
+      case "detected":
+        return `<div class="sync-row">${slot}${swatch}<span>${esc(outcome.spool_name)}</span>
+          <span class="muted">detected — left in place, auto-mount is off</span></div>`;
+      case "no_tag":
+        return `<div class="sync-row">${slot}${swatch}<span class="muted">occupied, tag unreadable —
+          nothing automatic is possible${hints ? ` (${hints})` : ""}</span></div>`;
+      case "ambiguous_tag":
+        return `<div class="sync-row">${slot}${swatch}<span class="muted">two spools share tag
+          ${esc(outcome.tag_uid)} — mount the right one by hand, the system will not pick</span></div>`;
+      case "unknown_tag":
+        return `<div class="sync-row unknown">${slot}${swatch}
+          <span>unknown tag ${esc(outcome.tag_uid)}${hints ? ` · ${hints}` : ""}</span>
+          <span class="muted">not in inventory</span>
+          <button data-action="sync-register" data-slot="${esc(outcome.slot)}">Register…</button>
+        </div>`;
+      default:
+        return `<div class="sync-row">${slot}<span class="muted">${esc(outcome.status)}</span></div>`;
+    }
   }
 
   spoolCard(spool) {
@@ -415,6 +543,58 @@ class FilamentLedgerPanel extends HTMLElement {
         </div>
         <div class="trays">${slots.join("")}</div>
       </section>`;
+  }
+
+  // -- history -----------------------------------------------------------------------
+
+  historyView() {
+    if (!this._movements.length) {
+      return `
+      <div class="empty teach">
+        <h2>No movements yet.</h2>
+        <p>
+          Every gram that enters or leaves any spool lands here, newest first — prints,
+          corrections, discards, all in one ledger. Register a spool and its opening
+          balance becomes the first row.
+        </p>
+        <p class="muted">Nothing here can ever be edited. A correction is a new row.</p>
+      </div>`;
+    }
+
+    const rows = this._movements.map((m) => this.historyRow(m)).join("");
+    return `
+      <section class="stack">
+        <div class="card ledger-wrap">
+          <h3>All movements</h3>
+          <div class="scroll">
+            <table class="ledger">
+              <thead><tr>
+                <th>When</th><th>Spool</th><th>Entry</th><th class="r">Amount</th><th>Source</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+          <p class="muted small">
+            The newest ${esc(this._movements.length)} entries, every spool together. For the
+            running balance behind any row, open its spool — a balance only derives within
+            one spool's history.
+          </p>
+        </div>
+      </section>`;
+  }
+
+  historyRow(m) {
+    const detail = [m.job_name, m.note].filter(Boolean).map(esc).join(" · ");
+    return `
+      <tr>
+        <td class="when" title="${esc(m.occurred_at)}">${esc(when(m.occurred_at))}</td>
+        <td class="who"><span class="hist-dot" style="background:${esc(m.spool_colour)}"></span>${esc(m.spool_name)}</td>
+        <td class="what">${esc(HISTORY_LABELS[m.type] ?? m.type)}
+          ${detail ? `<span>${detail}</span>` : ""}
+        </td>
+        <td class="amt ${m.amount_g < 0 ? "minus" : "plus"}">${signed(m.amount_g)}</td>
+        <td class="src"><span class="badge ${m.source === "USER_CONFIRMED" ? "user" : "auto"}">${m.source === "USER_CONFIRMED" ? "confirmed" : "auto"}</span></td>
+      </tr>`;
   }
 
   // -- review ------------------------------------------------------------------------
@@ -745,32 +925,47 @@ class FilamentLedgerPanel extends HTMLElement {
   // -- dialogs -----------------------------------------------------------------------
 
   dialog() {
+    // Thunks, not strings: only the requested form may run. Building every body
+    // eagerly meant opening one dialog executed all of them, and weighForm reads
+    // the loaded spool detail — null everywhere outside the detail view, so the
+    // whole render threw before any dialog could appear.
     const bodies = {
-      "new-spool": this.newSpoolForm(),
-      weigh: this.weighForm(),
-      adjust: this.adjustForm(),
-      discard: this.discardForm(),
-      mount: this.mountForm(),
-      "dismiss-review": this.dismissReviewForm(),
+      "new-spool": () => this.newSpoolForm(),
+      weigh: () => this.weighForm(),
+      adjust: () => this.adjustForm(),
+      discard: () => this.discardForm(),
+      mount: () => this.mountForm(),
+      "dismiss-review": () => this.dismissReviewForm(),
     };
+    const body = bodies[this._dialog.kind];
     return `
       <div class="scrim" data-action="close-dialog">
         <div class="modal" onclick="event.stopPropagation()">
-          ${bodies[this._dialog.kind] || ""}
+          ${body ? body() : ""}
         </div>
       </div>`;
   }
 
   newSpoolForm() {
     const defaults = this._stock?.defaults || { opening_weight_g: 1000, core_weight_g: 250 };
+    // Pre-fill from a sync outcome when one opened this dialog (docs/06 §6.4): material,
+    // colour, name and tag are what the tray reported; the opening weight stays the
+    // user's to confirm — the one number the RFID cannot know.
+    const hint = this._dialog?.prefill ?? null;
+    // A hint outside the list (say "PLA-CF") must not fall through to the browser's
+    // default first option — PLA is specific, and wrong, silently. OTHER plus the raw
+    // hint in the name field drops nothing the printer said (TrayReading's guarantee).
+    const hinted = hint?.material_hint ?? null;
+    const material = hinted ? (MATERIALS.includes(hinted) ? hinted : "OTHER") : null;
+    const materialOther = hinted && !MATERIALS.includes(hinted) ? hinted : "";
     return `
       <form data-form="new-spool">
         <h3>Register a spool</h3>
         <label>Material
-          <select name="material">${MATERIALS.map((m) => `<option>${m}</option>`).join("")}</select>
+          <select name="material">${MATERIALS.map((m) => `<option ${m === material ? "selected" : ""}>${m}</option>`).join("")}</select>
         </label>
-        <label>Name if OTHER<input name="material_other" placeholder="Nylon-X"></label>
-        <label>Colour<input name="colour" value="#000000" type="color"></label>
+        <label>Name if OTHER<input name="material_other" value="${esc(materialOther)}" placeholder="Nylon-X"></label>
+        <label>Colour<input name="colour" value="${esc(hint?.colour_hint || "#000000")}" type="color"></label>
         <label>Opening weight (g)
           <input name="opening_weight_g" type="number" step="0.1" min="1" value="${defaults.opening_weight_g}" required>
         </label>
@@ -779,7 +974,14 @@ class FilamentLedgerPanel extends HTMLElement {
           <small>A scale weighs the whole spool. The ledger subtracts this for you.</small>
         </label>
         <label>Vendor<input name="vendor" placeholder="Bambu Lab"></label>
-        <label>Label<input name="label" placeholder="Shelf B"></label>
+        <label>Label<input name="label" value="${esc(hint?.name_hint || "")}" placeholder="Shelf B"></label>
+        ${
+          hint?.tag_uid
+            ? `<input type="hidden" name="tag_uid" value="${esc(hint.tag_uid)}">
+        <p class="muted small">Tag ${esc(hint.tag_uid)} from slot ${esc(hint.slot)} will be attached,
+          so the next sync mounts this spool by itself.</p>`
+            : ""
+        }
         ${this.formActions("Register")}
       </form>`;
   }
@@ -970,6 +1172,28 @@ table.ledger td.bal { color: var(--secondary-text-color); }
   font-family: ui-monospace, "Roboto Mono", Menlo, monospace; font-size: 12.5px; overflow-x: auto;
   white-space: nowrap; color: var(--secondary-text-color); }
 .checksum b { color: var(--primary-text-color); }
+
+.sync-strip { padding: 13px 16px; display: flex; flex-direction: column; gap: 7px;
+  border-left: 3px solid var(--primary-color); }
+.sync-head { display: flex; align-items: center; gap: 10px; }
+.sync-head b { font-weight: 500; }
+.sync-dismiss { margin-left: auto; padding: 4px 10px; font-size: 12.5px; }
+.sync-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.sync-row.unknown { font-weight: 500; }
+.sync-row button { padding: 4px 10px; font-size: 12.5px; }
+.sync-slot { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--secondary-text-color); font-weight: 700; min-width: 52px; }
+.sync-dot { width: 13px; height: 13px; border-radius: 4px; flex: none;
+  border: 1px solid var(--divider-color, #e0e0e0); }
+
+.hist-dot { display: inline-block; width: 13px; height: 13px; border-radius: 4px;
+  border: 1px solid var(--divider-color, #e0e0e0); margin-right: 7px; vertical-align: -2px; }
+table.ledger td.who { font-size: 13.5px; white-space: nowrap; padding-right: 14px; }
+table.ledger td.src { padding-left: 14px; }
+.badge { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700;
+  border-radius: 999px; padding: 2px 9px; border: 1px solid var(--divider-color, #ddd);
+  color: var(--secondary-text-color); white-space: nowrap; }
+.badge.user { color: var(--primary-color); border-color: currentColor; }
 
 .rv-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
 .rv-head { display: flex; align-items: baseline; gap: 9px; }

@@ -123,3 +123,6 @@ dismiss_review:
     note:
       required: false
       selector: { text: }
+
+sync_trays:
+  fields: {}

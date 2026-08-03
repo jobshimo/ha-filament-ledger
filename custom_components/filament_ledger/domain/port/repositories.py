@@ -65,6 +65,15 @@ class MovementRepository(Protocol):
         """Every movement for a spool, oldest first."""
         ...
 
+    async def list_recent(self, limit: int) -> list[Movement]:
+        """The newest `limit` movements across every spool, newest first.
+
+        Newest first because that is the only order the global history view reads: the
+        per-spool queries stay oldest-first, the order a running balance is derived in,
+        and no balance is derivable from a cross-spool slice anyway.
+        """
+        ...
+
     async def list_since(self, spool_id: SpoolId, moment: datetime) -> list[Movement]: ...
 
     async def count_for_spool(self, spool_id: SpoolId) -> int: ...
