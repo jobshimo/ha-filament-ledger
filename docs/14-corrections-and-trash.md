@@ -709,17 +709,24 @@ filament_ledger/printer/state
 **No new polling.** The ledger is push-shaped (`__init__.py:37-39`); this command reads
 current entity state when called.
 
-**Amended (v1.1): the tab keeps itself current while it is open.** The original rule was
+**Amended (v1.1): the tab is pushed to, and it keeps itself current.** The original rule was
 "on open and on an explicit **[ Refresh ]** button — a glance has a moment, and the moment
 is the user's". The moment was the wrong unit. A tab left open showing a finished print as
 still running is not a glance, it is a lie with a timestamp, and the person it lies to is
 standing at the printer.
 
-**There is still no timer.** Home Assistant hands the panel a new `hass` whenever any entity
-changes, the printer's included; that is the trigger. A minimum interval only bounds how
-often the trigger is acted on, and nothing is fetched while the tab is closed, while a dialog
-is open, or while a field has focus. Opening the tab and pressing **[ Refresh ]** still cause
-exactly one call each.
+**Nothing polls, and the panel never asks twice.** Discovery already resolves which entities
+carry these figures — the tray sensors and the job sensors, `BambuLabGateway.watched_entity_ids`
+— so the panel's one subscription ([06 §6.8](06-ui-spec.md)) watches **those**, and pushes a new
+snapshot when one of them changes. Not on an interval, and not on every state change in the
+house.
+
+A first attempt got this wrong in a way worth recording: it treated Home Assistant handing over
+a changed `hass` as the signal. That object is re-assigned whenever *anything* in the house
+changes — several times a minute on a real instance — so a "minimum interval" stopped bounding
+anything and started setting the pace. It was polling with better manners, and it was visible
+as flicker. The entity list belongs to the layer that did the discovery, and the push belongs
+to the server.
 
 ### Panel behaviour
 
@@ -740,10 +747,10 @@ dash, never as zero — a missing figure is not a figure of zero
 3. With `ha-bambulab` absent: `{ dormant: true }` and the teaching empty state — no
    error bar, no spinner.
 4. An unavailable individual sensor renders a dash while the rest of the tab works.
-5. Opening the tab and pressing Refresh cause exactly one command call each. No timer
-   exists: while the tab is open the command is re-issued only when Home Assistant reports
-   an entity change, at most once per interval, and never while a dialog is open or a field
-   has focus. A closed tab issues nothing.
+5. Opening the tab and pressing Refresh cause exactly one command call each. **No timer
+   exists and the panel issues nothing on its own**: a new snapshot arrives only when one of
+   the gateway's own entities changes, pushed over the subscription, and is held rather than
+   shown while a dialog is open or a field has focus.
 6. Reading the tab never writes: movement count and spool locations are identical
    before and after (distinguishes this path from `trays/sync`).
 
