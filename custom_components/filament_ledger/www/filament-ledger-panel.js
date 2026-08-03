@@ -204,6 +204,35 @@ function hms(code) {
  * the charts already work this way (`STATS_BAR_ROW`), and a viewBox that matches the pixel
  * box means a stroke width is a real width rather than a number to be scaled in the head.
  */
+/**
+ * Eight motes of filament colour drifting up behind everything.
+ *
+ * Written out as data rather than eight hand-tuned divs: position, size, colour and the
+ * two timings. The negative delays are what matter — without them all eight would start
+ * at the bottom together on the first paint and arrive as a wave, which reads as a loading
+ * animation rather than as something that was already happening.
+ *
+ * `pointer-events: none` on the layer, `aria-hidden` on it: decoration is not content, and
+ * it must never intercept a tap meant for a spool.
+ */
+const MOTES = [
+  { x: 8, size: 3, colour: "#00e0c6", dur: 17, delay: -2 },
+  { x: 21, size: 2, colour: "#ff8a3d", dur: 23, delay: -7 },
+  { x: 34, size: 4, colour: "#8323ff", dur: 19, delay: -12 },
+  { x: 47, size: 2, colour: "#00e0c6", dur: 26, delay: -3 },
+  { x: 58, size: 3, colour: "#ffb340", dur: 21, delay: -15 },
+  { x: 71, size: 2, colour: "#00e0c6", dur: 29, delay: -9 },
+  { x: 83, size: 3, colour: "#e11d48", dur: 24, delay: -19 },
+  { x: 93, size: 2, colour: "#ff8a3d", dur: 18, delay: -5 },
+];
+
+const AMBIENT = `<div class="ambient" aria-hidden="true">${MOTES.map(
+  (m) =>
+    `<i style="left:${m.x}%;width:${m.size}px;height:${m.size}px;background:${m.colour};
+      box-shadow:0 0 ${m.size * 3}px ${m.colour};
+      animation-duration:${m.dur}s;animation-delay:${m.delay}s"></i>`,
+).join("")}</div>`;
+
 const RING_SIZES = {
   card: { box: 106, r: 46, w: 11 },
   slot: { box: 130, r: 62, w: 5 },
@@ -374,7 +403,12 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   connectedCallback() {
-    this.shadowRoot.innerHTML = `<style>${STYLES}</style><div id="root"></div>`;
+    // The ambient layer is a sibling of #root, not part of it. The panel repaints by
+    // replacing #root's innerHTML on every navigation (ADR-0006), and a drifting particle
+    // rebuilt on every tab change would snap back to the bottom each time. Set once here,
+    // it drifts across the whole session and nobody sees a seam.
+    this.shadowRoot.innerHTML =
+      `<style>${STYLES}</style>${AMBIENT}<div id="root"></div>`;
     this._root = this.shadowRoot.getElementById("root");
     this._root.addEventListener("click", (event) => this._onClick(event));
     this._root.addEventListener("submit", (event) => this._onSubmit(event));
@@ -1120,6 +1154,12 @@ class FilamentLedgerPanel extends HTMLElement {
     };
     return `
       <header>
+        <!-- A strand of filament running the width of the header, travelling slowly. The
+             dash pattern is the animation: only stroke-dashoffset moves, so the browser
+             never reflows anything to draw it. -->
+        <svg class="strand" viewBox="0 0 1200 26" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 20 C 180 20, 240 6, 420 6 S 700 22, 900 12 S 1100 4, 1200 8"></path>
+        </svg>
         <div class="head-top">
           <h1>${t("app.title")}</h1>
           ${this.account()}
@@ -1292,8 +1332,10 @@ class FilamentLedgerPanel extends HTMLElement {
       : `<span class="pct">${spool.percentage}%</span>`;
     return `
       <article class="card spool ${spool.has_anomaly ? "anomaly" : ""}" data-action="open" data-id="${esc(spool.id)}">
+        <span class="shim" aria-hidden="true"></span>
         <div class="swatch" style="background:${esc(spool.colour)}"></div>
         <div class="spool-art">
+          <span class="hatch" aria-hidden="true"></span>
           ${spoolRing("card", sealed ? 100 : spool.percentage, spool.colour)}
           <div class="ring-mid">
             <span class="ring-pct">${sealed ? 100 : spool.percentage}<small>%</small></span>
@@ -2849,6 +2891,8 @@ export const STYLES = `
    =================================================================================== */
 :host {
   display: block; height: 100%;
+  /* Positioned so the ambient layer has something to be absolute against — see .ambient. */
+  position: relative;
 
   /* The panel does not occupy the viewport — it occupies what Home Assistant's sidebar
      leaves of it, and that changes without the viewport changing at all. Declaring the
@@ -3031,7 +3075,14 @@ button.link:hover { color: var(--fl-accent-bright); }
   margin: 16px 0 16px 16px; }
 .tray-art { position: relative; width: 130px; height: 130px; margin: 8px auto 4px; }
 .detail-art { position: relative; width: 178px; height: 178px; flex: none; }
-.ring { display: block; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+/* The winding, behind the arc: a hatch of fine spokes turning slowly. It is what stops a
+   100%-full coil from reading as a flat disc of colour. */
+.hatch { position: absolute; inset: 6px; border-radius: 50%;
+  background: repeating-conic-gradient(from 0deg,
+    rgba(255, 255, 255, .06) 0deg 3deg, transparent 3deg 8deg);
+  animation: fl-spin 18s linear infinite; }
+.ring { display: block; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible;
+  position: relative; }
 .ring-track { fill: none; stroke: var(--fl-line); }
 .ring-arc { fill: none; stroke: currentColor; stroke-linecap: round;
   filter: drop-shadow(0 0 7px currentColor);
@@ -3340,6 +3391,48 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
    is cut to a single frame rather than merely shortened, because a user who asked for
    less motion asked for none of this.
    =================================================================================== */
+/* ---- Ambient ----------------------------------------------------------------------
+   Motes of filament colour drifting up behind the whole panel, and a strand of filament
+   running under the header. Both are fixed-cost: transform and stroke-dashoffset only, so
+   nothing reflows and nothing repaints outside its own layer.
+
+   The layer is a sibling of #root and never repainted, so a mote keeps its position across
+   every navigation instead of snapping back on each paint. */
+/* Absolute against the host, never fixed. Fixed escapes to the viewport — measured doing
+   exactly that on a real instance, drifting motes across Home Assistant's sidebar — and
+   container-type does not reliably contain it. The host is positioned instead, so the
+   layer is bounded by the panel by construction rather than by inference.
+   (No backticks in here: STYLES is a template literal and one would end it.) */
+.ambient { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+.ambient i { position: absolute; bottom: -10px; border-radius: 50%; opacity: 0;
+  animation-name: fl-float; animation-timing-function: linear;
+  animation-iteration-count: infinite; }
+#root { position: relative; z-index: 1; }
+
+.strand { position: absolute; left: 0; right: 0; bottom: -1px; width: 100%; height: 26px;
+  pointer-events: none; }
+.strand path { fill: none; stroke: var(--fl-accent); stroke-width: 1.4;
+  stroke-dasharray: 10 14; opacity: .55; animation: fl-dash 9s linear infinite; }
+
+/* A slow sweep of light across a card. Skewed, so it reads as a highlight travelling over
+   a surface rather than a bar sliding past. */
+.shim { position: absolute; top: -40%; left: -60%; width: 40%; height: 180%;
+  pointer-events: none; transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .05), transparent);
+  animation: fl-shim 6s ease-in-out infinite; }
+.grid > .spool:nth-child(2n) .shim { animation-delay: 1.4s; }
+.grid > .spool:nth-child(3n) .shim { animation-delay: 2.8s; }
+.grid > .spool:nth-child(5n) .shim { animation-delay: 4.1s; }
+
+@keyframes fl-float {
+  0% { transform: translate3d(0, 0, 0); opacity: 0; }
+  12% { opacity: .7; }
+  88% { opacity: .5; }
+  100% { transform: translate3d(40px, -120vh, 0); opacity: 0; }
+}
+@keyframes fl-dash { to { stroke-dashoffset: -600; } }
+@keyframes fl-shim { to { transform: translateX(260%) skewX(-18deg); } }
+@keyframes fl-spin { to { transform: rotate(360deg); } }
 @keyframes fl-view { from { opacity: 0; transform: translateY(12px); } }
 @keyframes fl-pop { from { opacity: 0; transform: translateY(20px) scale(.97); } }
 @keyframes fl-bar { from { transform: scaleX(0); } }
