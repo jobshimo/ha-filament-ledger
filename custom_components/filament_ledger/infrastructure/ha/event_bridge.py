@@ -7,7 +7,7 @@ that knows both vocabularies, which is what keeps `domain/event.py` free of fram
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from homeassistant.core import HomeAssistant
 
@@ -36,6 +36,40 @@ from ...domain.event import (
 
 def event_name(suffix: str) -> str:
     return f"{EVENT_PREFIX}{suffix}"
+
+
+#: Every name this bridge can publish that means the ledger changed.
+#:
+#: The panel's live subscription listens for exactly these (`websocket_api.handle_subscribe`),
+#: so a domain event added to `_translate` without a line here would reach automations and
+#: silently stop the panel updating — the ledger right and the screen wrong.
+#: `tests/ha/test_event_bridge.py` compares this set against the module's own source and
+#: fails when they disagree, in both directions.
+#:
+#: The generic `filament_ledger_event` fallback is deliberately absent: it carries a type
+#: name and nothing else, so there is nothing for a view to show differently because of it.
+LEDGER_EVENTS: Final = frozenset(
+    event_name(suffix)
+    for suffix in (
+        "spool_registered",
+        "spool_mounted",
+        "spool_unmounted",
+        "movement_recorded",
+        "movement_voided",
+        "movement_reinstated",
+        "movement_reassigned",
+        "spool_deleted",
+        "spool_restored",
+        "spool_depleted",
+        "confidence_degraded",
+        "anomaly_detected",
+        "review_opened",
+        "review_resolved",
+        "spool_detected",
+        "unknown_spool_detected",
+        "ambiguous_tag_detected",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -234,56 +234,19 @@ const AMBIENT = `<div class="ambient" aria-hidden="true">${MOTES.map(
 ).join("")}</div>`;
 
 /**
- * Every event on the Home Assistant bus that means this panel is now showing stale figures.
+ * The panel does not decide when it is stale. The backend tells it.
  *
- * These are the integration's own events, already published for automations
- * (`infrastructure/ha/event_bridge.py`). Subscribing to them is what makes the panel live:
- * a print finishing, a review resolved, a correction made in another browser tab — all of
- * them reach this one without a reload.
+ * One subscription, and the integration pushes a payload whenever the ledger changes or
+ * the printer's own entities do. No polling, no interval, and no comparing of `hass`
+ * objects between assignments: the two things that can change what this panel shows are
+ * both known on the server, and the server is what says so
+ * (`infrastructure/ha/websocket_api.py`).
  *
- * Home Assistant's websocket subscribes by exact event type; there is no prefix match. So
- * this list has to mirror the bridge, and a domain event added later without a line here
- * would silently stop refreshing the view. `tests/ha/test_event_bridge.py` asserts the two
- * agree, which is the only way that stays true.
+ * The seventeen event names this file used to carry went with it. They lived here because
+ * the client was deciding what mattered. It is not, any more, so there is no second list
+ * to drift out of step with the bridge.
  */
-const LIVE_EVENTS = [
-  "filament_ledger_spool_registered",
-  "filament_ledger_spool_mounted",
-  "filament_ledger_spool_unmounted",
-  "filament_ledger_movement_recorded",
-  "filament_ledger_movement_voided",
-  "filament_ledger_movement_reinstated",
-  "filament_ledger_movement_reassigned",
-  "filament_ledger_spool_deleted",
-  "filament_ledger_spool_restored",
-  "filament_ledger_spool_depleted",
-  "filament_ledger_confidence_degraded",
-  "filament_ledger_anomaly_detected",
-  "filament_ledger_review_opened",
-  "filament_ledger_review_resolved",
-  "filament_ledger_spool_detected",
-  "filament_ledger_unknown_spool_detected",
-  "filament_ledger_ambiguous_tag_detected",
-];
-
-/**
- * How long to wait after an event before refetching.
- *
- * One print finishing fires several events in quick succession — a movement, possibly a
- * depletion, possibly a confidence change — and each would otherwise cost a full round of
- * queries. The window is short enough that nobody perceives it as lag and long enough that
- * a burst costs one refresh.
- */
-const LIVE_DEBOUNCE_MS = 250;
-
-/**
- * How often the Printer tab may refetch while it is open.
- *
- * The printer's figures do not come from this integration's events — they come from the
- * gateway's entities, and the frontend hands the panel a new `hass` whenever any of them
- * changes. That is the signal, not a timer; this only bounds how often it is acted on.
- */
-const PRINTER_LIVE_MS = 2000;
+const SUBSCRIBE = "filament_ledger/subscribe";
 
 const RING_SIZES = {
   card: { box: 106, r: 46, w: 11 },
@@ -365,10 +328,12 @@ class FilamentLedgerPanel extends HTMLElement {
     this._onViewportResize = () => this._paintTabOverflow();
     // Live updates: the unsubscribe callbacks Home Assistant hands back, the debounce
     // timers, and the flag that remembers an update held back while the user was typing.
-    this._unsubscribe = [];
-    this._liveTimer = null;
-    this._printerTimer = null;
+    this._unsubscribe = null;
+    this._subscribing = false;
     this._liveDeferred = false;
+    // Which tab the last paint drew, so the entry animation runs on a change of view and
+    // not on every update that arrives while you are looking at one.
+    this._painted = null;
     // Resolved once here so the very first paint is already in the right language; `set
     // hass` re-resolves as soon as the profile is known.
     this._applyLanguage();
@@ -377,15 +342,16 @@ class FilamentLedgerPanel extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    // The subscription is the first load as well as the live one: it pushes the current
+    // state on open, so there is no separate set of startup reads that could disagree with
+    // what arrives a moment later.
+    //
+    // Nothing happens on later assignments. Home Assistant hands over a new `hass` whenever
+    // anything in the house changes, and treating that as a signal about *this* integration
+    // is how a panel ends up polling while insisting it does not.
     if (first) {
       this._applyLanguage();
       this._subscribeLive();
-      this.refresh();
-    } else if (this._tab === "printer" && !this._detail) {
-      // Home Assistant re-assigns `hass` when any entity changes, which includes the
-      // printer's own. That is the live signal for the one tab whose figures this
-      // integration does not own — see _printerMayRefresh for why it is bounded.
-      this._printerMayRefresh();
     }
   }
 
@@ -491,61 +457,90 @@ class FilamentLedgerPanel extends HTMLElement {
 
   disconnectedCallback() {
     window.removeEventListener("resize", this._onViewportResize);
-    clearTimeout(this._liveTimer);
-    clearTimeout(this._printerTimer);
     // Home Assistant keeps one websocket for the whole frontend. A subscription this panel
-    // opened and did not close outlives the panel and keeps refetching for a view nobody
-    // is looking at, once more per navigation away and back.
-    for (const unsubscribe of this._unsubscribe) unsubscribe();
-    this._unsubscribe = [];
+    // opened and did not close outlives the panel and keeps a read model being computed for
+    // a view nobody is looking at, once more per navigation away and back.
+    if (this._unsubscribe) this._unsubscribe();
+    this._unsubscribe = null;
   }
 
   // -- live --------------------------------------------------------------------------
 
   /**
-   * Listen for the integration's own events (docs/06 §6.8).
+   * Open the subscription, once (docs/06 §6.8).
    *
-   * Subscriptions resolve asynchronously, so each one checks on arrival whether the panel
-   * is still connected: navigating away during setup would otherwise leave a live
-   * subscription with nothing to unsubscribe it.
+   * It resolves asynchronously, so it checks on arrival whether the panel is still
+   * connected: navigating away during setup would otherwise leave a live subscription with
+   * nothing left to close it.
+   *
+   * A subscription that cannot be opened costs liveness, never correctness — every action
+   * the user takes still refreshes on its own. Putting an error bar over a working ledger
+   * because a socket was unhappy would be the worse failure.
    */
   _subscribeLive() {
     const connection = this._hass?.connection;
-    if (!connection || this._unsubscribe.length) return;
-    for (const name of LIVE_EVENTS) {
-      connection
-        .subscribeEvents(() => this._ledgerChanged(), name)
-        .then((unsubscribe) => {
-          if (this.isConnected) this._unsubscribe.push(unsubscribe);
-          else unsubscribe();
-        })
-        // A subscription that cannot be opened costs liveness, never correctness: the panel
-        // still refetches on every action the user takes. Failing loudly here would put an
-        // error bar over a working ledger.
-        .catch(() => {});
-    }
-  }
-
-  _ledgerChanged() {
-    clearTimeout(this._liveTimer);
-    this._liveTimer = setTimeout(() => this._applyLive(), LIVE_DEBOUNCE_MS);
+    if (!connection || this._unsubscribe || this._subscribing) return;
+    this._subscribing = true;
+    connection
+      .subscribeMessage((payload) => this._pushed(payload), { type: SUBSCRIBE })
+      .then((unsubscribe) => {
+        this._subscribing = false;
+        if (this.isConnected) this._unsubscribe = unsubscribe;
+        else unsubscribe();
+      })
+      .catch(() => {
+        this._subscribing = false;
+      });
   }
 
   /**
-   * Refresh, unless refreshing would take something away from the person at the keyboard.
+   * Apply what the backend pushed.
    *
-   * The panel repaints by replacing markup wholesale (ADR-0006), so a refresh arriving
-   * while a dialog is open or a field has focus would discard what was typed and move the
-   * caret. The update is not dropped — it is held, and applied the moment the surface is
-   * idle again, which is what `_liveDeferred` is for.
+   * Nothing is fetched here. The payload *is* the new state, computed once on the server
+   * for whoever is listening, rather than five queries per panel per change.
+   *
+   * Held, never dropped, while the user is mid-task: the panel repaints by replacing markup
+   * wholesale (ADR-0006), so applying an update over an open dialog or a focused field
+   * would discard what was typed and move the caret. A stale number is a smaller wrong than
+   * a number that ate what somebody was typing into it.
    */
-  async _applyLive() {
+  _pushed(payload) {
+    if (!payload) return;
+    if (payload.kind === "printer") this._printer = payload.printer;
+    else {
+      this._spools = payload.spools;
+      this._stock = payload.stock;
+      this._reviews = payload.reviews;
+      this._movements = payload.movements;
+      this._trash = payload.trash;
+    }
+    this._loading = false;
+    this._error = null;
     if (this._busy()) {
       this._liveDeferred = true;
       return;
     }
     this._liveDeferred = false;
-    await this.refresh();
+    this._repaint();
+  }
+
+  /**
+   * Show what has already arrived.
+   *
+   * The detail view is the one surface a push cannot fill: it is one spool's whole history,
+   * asked for by opening it. Its summary moved in the payload, so it is re-read here — the
+   * only fetch left on the live path, and only while that view is open.
+   */
+  async _repaint() {
+    if (this._detail) {
+      try {
+        this._detail = await this.call("spools/get", { spool_id: this._detail.id });
+      } catch {
+        // A spool deleted from another browser: fall back to the list rather than an error.
+        this._detail = null;
+      }
+    }
+    this.render();
   }
 
   /** True while the user is mid-task and a repaint would interrupt them. */
@@ -555,26 +550,12 @@ class FilamentLedgerPanel extends HTMLElement {
     return Boolean(focused && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName));
   }
 
-  /** Called wherever a dialog closes or an edit ends, to release a held update. */
+  /** Called wherever a dialog closes or an edit ends, to show an update held back. */
   _releaseLive() {
-    if (this._liveDeferred && !this._busy()) this._applyLive();
-  }
-
-  /**
-   * The Printer tab, refetched while it is open.
-   *
-   * This reverses docs/14 §14.5's "no timer, and never on the general refresh". That rule
-   * was written for a glance the user asked for; a glance that keeps showing a finished
-   * print as still running is not a glance, it is a lie with a timestamp. There is still no
-   * timer — the trigger is Home Assistant handing over a changed `hass` — and this only
-   * bounds how often that trigger is acted on.
-   */
-  _printerMayRefresh() {
-    if (this._printerTimer || this._printerLoading || this._busy()) return;
-    this._printerTimer = setTimeout(() => {
-      this._printerTimer = null;
-      if (this._tab === "printer" && !this._detail && !this._busy()) this._loadPrinter();
-    }, PRINTER_LIVE_MS);
+    if (this._liveDeferred && !this._busy()) {
+      this._liveDeferred = false;
+      this._repaint();
+    }
   }
 
   /**
@@ -1279,9 +1260,16 @@ class FilamentLedgerPanel extends HTMLElement {
   render() {
     if (!this._root) return;
     const t = this._t;
+    // The entry animation belongs to *arriving somewhere*, not to painting. Every paint
+    // replaces the markup wholesale (ADR-0006), so animating unconditionally replayed a
+    // half-second fade over the whole view on every update — which is what a live panel
+    // looks like when it flickers. Now it runs on a change of view and nowhere else.
+    const view = this._detail ? `detail:${this._detail.id}` : this._tab;
+    const entering = view !== this._painted;
+    this._painted = view;
     this._root.innerHTML = `
       ${this.header()}
-      <main>
+      <main class="${entering ? "entering" : ""}">
         ${this._error ? this.errorBar() : ""}
         ${this._loading ? `<div class="empty">${t("app.loading")}</div>` : this.body()}
       </main>
@@ -2238,10 +2226,16 @@ class FilamentLedgerPanel extends HTMLElement {
       <section class="stack">
         <button class="link" data-action="back">${t("detail.back")}</button>
         <div class="card detail">
-          <div class="detail-art">
+          <!-- Seen face-on: the winding, the core hole, and the figure in the middle. The
+               card shows the same spool small; this is the same object, larger, not a
+               different drawing of it. -->
+          <div class="detail-art" style="--coil:${esc(spool.colour)}">
+            <span class="coil-base" aria-hidden="true"></span>
+            <span class="coil-wind" aria-hidden="true"></span>
+            <span class="coil-depth" aria-hidden="true"></span>
             ${spoolRing("hero", spool.percentage, spool.colour)}
             <div class="ring-mid">
-              <span class="ring-hub hero" style="background:${esc(spool.colour)}"></span>
+              <span class="ring-pct hero">${spool.percentage}<small>%</small></span>
             </div>
           </div>
           <div class="meta">
@@ -3163,8 +3157,10 @@ nav .count { display: inline-grid; place-items: center; min-width: 18px; height:
    The phone's notch is the panel's problem: its venue is somebody standing at a printer. */
 main { padding: 22px max(22px, env(safe-area-inset-right))
     max(22px, env(safe-area-inset-bottom)) max(22px, env(safe-area-inset-left));
-  max-width: 1320px; margin: 0 auto;
-  animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
+  max-width: 1320px; margin: 0 auto; }
+/* Only on arriving at a view. An update that lands while you are reading one must not
+   replay it — see render(). */
+main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .card { background: linear-gradient(165deg, var(--fl-surface-raised), #0a0f14);
   border-radius: var(--fl-radius-l); box-shadow: var(--fl-shadow-1);
@@ -3247,14 +3243,37 @@ button.link:hover { color: var(--fl-accent-bright); }
 .ring-pct { font-family: var(--fl-font-mono); font-size: 21px; font-weight: 600;
   color: var(--fl-ink-bright); letter-spacing: -.02em; }
 .ring-pct small { font-size: 11px; color: var(--fl-ink-faint); margin-left: 1px; }
+.ring-pct.hero { font-size: 30px; }
+.ring-pct.hero small { font-size: 14px; }
+
+/* ---- The spool, face-on -------------------------------------------------------------
+   Three layers under the arc, and together they are why a detail view reads as a physical
+   reel rather than as a larger progress ring:
+
+   - the body, with the core hole punched out of its middle;
+   - the winding — concentric turns of the filament's own colour, masked away from the
+     hole and turning slowly, which is what makes the colour read as material rather than
+     as a fill;
+   - the depth, an inset shadow so the winding sits inside the reel instead of on it.
+
+   The card shows the same spool small, with a spoke hatch instead: at 106px the turns
+   would collapse into a moiré, and a texture that fights its own size is worse than none. */
+.coil-base { position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle, #131b24 26%, #0c1218 27%);
+  border: 1px solid var(--fl-line); }
+.coil-wind { position: absolute; inset: 12px; border-radius: 50%;
+  background: repeating-radial-gradient(circle,
+    var(--coil) 0 3px, rgba(0, 0, 0, .7) 3px 6px);
+  -webkit-mask-image: radial-gradient(circle, transparent 23%, #000 24%);
+  mask-image: radial-gradient(circle, transparent 23%, #000 24%);
+  animation: fl-spin 22s linear infinite; }
+.coil-depth { position: absolute; inset: 12px; border-radius: 50%;
+  box-shadow: inset 0 0 30px rgba(0, 0, 0, .9); }
 /* The hub: the physical core the filament is wound on, and a second place the colour
    reads at a glance when the arc is nearly empty. */
 .ring-hub { width: 34px; height: 34px; border-radius: 50%; display: block;
   box-shadow: 0 0 20px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
   border: 2px solid var(--fl-surface); }
-.ring-hub.hero { width: 54px; height: 54px; border-radius: 50%; display: block;
-  box-shadow: 0 0 26px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
-  border: 3px solid var(--fl-surface); }
 .spool-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .name { font-weight: 600; letter-spacing: -.01em; }
 .sub { font-size: 12.5px; color: var(--fl-ink-dim); }

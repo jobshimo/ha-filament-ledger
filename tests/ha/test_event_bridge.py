@@ -49,6 +49,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 from custom_components.filament_ledger.domain.value.movement_type import MovementType
 from custom_components.filament_ledger.domain.value.review import ReviewReason, ReviewState
 from custom_components.filament_ledger.infrastructure.ha.event_bridge import (
+    LEDGER_EVENTS,
     HomeAssistantEventBus,
 )
 
@@ -249,46 +250,45 @@ class TestTranslation:
         assert hass.bus.fired == [("filament_ledger_event", {"type": "DomainEvent"})]
 
 
-class TestThePanelListensForAllOfThem:
-    """The panel refreshes itself by subscribing to these events (docs/06 §6.8).
+class TestTheLiveSubscriptionCoversAllOfThem:
+    """`LEDGER_EVENTS` is what the panel's live subscription listens for.
 
-    Home Assistant's websocket subscribes by exact event type — there is no prefix match —
-    so the panel carries its own copy of the list. A domain event added to the bridge
-    without a line in that list would fire correctly, reach automations correctly, and
-    silently stop the view from updating: the ledger would be right and the screen wrong,
-    which is the failure this project exists to prevent.
+    A domain event added to `_translate` without a line in that set would fire correctly and
+    reach automations correctly, and would silently stop the panel updating — the ledger
+    right and the screen wrong, which is the failure this project exists to prevent.
 
-    There is no JavaScript harness (ADR-0006), so the two lists are compared as text. That
-    is coarse, and it is the only check available that cannot be forgotten.
+    The set is compared against this module's own source rather than against a second list
+    written by hand, so the only way to break it is to add an event and mean it.
     """
 
-    def _bridge_events(self) -> set[str]:
+    def _fired_names(self) -> set[str]:
         source = Path("custom_components/filament_ledger/infrastructure/ha/event_bridge.py")
-        names = set(re.findall(r'event_name\("([^"]+)"\)', source.read_text(encoding="utf-8")))
-        # The fallback for an event the bridge has not learned yet. It carries no spool and
-        # no amount, so there is nothing for the panel to refetch on.
+        text = source.read_text(encoding="utf-8")
+        body = text[text.index("def _translate(") :]
+        names = set(re.findall(r'event_name\("([^"]+)"\)', body))
+        # The fallback for an event the bridge has not learned yet carries a type name and
+        # nothing else, so there is nothing for a view to show differently because of it.
         return {f"filament_ledger_{name}" for name in names - {"event"}}
 
-    def _panel_events(self) -> set[str]:
-        source = Path("custom_components/filament_ledger/www/filament-ledger-panel.js")
-        block = re.search(
-            r"const LIVE_EVENTS = \[(.*?)\];", source.read_text(encoding="utf-8"), re.S
-        )
-        assert block is not None, "the panel no longer declares LIVE_EVENTS"
-        return set(re.findall(r'"([^"]+)"', block.group(1)))
-
-    def test_the_panel_subscribes_to_every_event_the_bridge_can_fire(self) -> None:
-        missing = self._bridge_events() - self._panel_events()
+    def test_every_event_the_bridge_can_fire_is_subscribed_to(self) -> None:
+        missing = self._fired_names() - set(LEDGER_EVENTS)
 
         assert not missing, (
-            f"the bridge fires {sorted(missing)} and the panel does not listen for it, "
-            "so the view will not refresh when it happens"
+            f"the bridge fires {sorted(missing)} and the live subscription does not listen "
+            "for it, so the panel will not update when it happens"
         )
 
-    def test_the_panel_does_not_listen_for_events_that_cannot_arrive(self) -> None:
-        """The other direction. A name the bridge cannot fire is a subscription that costs
-        a websocket round trip on every load and can never deliver anything — usually the
-        fossil of a rename."""
-        stale = self._panel_events() - self._bridge_events()
+    def test_nothing_is_subscribed_to_that_cannot_arrive(self) -> None:
+        """The other direction: a name nothing fires is a bus listener registered per open
+        panel that can never deliver, usually the fossil of a rename."""
+        stale = set(LEDGER_EVENTS) - self._fired_names()
 
-        assert not stale, f"the panel subscribes to {sorted(stale)}, which nothing fires"
+        assert not stale, f"the subscription listens for {sorted(stale)}, which nothing fires"
+
+    def test_the_panel_carries_no_event_list_of_its_own(self) -> None:
+        """The client used to hold a copy, and a copy is a thing that drifts. The server
+        decides what a change is now; a list reappearing in the panel means that inverted
+        again."""
+        panel = Path("custom_components/filament_ledger/www/filament-ledger-panel.js")
+
+        assert "filament_ledger_movement_recorded" not in panel.read_text(encoding="utf-8")
