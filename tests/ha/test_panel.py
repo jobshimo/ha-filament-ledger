@@ -9,6 +9,7 @@ identical routes or warning about panels that were never there. The real `fronte
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import cast
 
@@ -51,6 +52,33 @@ class TestRegister:
         assert static.url_path == "/filament_ledger_static"
         assert Path(static.path).name == "www"
         assert (Path(static.path) / "filament-ledger-panel.js").is_file()
+
+    async def test_every_face_the_panel_declares_is_a_file_that_ships(self, hass: FakeHass) -> None:
+        """The panel names eight woff2 files and the static route is what serves them.
+
+        There is no JS harness, so this is the only automatic check that a typeface named in
+        the module is a typeface present in the package. A rename, a missed `git add` or a
+        packaging filter that drops binaries would otherwise reach a user as text silently
+        rendered in the fallback face — the failure mode 16 §16.9 warns about, and one nobody
+        gets an error for.
+        """
+        await async_register_panel(as_hass(hass))
+        (static,) = hass.http.static_paths
+        fonts = Path(static.path) / "fonts"
+
+        panel_source = (Path(static.path) / "filament-ledger-panel.js").read_text("utf-8")
+        declared = set(re.findall(r'file: "([^"]+\.woff2)"', panel_source))
+        assert len(declared) == 8
+
+        for name in declared:
+            face = fonts / name
+            assert face.is_file(), f"{name} is declared by the panel but absent from www/fonts"
+            assert face.stat().st_size > 0
+
+        # The licence travels with the fonts: both families are SIL OFL 1.1, which obliges the
+        # notice to accompany the font software wherever it is redistributed.
+        assert (fonts / "OFL-Space-Grotesk.txt").is_file()
+        assert (fonts / "OFL-IBM-Plex.txt").is_file()
 
     async def test_registering_twice_neither_stacks_routes_nor_raises(self, hass: FakeHass) -> None:
         """Without the guard, `frontend` raises "Overwriting panel" and a second static

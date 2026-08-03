@@ -90,6 +90,75 @@ const STATS_BAR_ROW = 34;
  */
 const TAB_FADE_SLACK = 1;
 
+/**
+ * The typefaces, and the one rule about them that fails silently if broken.
+ *
+ * **A `@font-face` declared inside a shadow root is ignored.** Font faces resolve against the
+ * document, and a shadow tree is deliberately not allowed to define one — otherwise a component
+ * could redefine another's fonts and encapsulation would leak through the font stack. Putting
+ * these in `STYLES` produces no error and no warning; the text simply renders in the fallback,
+ * which reads as a font that failed to load rather than a rule that was never honoured
+ * ([16 §16.2](../../../docs/16-visual-system.md)).
+ *
+ * So the faces are written into `document.head` instead. Everything else stays in the shadow
+ * root, where it belongs.
+ *
+ * Space Grotesk is a **variable** font: one file per subset spans 400–700, which is why a
+ * single rule carries a weight *range* rather than four rules carrying four files. IBM Plex
+ * Mono is static, so it gets one file per weight. Only latin and latin-ext ship — the panel
+ * speaks English and Spanish, and cyrillic would be 60 KB nobody renders.
+ *
+ * Paths are resolved from `import.meta.url` rather than from a hard-coded `/filament_ledger_static`,
+ * so the fonts follow the module wherever it is served from.
+ */
+const FONT_STYLE_ID = "filament-ledger-fonts";
+
+const LATIN =
+  "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, " +
+  "U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD";
+
+const LATIN_EXT =
+  "U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, " +
+  "U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, " +
+  "U+2C60-2C7F, U+A720-A7FF";
+
+const FONT_FACES = [
+  { family: "Space Grotesk", weight: "400 700", file: "space-grotesk-latin.woff2", range: LATIN },
+  { family: "Space Grotesk", weight: "400 700", file: "space-grotesk-latin-ext.woff2", range: LATIN_EXT },
+  { family: "IBM Plex Mono", weight: "400", file: "ibm-plex-mono-400-latin.woff2", range: LATIN },
+  { family: "IBM Plex Mono", weight: "400", file: "ibm-plex-mono-400-latin-ext.woff2", range: LATIN_EXT },
+  { family: "IBM Plex Mono", weight: "500", file: "ibm-plex-mono-500-latin.woff2", range: LATIN },
+  { family: "IBM Plex Mono", weight: "500", file: "ibm-plex-mono-500-latin-ext.woff2", range: LATIN_EXT },
+  { family: "IBM Plex Mono", weight: "600", file: "ibm-plex-mono-600-latin.woff2", range: LATIN },
+  { family: "IBM Plex Mono", weight: "600", file: "ibm-plex-mono-600-latin-ext.woff2", range: LATIN_EXT },
+];
+
+/**
+ * Declare the faces on the document, once.
+ *
+ * Guarded by id: the browser executes a module once per URL, but a guard costs one line and
+ * makes a second execution harmless rather than a duplicated stylesheet.
+ *
+ * `font-display: swap` on purpose — the panel's job is to show a number to somebody standing at
+ * a printer, and text they cannot read for 300 ms is worse than text in the wrong face.
+ */
+function installFonts() {
+  if (document.getElementById(FONT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = FONT_STYLE_ID;
+  style.textContent = FONT_FACES.map(
+    ({ family, weight, file, range }) => `@font-face {
+  font-family: "${family}";
+  font-style: normal;
+  font-weight: ${weight};
+  font-display: swap;
+  src: url("${new URL(`fonts/${file}`, import.meta.url).href}") format("woff2");
+  unicode-range: ${range};
+}`,
+  ).join("\n");
+  document.head.appendChild(style);
+}
+
 const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
 const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
 
@@ -2705,10 +2774,13 @@ class FilamentLedgerPanel extends HTMLElement {
 }
 
 const STYLES = `
-:host { display: block; height: 100%; background: var(--primary-background-color); }
+:host { display: block; height: 100%; background: var(--primary-background-color);
+  /* The first two tokens of 16 §16.3. The rest of the vocabulary arrives with the token pass;
+     these land early because the faces they name are what this change ships. */
+  --fl-font-sans: "Space Grotesk", system-ui, sans-serif;
+  --fl-font-mono: "IBM Plex Mono", ui-monospace, "Roboto Mono", Menlo, monospace; }
 * { box-sizing: border-box; }
-#root { min-height: 100%; color: var(--primary-text-color);
-  font-family: var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif); }
+#root { min-height: 100%; color: var(--primary-text-color); font-family: var(--fl-font-sans); }
 
 header { background: var(--app-header-background-color, var(--primary-color));
   color: var(--app-header-text-color, #fff); padding: 12px 20px 0; position: sticky; top: 0; z-index: 5; }
@@ -2825,14 +2897,14 @@ table.ledger td { padding: 9px 0; border-bottom: 1px solid var(--divider-color, 
 table.ledger td.when { font-size: 12.5px; color: var(--secondary-text-color); white-space: nowrap; padding-right: 14px; }
 table.ledger td.what { font-size: 13.5px; }
 table.ledger td.what span { display: block; font-size: 12px; color: var(--secondary-text-color); }
-table.ledger td.amt, table.ledger td.bal { font-family: ui-monospace, "Roboto Mono", Menlo, monospace;
+table.ledger td.amt, table.ledger td.bal { font-family: var(--fl-font-mono);
   font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 16px; }
 table.ledger td.amt { font-weight: 600; }
 table.ledger td.amt.minus { color: var(--error-color, #c62828); }
 table.ledger td.amt.plus { color: var(--success-color, #2e7d32); }
 table.ledger td.bal { color: var(--secondary-text-color); }
 .checksum { margin-top: 12px; padding: 10px 13px; border-radius: 8px; background: var(--secondary-background-color, #f5f5f5);
-  font-family: ui-monospace, "Roboto Mono", Menlo, monospace; font-size: 12.5px; overflow-x: auto;
+  font-family: var(--fl-font-mono); font-size: 12.5px; overflow-x: auto;
   white-space: nowrap; color: var(--secondary-text-color); }
 .checksum b { color: var(--primary-text-color); }
 
@@ -2865,7 +2937,7 @@ table.ledger td.src { padding-left: 14px; }
 .rv-state { margin-left: auto; font-size: 11px; letter-spacing: .08em; font-weight: 700;
   color: var(--secondary-text-color); white-space: nowrap; }
 .rv-card .sub { font-size: 12.5px; color: var(--secondary-text-color); }
-.rv-hms { font-family: ui-monospace, "Roboto Mono", Menlo, monospace; }
+.rv-hms { font-family: var(--fl-font-mono); }
 .rv-est { font-size: 12.5px; color: var(--secondary-text-color); font-style: italic; }
 .rv-nodata { border-left: 3px solid var(--error-color, #c62828); padding: 8px 12px;
   background: var(--secondary-background-color, #f5f5f5); border-radius: 0 8px 8px 0; }
@@ -2920,7 +2992,7 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
 .ed-tag { display: flex; flex-direction: column; gap: 5px; }
 .ed-tag .k, .ed-corr .k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
   color: var(--secondary-text-color); font-weight: 700; }
-.ed-tagval { font-family: ui-monospace, "Roboto Mono", Menlo, monospace; font-size: 15px;
+.ed-tagval { font-family: var(--fl-font-mono); font-size: 15px;
   color: var(--primary-text-color); }
 .ed-tagrow { display: flex; gap: 8px; align-items: stretch; }
 .ed-tagrow input { flex: 1; min-width: 0; }
@@ -3057,5 +3129,10 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
   .st-period { padding: 6px 11px; }
 }
 `;
+
+// Before the element is defined, not from `connectedCallback`: the faces belong to the document
+// and the browser can start fetching them while Home Assistant is still deciding to mount a
+// panel. It is the same kind of module-level side effect as the line below it.
+installFonts();
 
 customElements.define("filament-ledger-panel", FilamentLedgerPanel);

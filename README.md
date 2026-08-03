@@ -455,4 +455,11 @@ one checklist that CI cannot run for you. Releases are cut from `main` per
 
 ## Licence
 
-[MIT](LICENSE).
+[MIT](LICENSE), with one exception that travels with it.
+
+The panel ships two typefaces in `custom_components/filament_ledger/www/fonts/`, both under the
+**SIL Open Font License 1.1**, not MIT: [Space Grotesk](https://github.com/floriankarsten/space-grotesk)
+and [IBM Plex Mono](https://github.com/IBM/plex). Their licences sit beside them as
+`OFL-Space-Grotesk.txt` and `OFL-IBM-Plex.txt`, which is what the OFL asks of anyone
+redistributing them. They are self-hosted deliberately — a panel that fetched a typeface from a
+third party would tell that party every time somebody opened it.
