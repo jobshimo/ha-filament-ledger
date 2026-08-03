@@ -126,13 +126,64 @@ are either confirmed or replaced with tuned values.
 
 ---
 
-## Phase 5 — Release
+## Phase 5 — Corrections & trash (v1.0)
 
-- Documentation for users, not just for developers
-- HACS packaging
-- Translations (English, Spanish)
-- JSON export, and the optional Spoolman exporter
-- Public repository
+**Runs before Phase 4, despite the number.** The ordering rule is need, not sequence — the
+same rule that let Phase 1 start before Phase 0 finished. Phases 2 and 3 shipped, the owner
+runs the ledger daily, and daily use produced this phase's contents: two visible defects and
+the correction features a live ledger turns out to need. Accuracy work waits; a Cancel
+button that does nothing does not.
+
+Specified in full in [14 — Corrections & Trash](14-corrections-and-trash.md), on the
+accounting decision of [ADR-0007](adr/0007-corrections-are-more-history.md): corrections are
+more history, never less — movements stay immutable, every correction is new linked records,
+default views may hide, the database never forgets.
+
+- The dead-Cancel defect in every dialog, root cause diagnosed, fixed and hand-verified
+- Edit spool — the panel UI over the already-shipped `spools/update`, with tag provenance
+  (`tag_source`, migration 0003) and weight corrections that go through movements
+- Reassign a charge to the spool that actually fed it, as a linked compensating pair
+- Delete and restore — voided movements, deleted spools, a Trash tab, and the exact
+  visibility and statistics rules for both
+- The Printer tab — read-only, fed by what the gateway already discovers, honest when dormant
+- Language (panel string table EN/ES + `translations/es.json`), account display, and a
+  Settings tab over the config entry options
+
+**Usable outcome:** the ledger the owner already uses, now correctable without ceremony and
+honest about every correction.
+
+**Exit criteria:** every acceptance criterion in [14](14-corrections-and-trash.md), and its
+§14.9 hand-verification checklist executed on the owner's instance — the panel has no test
+harness, so the checklist *is* the panel's test suite.
+
+---
+
+## Phase 6 — Public release (v1.1)
+
+What was "Phase 5 — Release" before v1.0 existed, renumbered and widened: the owner's
+corrections ship before the world's features, because a published defect is a support
+burden and an unpublished one is a chore. Earlier documents that say "Phase 5" about
+release-era features ([08 §8.6](08-data-model.md), [ADR-0002](adr/0002-reject-spoolman-as-foundation.md))
+mean this phase; they are left unedited because a renumbering is not a change of intent.
+
+Specified to contract level in [15 — Public Release](15-public-release.md), every item
+flagged for final scoping before implementation:
+
+- Cost per print — price on the spool, cost derived per movement, never stored
+- Low-stock alerts with hysteresis — one alert per crossing, re-armed by refill
+- Actor attribution on movements, and admin gating as a config option
+  (default on for new installs, off for upgrades)
+- HACS packaging, brands submission, semantic releases, user documentation
+- JSON/CSV export, and the optional Spoolman exporter ([ADR-0002](adr/0002-reject-spoolman-as-foundation.md))
+- Statistics view — hand-rolled SVG, per [ADR-0006](adr/0006-vanilla-panel.md)'s no-library rule
+- Multi-printer — the largest item, gated behind its own design pass
+  ([15 §15.7](15-public-release.md))
+
+**Usable outcome:** an integration a stranger can install from HACS and trust.
+
+**Exit criteria:** a clean HACS install on a fresh instance reaches a working panel with no
+manual steps; the [15](15-public-release.md) acceptance shapes hold for every item that
+survived scoping.
 
 ---
 
@@ -141,11 +192,15 @@ are either confirmed or replaced with tuned values.
 Not "never" — "not before the core is proven". Each would be easier to justify after real use,
 and each would be speculative now.
 
-- Cost tracking (money per spool, per print)
-- Multi-printer support
+Three graduated when real use proved them: cost tracking, consumption analytics and
+multi-printer support are now scoped in [15 — Public Release](15-public-release.md)
+(§15.1, §15.6, §15.7). That is the deferral mechanism working as intended — they were
+deferred until the evidence existed, and then specified against evidence.
+
+Still deferred:
+
 - Filament drying cycle logging
 - Barcode/QR labels for physical spools
-- Consumption analytics and trends over time
 - Slicer plugins
 
 **None of these is designed for in advance.** Designing for a feature that may never be built
@@ -160,7 +215,7 @@ only to serve a hypothesis.
 Every phase ends with something that works.
 
 Phase 1 alone is a usable manual inventory. Phase 2 makes it automatic. Phase 3 makes it
-pleasant. Phase 4 makes it precise.
+pleasant. Phase 4 makes it precise. Phase 5 makes it correctable. Phase 6 makes it public.
 
 If the project stopped after any phase, what exists would still be worth having. That is the
 test a phase boundary has to pass.
