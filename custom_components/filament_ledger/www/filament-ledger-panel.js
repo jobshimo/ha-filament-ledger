@@ -233,6 +233,58 @@ const AMBIENT = `<div class="ambient" aria-hidden="true">${MOTES.map(
       animation-duration:${m.dur}s;animation-delay:${m.delay}s"></i>`,
 ).join("")}</div>`;
 
+/**
+ * Every event on the Home Assistant bus that means this panel is now showing stale figures.
+ *
+ * These are the integration's own events, already published for automations
+ * (`infrastructure/ha/event_bridge.py`). Subscribing to them is what makes the panel live:
+ * a print finishing, a review resolved, a correction made in another browser tab — all of
+ * them reach this one without a reload.
+ *
+ * Home Assistant's websocket subscribes by exact event type; there is no prefix match. So
+ * this list has to mirror the bridge, and a domain event added later without a line here
+ * would silently stop refreshing the view. `tests/ha/test_event_bridge.py` asserts the two
+ * agree, which is the only way that stays true.
+ */
+const LIVE_EVENTS = [
+  "filament_ledger_spool_registered",
+  "filament_ledger_spool_mounted",
+  "filament_ledger_spool_unmounted",
+  "filament_ledger_movement_recorded",
+  "filament_ledger_movement_voided",
+  "filament_ledger_movement_reinstated",
+  "filament_ledger_movement_reassigned",
+  "filament_ledger_spool_deleted",
+  "filament_ledger_spool_restored",
+  "filament_ledger_spool_depleted",
+  "filament_ledger_confidence_degraded",
+  "filament_ledger_anomaly_detected",
+  "filament_ledger_review_opened",
+  "filament_ledger_review_resolved",
+  "filament_ledger_spool_detected",
+  "filament_ledger_unknown_spool_detected",
+  "filament_ledger_ambiguous_tag_detected",
+];
+
+/**
+ * How long to wait after an event before refetching.
+ *
+ * One print finishing fires several events in quick succession — a movement, possibly a
+ * depletion, possibly a confidence change — and each would otherwise cost a full round of
+ * queries. The window is short enough that nobody perceives it as lag and long enough that
+ * a burst costs one refresh.
+ */
+const LIVE_DEBOUNCE_MS = 250;
+
+/**
+ * How often the Printer tab may refetch while it is open.
+ *
+ * The printer's figures do not come from this integration's events — they come from the
+ * gateway's entities, and the frontend hands the panel a new `hass` whenever any of them
+ * changes. That is the signal, not a timer; this only bounds how often it is acted on.
+ */
+const PRINTER_LIVE_MS = 2000;
+
 const RING_SIZES = {
   card: { box: 106, r: 46, w: 11 },
   slot: { box: 130, r: 62, w: 5 },
@@ -311,6 +363,12 @@ class FilamentLedgerPanel extends HTMLElement {
     // The tab strip is recreated on every render; `window` is not, and a listener added
     // per render would accumulate one copy per navigation.
     this._onViewportResize = () => this._paintTabOverflow();
+    // Live updates: the unsubscribe callbacks Home Assistant hands back, the debounce
+    // timers, and the flag that remembers an update held back while the user was typing.
+    this._unsubscribe = [];
+    this._liveTimer = null;
+    this._printerTimer = null;
+    this._liveDeferred = false;
     // Resolved once here so the very first paint is already in the right language; `set
     // hass` re-resolves as soon as the profile is known.
     this._applyLanguage();
@@ -321,7 +379,13 @@ class FilamentLedgerPanel extends HTMLElement {
     this._hass = hass;
     if (first) {
       this._applyLanguage();
+      this._subscribeLive();
       this.refresh();
+    } else if (this._tab === "printer" && !this._detail) {
+      // Home Assistant re-assigns `hass` when any entity changes, which includes the
+      // printer's own. That is the live signal for the one tab whose figures this
+      // integration does not own — see _printerMayRefresh for why it is bounded.
+      this._printerMayRefresh();
     }
   }
 
@@ -415,6 +479,10 @@ class FilamentLedgerPanel extends HTMLElement {
     // Review cards are edited in place — a full re-render per keystroke would steal the
     // focus mid-number — so edits patch the card directly instead of going through render().
     this._root.addEventListener("input", (event) => this._onInput(event));
+    // Leaving a field is the other moment a held update may land. Deferred by a tick
+    // because `activeElement` has not moved yet while `focusout` is dispatching — asking
+    // _busy() now would still see the field being left as the focused one.
+    this._root.addEventListener("focusout", () => setTimeout(() => this._releaseLive(), 0));
     // Passive: this listener only reads geometry and toggles two classes, and saying so
     // lets the browser keep scrolling off the main thread.
     window.addEventListener("resize", this._onViewportResize, { passive: true });
@@ -423,6 +491,90 @@ class FilamentLedgerPanel extends HTMLElement {
 
   disconnectedCallback() {
     window.removeEventListener("resize", this._onViewportResize);
+    clearTimeout(this._liveTimer);
+    clearTimeout(this._printerTimer);
+    // Home Assistant keeps one websocket for the whole frontend. A subscription this panel
+    // opened and did not close outlives the panel and keeps refetching for a view nobody
+    // is looking at, once more per navigation away and back.
+    for (const unsubscribe of this._unsubscribe) unsubscribe();
+    this._unsubscribe = [];
+  }
+
+  // -- live --------------------------------------------------------------------------
+
+  /**
+   * Listen for the integration's own events (docs/06 §6.8).
+   *
+   * Subscriptions resolve asynchronously, so each one checks on arrival whether the panel
+   * is still connected: navigating away during setup would otherwise leave a live
+   * subscription with nothing to unsubscribe it.
+   */
+  _subscribeLive() {
+    const connection = this._hass?.connection;
+    if (!connection || this._unsubscribe.length) return;
+    for (const name of LIVE_EVENTS) {
+      connection
+        .subscribeEvents(() => this._ledgerChanged(), name)
+        .then((unsubscribe) => {
+          if (this.isConnected) this._unsubscribe.push(unsubscribe);
+          else unsubscribe();
+        })
+        // A subscription that cannot be opened costs liveness, never correctness: the panel
+        // still refetches on every action the user takes. Failing loudly here would put an
+        // error bar over a working ledger.
+        .catch(() => {});
+    }
+  }
+
+  _ledgerChanged() {
+    clearTimeout(this._liveTimer);
+    this._liveTimer = setTimeout(() => this._applyLive(), LIVE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Refresh, unless refreshing would take something away from the person at the keyboard.
+   *
+   * The panel repaints by replacing markup wholesale (ADR-0006), so a refresh arriving
+   * while a dialog is open or a field has focus would discard what was typed and move the
+   * caret. The update is not dropped — it is held, and applied the moment the surface is
+   * idle again, which is what `_liveDeferred` is for.
+   */
+  async _applyLive() {
+    if (this._busy()) {
+      this._liveDeferred = true;
+      return;
+    }
+    this._liveDeferred = false;
+    await this.refresh();
+  }
+
+  /** True while the user is mid-task and a repaint would interrupt them. */
+  _busy() {
+    if (this._dialog) return true;
+    const focused = this.shadowRoot.activeElement;
+    return Boolean(focused && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName));
+  }
+
+  /** Called wherever a dialog closes or an edit ends, to release a held update. */
+  _releaseLive() {
+    if (this._liveDeferred && !this._busy()) this._applyLive();
+  }
+
+  /**
+   * The Printer tab, refetched while it is open.
+   *
+   * This reverses docs/14 §14.5's "no timer, and never on the general refresh". That rule
+   * was written for a glance the user asked for; a glance that keeps showing a finished
+   * print as still running is not a glance, it is a lie with a timestamp. There is still no
+   * timer — the trigger is Home Assistant handing over a changed `hass` — and this only
+   * bounds how often that trigger is acted on.
+   */
+  _printerMayRefresh() {
+    if (this._printerTimer || this._printerLoading || this._busy()) return;
+    this._printerTimer = setTimeout(() => {
+      this._printerTimer = null;
+      if (this._tab === "printer" && !this._detail && !this._busy()) this._loadPrinter();
+    }, PRINTER_LIVE_MS);
   }
 
   /**
@@ -650,6 +802,9 @@ class FilamentLedgerPanel extends HTMLElement {
         if (target.matches(".scrim") && event.target.closest(".modal")) break;
         this._dialog = null;
         this.render();
+        // A live update that arrived while this dialog was open was held rather than
+        // dropped; the surface is idle again, so let it land.
+        this._releaseLive();
         break;
       case "unmount":
         this.guarded(() => this.call("spools/unmount", { spool_id: id }));
