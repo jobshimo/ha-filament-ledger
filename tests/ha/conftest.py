@@ -219,6 +219,18 @@ class FakeHass:
         self.background_tasks.append(task)
         return task
 
+    async def async_add_executor_job[T](self, target: Callable[[], T]) -> T:
+        """Where panel registration reads the manifest. Production hands this to a thread;
+        the work is one small file read, so running it inline keeps the test synchronous
+        without changing what the adapter observes.
+
+        Nullary rather than `Callable[..., T]` with `*args`: the real signature is variadic,
+        but this class is the minimum surface the adapters touch, and the one caller passes
+        no arguments. A variadic annotation here would need an explicit `Any` that
+        `mypy --strict` rightly refuses.
+        """
+        return target()
+
     async def drain(self) -> None:
         """Wait for every scheduled websocket handler, the way the event loop would."""
         while self.background_tasks:
