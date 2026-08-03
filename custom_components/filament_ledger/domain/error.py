@@ -41,6 +41,18 @@ class DuplicateTagNotConfirmedError(DomainError):
     """
 
 
+class TagNotEditableError(DomainError):
+    """The tag was attached by the printer, so it is the printer's statement, not the
+    user's (docs/14 §14.2).
+
+    A `DETECTED` tag matches the physical spool by construction — the sync pass read it
+    off the tray. Letting it be retyped or cleared would let the ledger's tag drift from
+    the reel in the machine, and the next automatic mount would then charge the wrong
+    spool. Retyping a tag the user typed is another matter entirely, which is exactly why
+    provenance is stored.
+    """
+
+
 class AmbiguousTagError(DomainError):
     """An RFID resolved to more than one non-discarded spool.
 

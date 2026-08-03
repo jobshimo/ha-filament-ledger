@@ -11,10 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from ..error import InvalidValueError, SpoolDiscardedError
+from ..error import InvalidValueError, SpoolDiscardedError, TagNotEditableError
 from ..value.colour import Colour
 from ..value.grams import Grams
-from ..value.identifiers import SlotIndex, SpoolId, TagUid, new_spool_id
+from ..value.identifiers import SlotIndex, SpoolId, TagSource, TagUid, new_spool_id
 from ..value.location import AmsSlot, ExternalSpool, Location, Storage
 from ..value.material import Material
 from ..value.percentage import Percentage
@@ -40,6 +40,7 @@ class Spool:
     vendor: str | None = None
     label: str | None = None
     tag_uid: TagUid | None = None
+    tag_source: TagSource | None = None
     discarded_at: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -49,12 +50,31 @@ class Spool:
         if self.core_weight.is_negative:
             msg = f"core_weight must be >= 0, got {self.core_weight.as_decimal} g"
             raise InvalidValueError(msg)
+        # SQLite's `ADD COLUMN` cannot carry a cross-column CHECK, so migration 0003's
+        # column check covers only the value set and this is where the pairing is
+        # enforced (docs/14 §14.2). A tag with no provenance is the state the column
+        # exists to end; a provenance with no tag describes nothing.
+        if (self.tag_uid is None) != (self.tag_source is None):
+            msg = (
+                f"tag_uid and tag_source are set together or not at all, "
+                f"got tag_uid={self.tag_uid}, tag_source={self.tag_source}"
+            )
+            raise InvalidValueError(msg)
 
     # -- derived -----------------------------------------------------------------------
 
     @property
     def is_discarded(self) -> bool:
         return self.discarded_at is not None
+
+    @property
+    def is_tag_editable(self) -> bool:
+        """Everything except a tag the printer attached (docs/14 §14.2).
+
+        A spool with no tag is editable — it can be given one, and the tag it is given is
+        MANUAL by definition.
+        """
+        return self.tag_source is not TagSource.DETECTED
 
     def state(self, *, balance: Grams, movement_count: int) -> SpoolState:
         """The lifecycle state. Derived — see `SpoolState.derive`."""
@@ -133,6 +153,31 @@ class Spool:
             core_weight=core_weight if core_weight is not None else self.core_weight,
         )
 
+    def with_tag(self, tag: TagUid | None, source: TagSource | None) -> Spool:
+        """Attach, replace or clear the RFID tag.
+
+        A **separate** transition rather than another `with_details` parameter, because
+        there `None` means "leave unchanged" and clearing a tag needs `None` to mean
+        *cleared*. Overloading one method with two meanings of `None` is how the next
+        defect gets written (docs/14 §14.2).
+
+        Refuses to touch a `DETECTED` tag: the printer read it off the tray, and a ledger
+        tag that no longer matches the reel in the machine mounts the wrong spool on the
+        next sync. The guard lives here rather than only in the use case so that no future
+        caller can route around it.
+        """
+        self._guard_not_discarded()
+        if not self.is_tag_editable:
+            msg = (
+                f"tag {self.tag_uid} on {self.display_name} was attached by the printer "
+                f"and cannot be edited here"
+            )
+            raise TagNotEditableError(msg)
+        if (tag is None) != (source is None):
+            msg = "a tag and its provenance are set together or cleared together"
+            raise InvalidValueError(msg)
+        return replace(self, tag_uid=tag, tag_source=source)
+
 
 def register(
     *,
@@ -145,6 +190,7 @@ def register(
     vendor: str | None = None,
     label: str | None = None,
     tag_uid: TagUid | None = None,
+    tag_source: TagSource | None = None,
 ) -> Spool:
     """Build a new spool, generating its identity.
 
@@ -152,6 +198,12 @@ def register(
     is resolved by the application layer, above the domain: a silent zero would report every
     reconciliation as roughly 250 g heavier than reality, forever, and the error would look
     like drift rather than like a bug.
+
+    `tag_source` is the one field that *does* default, and only when a tag is supplied
+    without one: unstated provenance is MANUAL. That is migration 0003's argument applied
+    to new rows — MANUAL over-grants edit rights, DETECTED would invent a printer reading
+    nobody made. A provenance supplied with no tag is left to fail the pairing check
+    rather than silently dropped, because it means the caller believes something untrue.
     """
     return Spool(
         id=new_spool_id(),
@@ -164,4 +216,5 @@ def register(
         vendor=vendor,
         label=label,
         tag_uid=tag_uid,
+        tag_source=((tag_source or TagSource.MANUAL) if tag_uid is not None else tag_source),
     )

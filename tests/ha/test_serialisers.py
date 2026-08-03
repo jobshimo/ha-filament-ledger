@@ -96,6 +96,8 @@ class TestSpoolSummaryShape:
             "needs_weighing": False,
             "location": {"kind": "STORAGE", "slot": None, "label": "Storage"},
             "tag_uid": "A1B2C3D4",
+            # A tag typed at registration is the user's, so the edit dialog may change it.
+            "tag_source": "MANUAL",
             "movement_count": 1,
             "last_movement_at": EPOCH.isoformat(),
             "has_anomaly": False,
@@ -111,6 +113,8 @@ class TestSpoolSummaryShape:
         assert payload["name"] == "Bambu Lab PLA"
         assert payload["label"] is None
         assert payload["tag_uid"] is None
+        # No tag, so no provenance to describe: the pair is null together.
+        assert payload["tag_source"] is None
 
 
 class TestHistory:

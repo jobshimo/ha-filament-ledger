@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import NewType
 
 from ..error import InvalidValueError
@@ -95,3 +96,24 @@ class TagUid:
 
     def __str__(self) -> str:
         return self.value
+
+
+class TagSource(StrEnum):
+    """Who attached the tag — the owner's rule, in two values (docs/14 §14.2).
+
+    > A tag the printer attached is the printer's statement. A tag I typed is mine to
+    > change.
+
+    `DETECTED` is only ever written by the register-from-sync path, where the serial came
+    off a tray reading; it makes the tag read-only, so the ledger's tag never drifts from
+    the physical spool. `MANUAL` is everything else, including every tag that predates
+    this column: migration 0003 backfills them all as MANUAL because provenance was never
+    recorded, and claiming DETECTED for a tag whose origin nobody knows would be invented
+    history. It over-grants edit rights once rather than storing a lie forever.
+
+    Paired with `TagUid` on a `Spool`: both set, or both `None`. A provenance with no tag
+    describes nothing, and a tag with no provenance is the gap this enum exists to close.
+    """
+
+    MANUAL = "MANUAL"
+    DETECTED = "DETECTED"

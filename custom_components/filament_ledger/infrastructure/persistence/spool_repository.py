@@ -10,14 +10,21 @@ from ...domain.model.spool import Spool
 from ...domain.port.repositories import SpoolFilter
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import ABSENT_TAG_SENTINEL, SlotIndex, SpoolId, TagUid
+from ...domain.value.identifiers import (
+    ABSENT_TAG_SENTINEL,
+    SlotIndex,
+    SpoolId,
+    TagSource,
+    TagUid,
+)
 from ...domain.value.location import AmsSlot, ExternalSpool, Location, Storage
 from ...domain.value.material import Material, MaterialKind
 from .database import Database
 
 COLUMNS = (
     "id, material, material_other, colour, vendor, label, opening_weight_mg, "
-    "core_weight_mg, location_kind, location_slot, tag_uid, registered_at, discarded_at"
+    "core_weight_mg, location_kind, location_slot, tag_uid, tag_source, registered_at, "
+    "discarded_at"
 )
 
 
@@ -60,12 +67,29 @@ def _tag_from(value: str | None) -> TagUid | None:
     return TagUid(value)
 
 
+def _tag_source_from(value: str | None, tag: TagUid | None) -> TagSource | None:
+    """The pairing, restored on the way out — the domain refuses a half-set pair.
+
+    Migration 0003 backfills every tagged row as MANUAL, so a tagged row with no
+    provenance should not exist. Should one turn up anyway — a restored backup written
+    between the ALTER and the UPDATE, a row inserted by hand — it hydrates as MANUAL for
+    the same reason the migration chose MANUAL, and for the reason `_tag_from` tolerates
+    the sentinel: one odd row must not fail every list and get, and with them the
+    coordinator and the whole entry. A source stored against no tag is dropped: the tag is
+    the fact, the provenance only describes it.
+    """
+    if tag is None:
+        return None
+    return TagSource(value) if value else TagSource.MANUAL
+
+
 def _to_spool(row: sqlite3.Row) -> Spool:
     kind = MaterialKind(row["material"])
     registered = _parse(row["registered_at"])
     if registered is None:  # pragma: no cover - NOT NULL in the schema
         msg = f"spool {row['id']} has no registered_at"
         raise ValueError(msg)
+    tag = _tag_from(row["tag_uid"])
     return Spool(
         id=SpoolId(row["id"]),
         material=Material(kind, row["material_other"]),
@@ -76,7 +100,8 @@ def _to_spool(row: sqlite3.Row) -> Spool:
         registered_at=registered,
         vendor=row["vendor"],
         label=row["label"],
-        tag_uid=_tag_from(row["tag_uid"]),
+        tag_uid=tag,
+        tag_source=_tag_source_from(row["tag_source"], tag),
         discarded_at=_parse(row["discarded_at"]),
     )
 
@@ -137,8 +162,8 @@ class SqliteSpoolRepository:
             INSERT INTO spool (
                 id, material, material_other, colour, vendor, label,
                 opening_weight_mg, core_weight_mg, location_kind, location_slot,
-                tag_uid, registered_at, discarded_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+                tag_uid, tag_source, registered_at, discarded_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 material = excluded.material,
                 material_other = excluded.material_other,
@@ -149,6 +174,7 @@ class SqliteSpoolRepository:
                 location_kind = excluded.location_kind,
                 location_slot = excluded.location_slot,
                 tag_uid = excluded.tag_uid,
+                tag_source = excluded.tag_source,
                 discarded_at = excluded.discarded_at,
                 updated_at = datetime('now')
             """,
@@ -164,6 +190,7 @@ class SqliteSpoolRepository:
                 kind,
                 slot,
                 spool.tag_uid.value if spool.tag_uid else None,
+                spool.tag_source.value if spool.tag_source else None,
                 _iso(spool.registered_at),
                 _iso(spool.discarded_at) if spool.discarded_at else None,
             ),

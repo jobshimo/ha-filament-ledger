@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from custom_components.filament_ledger.domain.error import (
     InvalidValueError,
     SpoolDiscardedError,
+    TagNotEditableError,
 )
-from custom_components.filament_ledger.domain.model.spool import register
+from custom_components.filament_ledger.domain.model.spool import Spool, register
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, TagUid
+from custom_components.filament_ledger.domain.value.identifiers import (
+    SlotIndex,
+    TagSource,
+    TagUid,
+)
 from custom_components.filament_ledger.domain.value.location import (
     AmsSlot,
     ExternalSpool,
@@ -164,3 +171,98 @@ class TestMetadataEditing:
     def test_unspecified_fields_are_left_alone(self) -> None:
         spool = a_spool().with_details(label="kept")
         assert spool.with_details(vendor="Elegoo").label == "kept"
+
+
+def a_tagged_spool(source: TagSource, tag: str = "A1B2C3D4") -> Spool:
+    return register(
+        material=Material.of(MaterialKind.PLA),
+        colour=Colour.parse("000000"),
+        opening_weight=Grams.of(1000),
+        core_weight=Grams.of(250),
+        registered_at=EPOCH,
+        tag_uid=TagUid(tag),
+        tag_source=source,
+    )
+
+
+class TestTagProvenance:
+    """The owner's rule, in the entity: *a tag the printer attached is the printer's
+    statement; a tag I typed is mine to change* (docs/14 §14.2)."""
+
+    def test_a_tag_and_its_provenance_are_set_together(self) -> None:
+        """The pairing lives here because SQLite's ADD COLUMN cannot carry a cross-column
+        CHECK — migration 0003's check covers only the value set."""
+        with pytest.raises(InvalidValueError):
+            replace(a_spool(), tag_uid=TagUid("A1B2C3D4"))
+        with pytest.raises(InvalidValueError):
+            replace(a_tagged_spool(TagSource.MANUAL), tag_source=None)
+
+    def test_an_untagged_spool_carries_no_provenance(self) -> None:
+        assert a_spool().tag_uid is None
+        assert a_spool().tag_source is None
+
+    def test_an_unstated_provenance_registers_as_manual(self) -> None:
+        """MANUAL is the honest floor — the same argument migration 0003's backfill makes.
+        Claiming DETECTED for a tag nobody watched arrive would be invented history."""
+        spool = register(
+            material=Material.of(MaterialKind.PLA),
+            colour=Colour.parse("000000"),
+            opening_weight=Grams.of(1000),
+            core_weight=Grams.of(250),
+            registered_at=EPOCH,
+            tag_uid=TagUid("A1B2C3D4"),
+        )
+        assert spool.tag_source is TagSource.MANUAL
+
+    def test_a_provenance_without_a_tag_is_refused_rather_than_dropped(self) -> None:
+        with pytest.raises(InvalidValueError):
+            register(
+                material=Material.of(MaterialKind.PLA),
+                colour=Colour.parse("000000"),
+                opening_weight=Grams.of(1000),
+                core_weight=Grams.of(250),
+                registered_at=EPOCH,
+                tag_source=TagSource.DETECTED,
+            )
+
+    def test_a_manual_tag_can_be_changed(self) -> None:
+        spool = a_tagged_spool(TagSource.MANUAL).with_tag(TagUid("BEEF0001"), TagSource.MANUAL)
+        assert spool.tag_uid == TagUid("BEEF0001")
+        assert spool.tag_source is TagSource.MANUAL
+
+    def test_a_manual_tag_can_be_cleared(self) -> None:
+        """`with_details` reads None as "unchanged", which is exactly why clearing needed a
+        transition of its own: here None means *cleared*, and the pair goes together."""
+        spool = a_tagged_spool(TagSource.MANUAL).with_tag(None, None)
+        assert spool.tag_uid is None
+        assert spool.tag_source is None
+
+    def test_an_untagged_spool_can_be_given_a_manual_tag(self) -> None:
+        spool = a_spool().with_tag(TagUid("A1B2C3D4"), TagSource.MANUAL)
+        assert spool.tag_uid == TagUid("A1B2C3D4")
+        assert spool.tag_source is TagSource.MANUAL
+
+    def test_a_detected_tag_refuses_every_edit(self) -> None:
+        """Neither changed nor cleared: the sync pass read it off the tray, and a ledger
+        tag that no longer matches the reel mounts the wrong spool on the next pass."""
+        spool = a_tagged_spool(TagSource.DETECTED)
+        with pytest.raises(TagNotEditableError):
+            spool.with_tag(TagUid("BEEF0001"), TagSource.MANUAL)
+        with pytest.raises(TagNotEditableError):
+            spool.with_tag(None, None)
+
+    def test_only_a_detected_tag_is_uneditable(self) -> None:
+        assert a_spool().is_tag_editable
+        assert a_tagged_spool(TagSource.MANUAL).is_tag_editable
+        assert not a_tagged_spool(TagSource.DETECTED).is_tag_editable
+
+    def test_a_half_stated_pair_is_refused(self) -> None:
+        with pytest.raises(InvalidValueError):
+            a_spool().with_tag(TagUid("A1B2C3D4"), None)
+        with pytest.raises(InvalidValueError):
+            a_spool().with_tag(None, TagSource.MANUAL)
+
+    def test_a_discarded_spool_keeps_its_tag(self) -> None:
+        spool = a_tagged_spool(TagSource.MANUAL).discarded(at(days=1))
+        with pytest.raises(SpoolDiscardedError):
+            spool.with_tag(None, None)

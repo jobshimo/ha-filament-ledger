@@ -27,9 +27,12 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     ReviewId,
     SlotIndex,
     SpoolId,
+    TagSource,
+    TagUid,
 )
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Storage
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
+from custom_components.filament_ledger.domain.value.movement_type import MovementType
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import EstimatorKind, ReviewReason
@@ -467,6 +470,199 @@ class TestUpdate:
 
         code, _message = await ws.error(UPDATE, spool_id=spool_id, label="zombie")
         assert code == "SpoolDiscardedError"
+
+
+class TestUpdateTheTag:
+    """The one field of `spools/update` where **absent and null differ** (docs/14 §14.2).
+
+    Every other field reads null as "leave unchanged"; the tag is the only clearable one,
+    so null is what clears it and omitting the key is what leaves it alone. The deviation
+    is deliberate, it is stated in the schema comment, and these are the tests that keep it
+    from being uniformed away by a later reader.
+    """
+
+    async def test_absent_leaves_the_tag_alone(self, ws: WsClient, harness: Harness) -> None:
+        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4")
+
+        await ws.result_dict(UPDATE, spool_id=spool_id, label="renamed")
+
+        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
+        assert spool.tag_uid == TagUid("A1B2C3D4")
+        assert spool.tag_source is TagSource.MANUAL
+
+    async def test_null_clears_the_tag_and_its_provenance(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4")
+
+        await ws.result_dict(UPDATE, spool_id=spool_id, tag_uid=None)
+
+        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
+        assert spool.tag_uid is None
+        assert spool.tag_source is None
+
+    async def test_a_string_sets_the_tag_as_the_users_own(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        spool_id = await a_created_spool(ws)
+
+        await ws.result_dict(UPDATE, spool_id=spool_id, tag_uid="A1B2C3D4")
+
+        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
+        assert spool.tag_uid == TagUid("A1B2C3D4")
+        assert spool.tag_source is TagSource.MANUAL
+
+    async def test_an_empty_string_is_refused_rather_than_read_as_a_clear(
+        self, ws: WsClient
+    ) -> None:
+        """Blank is not a third way of saying null. `TagUid` refuses it, and the error is a
+        message the panel can show rather than a silent erasure."""
+        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4")
+
+        code, _message = await ws.error(UPDATE, spool_id=spool_id, tag_uid="")
+        assert code == "InvalidValueError"
+
+    async def test_a_detected_tag_is_refused_with_its_own_error(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Criterion 5. The dialog never offers the input; the command refuses it anyway,
+        and `guarded` turns the domain error into something the panel can render."""
+        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4", tag_source="DETECTED")
+
+        code, message = await ws.error(UPDATE, spool_id=spool_id, tag_uid="BEEF0001")
+        assert code == "TagNotEditableError"
+        assert "printer" in message
+
+        code, _message = await ws.error(UPDATE, spool_id=spool_id, tag_uid=None)
+        assert code == "TagNotEditableError"
+
+        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
+        assert spool.tag_uid == TagUid("A1B2C3D4")
+
+    async def test_a_colliding_tag_must_be_deliberate(self, ws: WsClient, harness: Harness) -> None:
+        """Criterion 7 — the same rule as UC-01, over the edit path."""
+        await a_created_spool(ws, tag_uid="A1B2C3D4", label="the first one")
+        spool_id = await a_created_spool(ws, label="the second one")
+
+        code, message = await ws.error(UPDATE, spool_id=spool_id, tag_uid="A1B2C3D4")
+        assert code == "DuplicateTagNotConfirmedError"
+        assert "the first one" in message
+
+        await ws.result_dict(
+            UPDATE, spool_id=spool_id, tag_uid="A1B2C3D4", confirm_duplicate_tag=True
+        )
+        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
+        assert spool.tag_uid == TagUid("A1B2C3D4")
+
+    async def test_a_spool_registered_from_the_sync_strip_is_detected(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Criterion 9, over the command the panel's register-from-sync path calls."""
+        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4", tag_source="DETECTED")
+
+        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
+        assert spool.tag_source is TagSource.DETECTED
+
+    async def test_an_omitted_source_registers_a_tag_as_the_users_own(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4")
+
+        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
+        assert spool.tag_source is TagSource.MANUAL
+
+    async def test_an_unknown_provenance_never_reaches_the_domain(self, ws: WsClient) -> None:
+        with pytest.raises(vol.Invalid):
+            ws.parse(
+                CREATE,
+                material="PLA",
+                colour="000000",
+                opening_weight_g=1000,
+                tag_uid="A1B2C3D4",
+                tag_source="GUESSED",
+            )
+
+
+class TestTheEditDialogsWeightCorrection:
+    """The panel's edit dialog submits two commands, in one order (docs/14 §14.2).
+
+    The routing rule — *absolute is a reconciliation, relative is an adjustment* — is a
+    rule, so it is pinned here rather than left in the one layer that has no harness. What
+    the panel owns is which of the two it calls; what these tests own is that each call
+    produces exactly the movement the dialog promises.
+    """
+
+    async def test_metadata_alone_writes_no_movement(self, ws: WsClient, harness: Harness) -> None:
+        """Criterion 4: both correction fields empty means one command and no movement."""
+        spool_id = await a_created_spool(ws)
+        before = await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+
+        await ws.result_dict(UPDATE, spool_id=spool_id, label="Rebadged")
+
+        after = await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        assert len(after.lines) == len(before.lines) == 1
+        assert after.summary.balance == before.summary.balance
+
+    async def test_an_absolute_restatement_is_one_reconciliation_of_the_difference(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Criterion 3, first half. `includes_core` is false because the field asks for
+        remaining *filament*, not for a scale reading — there is no reel to subtract."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(UPDATE, spool_id=spool_id, label="Rebadged")
+
+        result = await ws.result_dict(
+            RECONCILE,
+            spool_id=spool_id,
+            measured_g=840.5,
+            includes_core=False,
+            note="Corrected from the edit dialog",
+        )
+
+        assert result["delta_g"] == pytest.approx(-159.5)
+        detail = await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        corrections = [
+            line for line in detail.lines if line.movement.type is MovementType.RECONCILIATION
+        ]
+        assert len(corrections) == 1
+        assert corrections[0].movement.amount == Grams.of(-159.5)
+        assert corrections[0].movement.note == "Corrected from the edit dialog"
+        assert detail.summary.balance == Grams.of(840.5)
+
+    async def test_a_relative_fix_is_one_adjustment_carrying_its_reason(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Criterion 3, second half. The reason is not optional here for the reason the
+        adjust dialog already prints: an unexplained adjustment is indistinguishable from
+        a bug."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(UPDATE, spool_id=spool_id, label="Rebadged")
+
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-12.5, reason="spillage")
+
+        detail = await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        corrections = [
+            line for line in detail.lines if line.movement.type is MovementType.MANUAL_ADJUSTMENT
+        ]
+        assert len(corrections) == 1
+        assert corrections[0].movement.amount == Grams.of(-12.5)
+        assert corrections[0].movement.note == "spillage"
+        assert detail.summary.balance == Grams.of(987.5)
+
+    async def test_a_refused_correction_leaves_the_metadata_edit_standing(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Two independent writes, and the API has no transaction spanning them — so the
+        dialog does not pretend it does. The edit lands; the movement does not."""
+        spool_id = await a_created_spool(ws)
+
+        await ws.result_dict(UPDATE, spool_id=spool_id, label="Rebadged")
+        code, _message = await ws.error(ADJUST, spool_id=spool_id, amount_g=-12.5, reason="  ")
+        assert code == "InvalidValueError"
+
+        detail = await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        assert detail.summary.spool.label == "Rebadged"
+        assert len(detail.lines) == 1
 
 
 class TestReconcile:

@@ -17,7 +17,7 @@ from ..domain.port.repositories import MovementRepository, SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import SpoolId, TagUid
+from ..domain.value.identifiers import SpoolId, TagSource, TagUid
 from ..domain.value.location import Location, Storage
 from ..domain.value.material import Material
 from ..domain.value.movement_type import MovementSource, MovementType
@@ -32,6 +32,10 @@ class RegisterSpoolCommand:
     vendor: str | None = None
     label: str | None = None
     tag_uid: TagUid | None = None
+    # Defaults MANUAL: a tag typed into the register form is the user's. Only the
+    # register-from-sync path says DETECTED, because the serial it forwards came off the
+    # tray reading rather than off the keyboard (docs/14 §14.2).
+    tag_source: TagSource = TagSource.MANUAL
     location: Location | None = None
     confirm_duplicate_tag: bool = False
 
@@ -62,6 +66,9 @@ class RegisterSpool:
                 vendor=command.vendor,
                 label=command.label,
                 tag_uid=command.tag_uid,
+                # Provenance describes a tag, so an untagged spool carries none — the
+                # command's default would otherwise fail the entity's pairing check.
+                tag_source=command.tag_source if command.tag_uid is not None else None,
             )
 
             await self.spools.save(spool)

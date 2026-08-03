@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..domain.error import DuplicateTagNotConfirmedError
 from ..domain.event import EventPublisher, SpoolMounted, SpoolUnmounted
 from ..domain.model.spool import Spool
 from ..domain.port.clock import Clock
@@ -19,10 +20,28 @@ from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import SlotIndex, SpoolId
+from ..domain.value.identifiers import SlotIndex, SpoolId, TagSource, TagUid
 from ..domain.value.location import AmsSlot
 from ..domain.value.material import Material
 from .errors import SpoolNotFoundError
+
+
+class _Unset:
+    """The third state of the `tag` parameter below.
+
+    `None` already means *clear the tag*, so "leave it alone" needs a value of its own —
+    and a module-level sentinel says so at the call site, where `UNSET` reads as the
+    absence of an instruction rather than as an instruction to erase.
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging affordance
+        return "UNSET"
+
+
+UNSET = _Unset()
+
+# What a caller may pass for `tag`: leave unchanged, clear, or set.
+TagEdit = TagUid | None | _Unset
 
 
 async def displace_and_mount(
@@ -90,7 +109,11 @@ class EditSpoolDetails:
 
     There is no endpoint that sets a balance directly. Changing one requires a movement, and
     that is the whole design — an API that could set a balance would make the ledger
-    decorative.
+    decorative. The edit dialog's weight-correction section calls `ReconcileSpool` or
+    `AdjustSpool` as a *second* command for exactly that reason (docs/14 §14.2).
+
+    Every metadata field follows `Spool.with_details`: `None` means "leave unchanged". The
+    tag is the exception, and the only clearable field — see `tag` below.
     """
 
     spools: SpoolRepository
@@ -105,19 +128,47 @@ class EditSpoolDetails:
         colour: Colour | None = None,
         material: Material | None = None,
         core_weight: Grams | None = None,
+        tag: TagEdit = UNSET,
+        confirm_duplicate_tag: bool = False,
     ) -> None:
+        """`tag` is tri-state: `UNSET` leaves it, `None` clears it, a `TagUid` sets it.
+
+        A tag set here is MANUAL by definition — the user typed it. A tag whose provenance
+        is DETECTED refuses every one of the three, in `Spool.with_tag`.
+        """
         # The unit of work keeps the read-modify-save indivisible, so two concurrent
-        # edits cannot interleave and silently drop one another's fields.
+        # edits cannot interleave and silently drop one another's fields — and the
+        # duplicate-tag guard is still true when the write happens.
         async with self.uow:
             spool = await self.spools.get(spool_id)
             if spool is None:
                 raise SpoolNotFoundError(spool_id)
-            await self.spools.save(
-                spool.with_details(
-                    label=label,
-                    vendor=vendor,
-                    colour=colour,
-                    material=material,
-                    core_weight=core_weight,
-                )
+            edited = spool.with_details(
+                label=label,
+                vendor=vendor,
+                colour=colour,
+                material=material,
+                core_weight=core_weight,
             )
+            if not isinstance(tag, _Unset):
+                if tag is not None:
+                    await self._guard_duplicate_tag(spool, tag, confirm_duplicate_tag)
+                edited = edited.with_tag(tag, TagSource.MANUAL if tag is not None else None)
+            await self.spools.save(edited)
+
+    async def _guard_duplicate_tag(self, spool: Spool, tag: TagUid, confirmed: bool) -> None:
+        """UC-01's rule, for the same reason and with the same wording (docs/14 §14.2).
+
+        A Bambu tag identifies a batch, not a unit, so duplicates are legal — but they are
+        deliberate or they are a bug. The spool being edited is not its own duplicate.
+        """
+        if confirmed:
+            return
+        others = [other for other in await self.spools.find_by_tag(tag) if other.id != spool.id]
+        if others:
+            names = ", ".join(other.display_name for other in others)
+            msg = (
+                f"tag {tag} already belongs to {len(others)} spool(s) ({names}). "
+                f"Set confirm_duplicate_tag to attach it anyway."
+            )
+            raise DuplicateTagNotConfirmedError(msg)

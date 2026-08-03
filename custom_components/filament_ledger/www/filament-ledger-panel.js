@@ -52,6 +52,13 @@ const HISTORY_LABELS = {
   PURGE_WASTE: "Purge",
 };
 
+/**
+ * The note a weight correction made from the edit dialog carries into history. The dialog
+ * names itself so that six months later the row explains where the number came from — the
+ * same reason every other correction in this panel writes a note it did not have to.
+ */
+const EDIT_CORRECTION_NOTE = "Corrected from the edit dialog";
+
 const esc = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
@@ -214,6 +221,19 @@ class FilamentLedgerPanel extends HTMLElement {
         this.render();
         break;
       case "close-dialog":
+        // The scrim carries `close-dialog` so the dark area closes the dialog. A click
+        // *inside* the modal has no nearer [data-action] unless it landed on a button, so
+        // it resolves to the scrim too — and must not close anything.
+        //
+        // The guard lives here, in the dispatcher, because the markup already proved it
+        // cannot host this rule safely: the modal used to carry an inline
+        // `onclick="event.stopPropagation()"`, which kept in-modal clicks off the scrim by
+        // killing the bubble outright — so no click originating inside a dialog ever
+        // reached this listener, and every [ Cancel ] in the panel was dead. Submit still
+        // worked because it is a different event type, which is exactly why the defect
+        // read as if the markup worked. No inline handler may be reintroduced anywhere in
+        // this file; they bypass the one dispatch path the panel has.
+        if (target.matches(".scrim") && event.target.closest(".modal")) break;
         this._dialog = null;
         this.render();
         break;
@@ -234,6 +254,22 @@ class FilamentLedgerPanel extends HTMLElement {
         this._dialog = { kind: "dismiss-review", review: this._reviews.find((r) => r.id === id) };
         this.render();
         break;
+      case "clear-tag": {
+        // The clear affordance for an editable tag: emptying the field is what asks the
+        // backend to clear it (null on the wire), so this only has to empty the field.
+        // Patched in place rather than re-rendered — a render() here would rebuild the
+        // whole dialog and drop everything else the user has typed into it.
+        //
+        // It is also the release's regression guard for §14.1: an in-modal [data-action]
+        // button that is *not* Cancel, dispatching through the one listener. It could not
+        // have worked before the inline handler came off the modal.
+        const input = this._root.querySelector(".ed-taginput");
+        if (input) {
+          input.value = "";
+          input.focus();
+        }
+        break;
+      }
       default:
         break;
     }
@@ -241,7 +277,14 @@ class FilamentLedgerPanel extends HTMLElement {
 
   _onInput(event) {
     const card = event.target.closest(".rv-card");
-    if (card) this._syncReviewCard(card);
+    if (card) {
+      this._syncReviewCard(card);
+      return;
+    }
+    // The edit dialog's correction section patches itself in place for the same reason
+    // the review card does: a render() per keystroke steals the focus mid-number.
+    const form = event.target.closest("form[data-form='edit-spool']");
+    if (form) this._syncEditForm(form);
   }
 
   _onSubmit(event) {
@@ -263,11 +306,47 @@ class FilamentLedgerPanel extends HTMLElement {
             vendor: data.vendor || null,
             label: data.label || null,
             tag_uid: data.tag_uid || undefined,
+            // The one path whose tag came off a tray reading rather than off the
+            // keyboard, so the one path that records DETECTED — and the edit dialog
+            // then refuses to let that tag drift from the physical spool. Everywhere
+            // else the field is omitted and the backend records MANUAL.
+            tag_source: fromSync && data.tag_uid ? "DETECTED" : undefined,
           });
           // Registered from the outcome strip: re-run the pass so the new tag mounts
           // and the strip reports the slot as it now is, instead of going stale.
           if (fromSync) this._sync = await this.call("trays/sync");
         });
+        break;
+      }
+      case "edit-spool": {
+        const spool = this._detail;
+        if (!spool) break;
+        const update = {
+          spool_id: spool.id,
+          // Null reads as "leave unchanged" for every field here except the tag — the
+          // shipped command's semantics, kept deliberately (docs/14 §14.2).
+          label: data.label || null,
+          vendor: data.vendor || null,
+          colour: data.colour,
+          material: data.material,
+          material_other: data.material_other || undefined,
+          // Sent only when it actually changed. The wire carries `core_weight_g` rounded
+          // to whole grams — the serialiser's rule, because a kitchen scale reads to the
+          // gram — so echoing the seeded value back would quietly round a 250.5 g reel to
+          // 250 on every unrelated edit. Omitted means unchanged, which is the honest
+          // answer for a field the user did not touch. Same discipline as the review
+          // card's untouched rows.
+          core_weight_g:
+            data.core_weight_g === form.dataset.core ? undefined : Number(data.core_weight_g),
+        };
+        // A DETECTED tag renders no input, so the field is *absent* — which is what
+        // leaves it alone. Null, the value an emptied field sends, is what clears an
+        // editable one. Absent and null differ here and nowhere else in this command.
+        if (spool.tag_source !== "DETECTED") {
+          update.tag_uid = (data.tag_uid || "").trim() || null;
+          if (data.confirm_duplicate_tag === "on") update.confirm_duplicate_tag = true;
+        }
+        this._submitEdit(update, this._correctionFrom(data, spool));
         break;
       }
       case "weigh":
@@ -314,6 +393,116 @@ class FilamentLedgerPanel extends HTMLElement {
         break;
       default:
         break;
+    }
+  }
+
+  /**
+   * Which correction, if any, the edit dialog's weight section asks for (docs/14 §14.2).
+   *
+   * An **absolute restatement** is a reconciliation, because that is what UC-08 is: making
+   * the ledger equal a number the user asserts, with the delta recorded and visible. It is
+   * sent with `includes_core: false` — the field asks for remaining *filament*, not for a
+   * scale reading, so there is no reel to subtract.
+   *
+   * A **relative fix** is an adjustment, and adjustments take a reason: an unexplained one
+   * is indistinguishable from a bug.
+   *
+   * Both empty means no correction call at all. Never both: the two fields disable each
+   * other while typing, so one movement is the most this dialog can ever write.
+   */
+  _correctionFrom(data, spool) {
+    const stated = (data.set_g || "").trim();
+    if (stated !== "") {
+      return {
+        command: "spools/reconcile",
+        payload: {
+          spool_id: spool.id,
+          measured_g: Number(stated),
+          includes_core: false,
+          note: EDIT_CORRECTION_NOTE,
+        },
+      };
+    }
+    const delta = (data.delta_g || "").trim();
+    if (delta !== "") {
+      return {
+        command: "spools/adjust",
+        payload: {
+          spool_id: spool.id,
+          amount_g: Number(delta),
+          reason: (data.delta_reason || "").trim(),
+        },
+      };
+    }
+    return null;
+  }
+
+  /**
+   * The metadata edit, then the correction — two commands, in that order.
+   *
+   * They are two independent facts and the API has no transaction that spans them, so the
+   * dialog does not pretend otherwise: if the correction is refused, the metadata edit
+   * stands and the dialog stays open showing why the movement did not land. `refresh()`
+   * clears `_error` on entry, which is why the message is re-applied after it — the dialog
+   * must re-render from the *saved* spool, not from the stale one it was opened with.
+   */
+  async _submitEdit(update, correction) {
+    try {
+      await this.call("spools/update", update);
+    } catch (error) {
+      // Nothing was written: the dialog keeps what the user typed, and says why.
+      this._error = error.message || String(error);
+      this.render();
+      return;
+    }
+    if (!correction) {
+      this._dialog = null;
+      await this.refresh();
+      return;
+    }
+    try {
+      await this.call(correction.command, correction.payload);
+      this._dialog = null;
+      await this.refresh();
+    } catch (error) {
+      const message = error.message || String(error);
+      await this.refresh();
+      this._error = message;
+      this.render();
+    }
+  }
+
+  /**
+   * Re-derive the correction section from its own inputs, in place.
+   *
+   * Two fields say one thing two ways, so whichever the user started, the other steps
+   * aside — a disabled input is not submitted, which is how "never both" becomes true of
+   * the payload and not merely of the wording. The hint states the movement that will be
+   * written, in grams, before anything is sent.
+   */
+  _syncEditForm(form) {
+    const set = form.querySelector(".ed-set");
+    const delta = form.querySelector(".ed-delta");
+    const reason = form.querySelector(".ed-reason");
+    const hint = form.querySelector(".ed-hint");
+    if (!set || !delta || !reason || !hint) return;
+
+    const stated = set.value.trim();
+    const relative = delta.value.trim();
+    set.disabled = relative !== "";
+    delta.disabled = stated !== "";
+    reason.disabled = relative === "";
+    reason.required = relative !== "";
+
+    const current = Number(this._detail?.balance_exact_g ?? 0);
+    if (stated !== "" && Number.isFinite(Number(stated))) {
+      const change = Math.round((Number(stated) - current) * 10) / 10;
+      hint.textContent = `Records a reconciliation of ${signed(change)} g — from ${current.toFixed(1)} g to ${Number(stated).toFixed(1)} g.`;
+    } else if (relative !== "" && Number.isFinite(Number(relative))) {
+      const change = Math.round(Number(relative) * 10) / 10;
+      hint.textContent = `Records an adjustment of ${signed(change)} g — the balance becomes ${(current + change).toFixed(1)} g.`;
+    } else {
+      hint.textContent = "Leave both empty and nothing is written to history.";
     }
   }
 
@@ -903,6 +1092,7 @@ class FilamentLedgerPanel extends HTMLElement {
           <button class="primary" data-action="dialog" data-id="weigh">Weigh</button>
           <button data-action="dialog" data-id="adjust">Adjust</button>
           <button data-action="dialog" data-id="discard">Discard</button>
+          <button data-action="dialog" data-id="edit-spool">Edit</button>
         </div>
 
         <div class="card ledger-wrap">
@@ -936,11 +1126,12 @@ class FilamentLedgerPanel extends HTMLElement {
       discard: () => this.discardForm(),
       mount: () => this.mountForm(),
       "dismiss-review": () => this.dismissReviewForm(),
+      "edit-spool": () => this.editSpoolForm(),
     };
     const body = bodies[this._dialog.kind];
     return `
       <div class="scrim" data-action="close-dialog">
-        <div class="modal" onclick="event.stopPropagation()">
+        <div class="modal">
           ${body ? body() : ""}
         </div>
       </div>`;
@@ -984,6 +1175,102 @@ class FilamentLedgerPanel extends HTMLElement {
         }
         ${this.formActions("Register")}
       </form>`;
+  }
+
+  /**
+   * Edit details (docs/06 §6.5, docs/14 §14.2). Mirrors the register form's fields and
+   * pre-fills every one of them from the loaded detail.
+   *
+   * **The opening weight is absent, and so is any balance field.** That is not an omission
+   * but the point: no endpoint sets a balance, and this dialog does not become the first
+   * one. What it offers instead is the correction section below, which writes a movement.
+   */
+  editSpoolForm() {
+    const spool = this._detail;
+    // `material` is the display name, which for OTHER *is* the free-text name.
+    const other = spool.material_kind === "OTHER" ? spool.material : "";
+    return `
+      <form data-form="edit-spool" data-core="${esc(spool.core_weight_g)}">
+        <h3>Edit spool</h3>
+        <label>Material
+          <select name="material">${MATERIALS.map(
+            (m) => `<option ${m === spool.material_kind ? "selected" : ""}>${m}</option>`,
+          ).join("")}</select>
+        </label>
+        <label>Name if OTHER<input name="material_other" value="${esc(other)}" placeholder="Nylon-X"></label>
+        <label>Colour<input name="colour" value="${esc(spool.colour)}" type="color"></label>
+        <label>Vendor<input name="vendor" value="${esc(spool.vendor ?? "")}" placeholder="Bambu Lab"></label>
+        <label>Label<input name="label" value="${esc(spool.label ?? "")}" placeholder="Shelf B"></label>
+        <label>Empty reel weight (g)
+          <input name="core_weight_g" type="number" step="0.1" min="0" value="${esc(spool.core_weight_g)}" required>
+        </label>
+        <p class="muted small">An emptied Vendor or Label keeps its current value — the tag
+          below is the only field this dialog can clear.</p>
+        ${this.editTagField(spool)}
+        ${this.editCorrectionSection(spool)}
+        ${this.formActions("Save")}
+      </form>`;
+  }
+
+  /**
+   * The owner's tag rule, rendered: *a tag the printer attached is the printer's
+   * statement; a tag I typed is mine to change* (docs/14 §14.2).
+   *
+   * The DETECTED branch renders no input at all, which is also how the command hears
+   * "leave it alone" — absent, not null.
+   */
+  editTagField(spool) {
+    if (spool.tag_source === "DETECTED") {
+      return `
+        <div class="ed-tag">
+          <div class="k">Tag</div>
+          <div class="ed-tagval">${esc(spool.tag_uid)}</div>
+          <small>Attached by the printer — edit is disabled so the tag always matches the
+            physical spool.</small>
+        </div>`;
+    }
+    return `
+      <label>Tag
+        <span class="ed-tagrow">
+          <input class="ed-taginput" name="tag_uid" value="${esc(spool.tag_uid ?? "")}" placeholder="none">
+          <button type="button" data-action="clear-tag">Clear</button>
+        </span>
+        <small>${
+          spool.tag_uid
+            ? "Yours to change — clearing the field removes the tag."
+            : "A spool can be given a tag here; a tag typed here stays yours to change."
+        }</small>
+      </label>
+      <label class="row"><input name="confirm_duplicate_tag" type="checkbox">
+        <span class="small">This tag belongs to another spool on purpose</span>
+      </label>`;
+  }
+
+  /**
+   * Weight correction — the only way this dialog can change a number, and it does it by
+   * writing a movement, so history explains it (docs/14 §14.2).
+   */
+  editCorrectionSection(spool) {
+    return `
+      <div class="ed-corr">
+        <div class="k">Correct the weight</div>
+        <p class="muted small">This writes a movement to history — the edit itself never
+          touches the balance.</p>
+        <label>Set remaining filament to (g)
+          <input class="ed-set" name="set_g" type="number" step="0.1" min="0"
+            placeholder="${esc(spool.balance_exact_g.toFixed(1))}">
+          <small>Net filament, without the reel. Recorded as a reconciliation.</small>
+        </label>
+        <label>Add / remove (g)
+          <input class="ed-delta" name="delta_g" type="number" step="0.1" placeholder="0.0">
+          <small>Negative removes, positive adds. Recorded as an adjustment.</small>
+        </label>
+        <label>Reason for the adjustment
+          <input class="ed-reason" name="delta_reason" placeholder="why" disabled>
+          <small>Required for an adjustment. An unexplained one is indistinguishable from a bug.</small>
+        </label>
+        <p class="ed-hint muted small">Leave both empty and nothing is written to history.</p>
+      </div>`;
   }
 
   weighForm() {
@@ -1252,6 +1539,19 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
 .modal input[type=color] { padding: 3px; height: 42px; }
 .modal small { color: var(--secondary-text-color); font-size: 12px; }
 .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+.modal input:disabled { opacity: .5; cursor: not-allowed; }
+
+.ed-tag { display: flex; flex-direction: column; gap: 5px; }
+.ed-tag .k, .ed-corr .k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--secondary-text-color); font-weight: 700; }
+.ed-tagval { font-family: ui-monospace, "Roboto Mono", Menlo, monospace; font-size: 15px;
+  color: var(--primary-text-color); }
+.ed-tagrow { display: flex; gap: 8px; align-items: stretch; }
+.ed-tagrow input { flex: 1; min-width: 0; }
+.ed-tagrow button { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+.ed-corr { display: flex; flex-direction: column; gap: 12px; padding-top: 14px;
+  border-top: 1px solid var(--divider-color, #e0e0e0); }
+.ed-corr p { margin: 0; }
 
 @media (max-width: 600px) { main { padding: 12px; } .detail { gap: 12px; } }
 `;

@@ -22,6 +22,7 @@ from ...application.adjust_spool import (
     DiscardMode,
 )
 from ...application.errors import ApplicationError
+from ...application.move_spool import UNSET, TagEdit
 from ...application.reconcile_spool import ReconcileSpoolCommand
 from ...application.register_spool import RegisterSpoolCommand
 from ...application.review_queue import ApproveReviewCommand, DismissReviewCommand
@@ -35,6 +36,7 @@ from ...domain.value.identifiers import (
     ReviewId,
     SlotIndex,
     SpoolId,
+    TagSource,
     TagUid,
 )
 from ...domain.value.material import Material, MaterialKind
@@ -83,6 +85,19 @@ def _runtime(hass: HomeAssistant) -> LedgerRuntime:
         msg = "Filament Ledger is not set up"
         raise ApplicationError(msg)
     return ledgers[0]
+
+
+def _tag_edit(payload: dict[str, Any]) -> TagEdit:
+    """Read `spools/update`'s three-state tag field off the wire.
+
+    Key absent means the panel said nothing about the tag — the DETECTED case renders no
+    input at all, so this is also how a read-only tag stays untouched. An explicit null
+    clears it. An empty string is neither, and `TagUid` refuses it as the blank it is.
+    """
+    if "tag_uid" not in payload:
+        return UNSET
+    raw = payload["tag_uid"]
+    return None if raw is None else TagUid(raw)
 
 
 def _material(payload: dict[str, Any]) -> Material:
@@ -173,6 +188,10 @@ async def handle_stock(
         vol.Optional("vendor"): vol.Any(str, None),
         vol.Optional("label"): vol.Any(str, None),
         vol.Optional("tag_uid"): vol.Any(str, None),
+        # Who attached the tag. The register form omits it and gets MANUAL; only the
+        # register-from-sync path says DETECTED, because the serial it forwards came off
+        # the tray reading rather than off the keyboard (docs/14 §14.2).
+        vol.Optional("tag_source"): vol.In([source.value for source in TagSource]),
         vol.Optional("confirm_duplicate_tag"): bool,
     }
 )
@@ -194,6 +213,7 @@ async def handle_create(
             vendor=msg.get("vendor") or None,
             label=msg.get("label") or None,
             tag_uid=TagUid(tag) if tag else None,
+            tag_source=TagSource(msg.get("tag_source", TagSource.MANUAL)),
             confirm_duplicate_tag=bool(msg.get("confirm_duplicate_tag", False)),
         )
     )
@@ -214,6 +234,18 @@ async def handle_create(
         vol.Optional("material"): vol.In([kind.value for kind in MaterialKind]),
         vol.Optional("material_other"): str,
         vol.Optional("core_weight_g"): vol.Coerce(float),
+        # **The tag deviates from the rule above, deliberately.** Every other field here
+        # reads null as "leave unchanged"; the tag is the only clearable one, so it needs
+        # a third state and null is what clears it:
+        #
+        #     absent → unchanged     null → clear     "" → invalid
+        #
+        # Stated rather than left to be inferred: a reader who assumes uniformity writes
+        # the bug this comment exists to prevent (docs/14 §14.2).
+        vol.Optional("tag_uid"): vol.Any(str, None),
+        # Required true when the tag being attached already belongs to another spool in
+        # inventory — UC-01's rule, because a Bambu tag identifies a batch, not a unit.
+        vol.Optional("confirm_duplicate_tag"): bool,
     }
 )
 @websocket_api.async_response
@@ -231,6 +263,8 @@ async def handle_update(
         core_weight=(
             Grams.of(msg["core_weight_g"]) if msg.get("core_weight_g") is not None else None
         ),
+        tag=_tag_edit(msg),
+        confirm_duplicate_tag=bool(msg.get("confirm_duplicate_tag", False)),
     )
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"ok": True})

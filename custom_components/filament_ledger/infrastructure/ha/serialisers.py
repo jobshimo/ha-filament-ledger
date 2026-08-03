@@ -88,6 +88,9 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
         "needs_weighing": summary.confidence.needs_weighing,
         "location": describe_location(spool.location),
         "tag_uid": spool.tag_uid.value if spool.tag_uid else None,
+        # Provenance, so the edit dialog knows whether the tag is the user's to change
+        # (docs/14 §14.2). Null exactly when there is no tag.
+        "tag_source": spool.tag_source.value if spool.tag_source else None,
         "movement_count": summary.movement_count,
         "last_movement_at": (
             summary.last_movement_at.isoformat() if summary.last_movement_at else None
