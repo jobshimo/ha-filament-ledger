@@ -7,6 +7,9 @@ written against: the `filament_ledger_*` names and the payload of each.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from custom_components.filament_ledger.domain.event import (
@@ -244,3 +247,48 @@ class TestTranslation:
         await HomeAssistantEventBus(as_hass(hass)).publish(DomainEvent())
 
         assert hass.bus.fired == [("filament_ledger_event", {"type": "DomainEvent"})]
+
+
+class TestThePanelListensForAllOfThem:
+    """The panel refreshes itself by subscribing to these events (docs/06 §6.8).
+
+    Home Assistant's websocket subscribes by exact event type — there is no prefix match —
+    so the panel carries its own copy of the list. A domain event added to the bridge
+    without a line in that list would fire correctly, reach automations correctly, and
+    silently stop the view from updating: the ledger would be right and the screen wrong,
+    which is the failure this project exists to prevent.
+
+    There is no JavaScript harness (ADR-0006), so the two lists are compared as text. That
+    is coarse, and it is the only check available that cannot be forgotten.
+    """
+
+    def _bridge_events(self) -> set[str]:
+        source = Path("custom_components/filament_ledger/infrastructure/ha/event_bridge.py")
+        names = set(re.findall(r'event_name\("([^"]+)"\)', source.read_text(encoding="utf-8")))
+        # The fallback for an event the bridge has not learned yet. It carries no spool and
+        # no amount, so there is nothing for the panel to refetch on.
+        return {f"filament_ledger_{name}" for name in names - {"event"}}
+
+    def _panel_events(self) -> set[str]:
+        source = Path("custom_components/filament_ledger/www/filament-ledger-panel.js")
+        block = re.search(
+            r"const LIVE_EVENTS = \[(.*?)\];", source.read_text(encoding="utf-8"), re.S
+        )
+        assert block is not None, "the panel no longer declares LIVE_EVENTS"
+        return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+    def test_the_panel_subscribes_to_every_event_the_bridge_can_fire(self) -> None:
+        missing = self._bridge_events() - self._panel_events()
+
+        assert not missing, (
+            f"the bridge fires {sorted(missing)} and the panel does not listen for it, "
+            "so the view will not refresh when it happens"
+        )
+
+    def test_the_panel_does_not_listen_for_events_that_cannot_arrive(self) -> None:
+        """The other direction. A name the bridge cannot fire is a subscription that costs
+        a websocket round trip on every load and can never deliver anything — usually the
+        fossil of a rename."""
+        stale = self._panel_events() - self._bridge_events()
+
+        assert not stale, f"the panel subscribes to {sorted(stale)}, which nothing fires"

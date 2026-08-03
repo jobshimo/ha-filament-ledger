@@ -658,6 +658,24 @@ Precision follows what the number can actually support:
 Internally everything stays in integer milligrams regardless ([08 §8.1](08-data-model.md)).
 Rounding is a display concern and it never touches stored values.
 
+**The view is live.** A figure on screen is a claim about the ledger *now*. The panel
+subscribes to the integration's own `filament_ledger_*` events — the ones already published
+for automations ([05 §5.5](05-ha-integration.md)) — and refetches when one arrives, so a print
+finishing, a review resolved, or a correction made in another browser reaches every open panel
+without a reload. The Printer tab, whose figures this integration does not own, follows entity
+changes instead ([14 §14.5](14-corrections-and-trash.md)).
+
+Two rules bound it. **A burst costs one refresh**, because one print finishing fires several
+events. And **a refresh never interrupts the person at the keyboard**: the panel repaints by
+replacing markup wholesale ([ADR-0006](adr/0006-vanilla-panel.md)), so an update arriving while
+a dialog is open or a field has focus is *held*, not dropped, and applied the moment the
+surface is idle. A stale number is a smaller wrong than a number that ate what somebody was
+typing into it.
+
+Home Assistant's websocket subscribes by exact event type, so the panel carries its own copy of
+the event list. A domain event added without a line there would fire correctly and silently
+stop the view updating, so a test compares the two lists and fails when they disagree.
+
 **Confidence is never hidden.** Any surface showing a balance shows its confidence alongside.
 A number presented without its reliability invites false trust.
 
