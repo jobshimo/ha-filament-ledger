@@ -93,10 +93,30 @@ fetched from Google Fonts or any third party.** An integration that phones home 
 would leak the fact that a panel was opened, to a party that has no business knowing, on an
 appliance the user believes is local.
 
-That weight is also why `StaticPathConfig` must be registered with `cache_headers=True`. It is
-`False` today, directly under a comment explaining why caching is desirable — the flag does the
-opposite of what its own comment claims, and 125 KB of fonts revalidated on every load is what
-makes that stop being harmless.
+That weight is also why `StaticPathConfig` is registered with `cache_headers=True`. It was
+`False`, directly under a comment explaining why caching was desirable — the flag did the
+opposite of what its own comment claimed, and 125 KB of fonts revalidated on every load is what
+made that stop being harmless.
+
+**Caching and busting are one decision, and neither is safe alone.** `cache_headers=True` makes
+Home Assistant send a month of `max-age`; a cached panel that survives an upgrade is a user
+running last month's code. So **the version rides in the path**:
+
+```
+/filament_ledger_static/<manifest version>/filament-ledger-panel.js
+```
+
+A query string would not do. `panel.js?v=1.1.0` imports `./i18n.js`, which resolves **without**
+the query — that file, and the fonts, would stay stale for the whole month while the module
+itself refreshed. A versioned directory busts the module, its imports and its assets together,
+because every relative resolution inherits the prefix.
+
+The segment comes from `manifest.json`, which is the version of record
+([RELEASING](../RELEASING.md)) and the file the release workflow checks the tag against — so
+the URL a browser caches and the code it is caching cannot drift apart. It is read directly
+rather than through `homeassistant.loader`, which answers the same question but only once its
+own registry exists, coupling panel registration to a part of Home Assistant this adapter
+otherwise never touches.
 
 ---
 
@@ -129,8 +149,11 @@ amber, one line changes and nothing reads as a lie.
 path the panel already registers:
 
 ```
-/filament_ledger_static/styleguide.html
+/filament_ledger_static/<manifest version>/styleguide.html
 ```
+
+The version segment is the cache-busting prefix from §16.2; the panel's own module URL carries
+it too, so the address to open is the one beside the version currently installed.
 
 It imports `STYLES` from the panel module and adopts that exact stylesheet into each specimen's
 shadow root. Better still, it does not hand-write the markup either: it asks a real, unmounted
@@ -225,21 +248,32 @@ Small pull requests against `develop`, each one independently verifiable, in thi
 one of them keeps the panel working: there is no point in the sequence where the tree is
 half-restyled and unusable.
 
-1. **This document and ADR-0008.** The contract, before the code that honours it.
-2. **Fonts and the cacheable static path.** The typefaces, the document-level `@font-face`
-   injection, `cache_headers=True`, and a test that asserts it. Small on purpose: it isolates
-   the one behaviour in this whole change that could simply refuse to work.
-3. **The styleguide page**, rendering today's components with today's styles. The panel does not
-   change. This is the "before" photograph.
-4. **Tokens and container queries.** `STYLES` rewritten against the styleguide, `narrow` and
-   `showMenu` implemented, touch targets, reduced motion, safe areas. **Class names are
-   preserved**, so no markup moves and all eight tabs change together. This is the pull request
-   that carries the risk, and the one to look at hardest.
-5. **The four designed surfaces**, brought to the design's structure.
-6. **History, Printer, Trash, Settings and the dialogs**, extrapolated from the styleguide.
+1. **This document and ADR-0008** (#1). The contract, before the code that honours it.
+2. **The typefaces** (#2), self-hosted, with the document-level `@font-face` injection. Small on
+   purpose: it isolated the one behaviour in this whole change that could simply refuse to work.
+3. **The styleguide page** (#3), rendering today's components with today's styles. The "before"
+   photograph.
+4. **Tokens and container queries** (#4). `STYLES` rewritten, touch targets, reduced motion,
+   safe areas. **Class names preserved**, so no markup moved and all eight tabs changed
+   together. The pull request that carried the risk.
+5. **The coil** (#5) — a spool drawn as an arc of its own colour, at three sizes.
+6. **The ambience** (#6) — motes, a strand, a sweep, a winding.
+7. **Caching, with busting** (#7). `cache_headers=True` and the versioned path §16.2 describes.
 
 Then `develop` → `staging`, verified whole on a real instance, then `staging` → `main` and a
 tag, per [RELEASING](../RELEASING.md).
+
+**Two things moved from the plan as written, and both moved for a reason worth keeping.**
+
+`cache_headers=True` was step 2 and became step 7. Turning caching on without busting it would
+have left every user of this series running a stale panel for a month; and while the series was
+being verified daily on a real instance, `False` meant a redeploy showed up on an ordinary
+reload rather than needing a hard refresh.
+
+Steps 5 and 6 replaced a single "the four designed surfaces" step. The coil and the ambience are
+what the design actually *is* to a person looking at it, and splitting them meant each could be
+deployed and judged on its own rather than arriving as one large change nobody could isolate a
+complaint within.
 
 **This ships as v1.1.** It is a minor: no schema change, no websocket command change, nothing a
 user has to do on upgrade beyond looking at it. The release notes owe one thing the generated
@@ -292,6 +326,18 @@ bug that will be found by a user, not by us.
 
 **`cache_headers=False` is the setting that disables caching.** The flag reads as though it
 means "do not send headers I have to think about". It means the browser revalidates every time.
+
+**Turning it on without busting the URL is worse than leaving it off.** A month of `max-age` on
+a path that never changes is a user running last month's code after an upgrade, discovered as
+"the new version did not do anything". And **a query string is not enough**: it busts the file
+it is attached to and nothing that file imports. §16.2 has the shape that works.
+
+**A backtick inside `STYLES` ends the stylesheet.** `STYLES` is a template literal, so one
+backtick in a CSS comment — around a property name, say — closes it early, the rest is parsed
+as JavaScript, the module throws, and `customElements.define` never runs. The symptom is
+specific and worth memorising: the element exists in the DOM, its `shadowRoot` is `null`, and
+`customElements.get` returns nothing. `node --check` catches it instantly, which is a reason to
+run it on the way to a deploy rather than after the last edit before one.
 
 **The panel repaints by replacing markup wholesale.** Every node is new after every paint, so
 anything measured, scrolled or focused must be re-applied after the paint and never once at
