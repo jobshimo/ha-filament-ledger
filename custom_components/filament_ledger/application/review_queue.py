@@ -15,6 +15,7 @@ from ..domain.error import (
     InvalidValueError,
     ReviewAlreadyPendingError,
     SpoolDiscardedError,
+    SpoolReconciledSinceReviewError,
 )
 from ..domain.event import (
     AnomalyDetected,
@@ -231,6 +232,18 @@ class ApproveReview:
                     # so charging the estimate afterwards would count the loss twice.
                     msg = f"spool {spool.display_name} was discarded"
                     raise SpoolDiscardedError(msg)
+                # The same double count, arriving by measurement: a reconciliation set the
+                # balance to what the scale read, and the scale had already weighed this
+                # print's consumption. Refused rather than dismissed on the user's behalf —
+                # resolving somebody's decision silently is what this queue exists not to do.
+                since_opened = await self.movements.list_since(spool_id, approved.opened_at)
+                if any(movement.is_reconciliation for movement in since_opened):
+                    msg = (
+                        f"spool {spool.display_name} was weighed after this print, so the "
+                        f"estimate is already inside that measurement; dismiss the review "
+                        f"instead"
+                    )
+                    raise SpoolReconciledSinceReviewError(msg)
                 charged[spool_id] = spool
 
             final_balances: dict[SpoolId, Grams] = {}

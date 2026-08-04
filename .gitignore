@@ -36,3 +36,6 @@ tests/fixtures/captured/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Agent worktrees and session state — never version-controlled.
+.claude/
