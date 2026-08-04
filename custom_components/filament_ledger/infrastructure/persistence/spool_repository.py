@@ -179,7 +179,7 @@ class SqliteSpoolRepository:
             params.extend([needle, needle])
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.database.fetch_all(
-            f"SELECT {COLUMNS} FROM spool{where} ORDER BY registered_at", params
+            f"SELECT {COLUMNS} FROM spool{where} ORDER BY registered_at, rowid", params
         )
         return [_to_spool(row) for row in rows]
 
