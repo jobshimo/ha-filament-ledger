@@ -132,9 +132,15 @@ class SqliteSpoolRepository:
         retracted as never-registered that went on matching its tag would demand a
         duplicate-confirmation about a spool the user cannot see anywhere, and would keep
         answering the printer's RFID reads with a reel that is out of the ledger.
+
+        Ordered, because when the answer is ambiguous this list *is* the choice the AMS view
+        offers (`DetectSpool` hands it straight to `AmbiguousTagDetected`). An unordered read
+        would let the same two spools swap places between one detection and the next, which
+        is a menu that moves under the hand that is reaching for it.
         """
         rows = await self.database.fetch_all(
-            f"SELECT {COLUMNS} FROM spool WHERE tag_uid = ? AND {IN_INVENTORY}",
+            f"SELECT {COLUMNS} FROM spool WHERE tag_uid = ? AND {IN_INVENTORY} "
+            f"ORDER BY registered_at, rowid",
             (tag.value,),
         )
         return [_to_spool(row) for row in rows]
