@@ -1,8 +1,13 @@
 """The brand mark, generated rather than drawn by hand.
 
-Run it and `icon.png` and `icon@2x.png` are rebuilt exactly as shipped:
+Run it and the shipped icons are rebuilt exactly as committed:
 
-    uv run --with pillow python brand/make_icons.py
+    uv run --with pillow python scripts/make_icons.py
+
+The generator lives outside the integration and writes inside it. HACS looks for the assets
+at `custom_components/<domain>/brand/icon.png` and nowhere else — a `brand/` at the
+repository root fails its check — while a Pillow script installed into somebody's Home
+Assistant config directory is dead weight they never asked for.
 
 **The mark is the panel's spool ring.** Not a new idea: `spoolRing` in
 `custom_components/filament_ledger/www/filament-ledger-panel.js` already draws every spool
@@ -33,7 +38,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-OUT = Path(__file__).parent
+OUT = Path(__file__).parent.parent / "custom_components" / "filament_ledger" / "brand"
 
 # The panel's palette, verbatim (www/filament-ledger-panel.js, `:host` custom properties).
 BG = (5, 7, 10, 255)  # --fl-bg
