@@ -124,3 +124,20 @@ jobs:
       # branch ref means CI runs whatever landed there this morning — and this job runs
       # third-party code against our checkout.
       - uses: home-assistant/actions/hassfest@ab22029681aa532bfe7de5774a9972d67bfbd2c0
+
+  hacs:
+    name: HACS validation
+    # Inclusion in the HACS default store requires this action to pass, so it runs on every
+    # push rather than once at submission time: a `hacs.json` broken in March should fail in
+    # March, not on the afternoon somebody tries to publish.
+    #
+    # It checks what hassfest does not — the repository as HACS sees it: the `hacs.json`, the
+    # single-integration layout under `custom_components/`, the brand icon, the description,
+    # the topics and a published release. `category` is what tells it which rule set applies.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
