@@ -17,6 +17,7 @@ from custom_components.filament_ledger.application.adjust_spool import (
     DiscardMode,
 )
 from custom_components.filament_ledger.application.errors import ReviewNotFoundError
+from custom_components.filament_ledger.application.reconcile_spool import ReconcileSpoolCommand
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
 from custom_components.filament_ledger.application.review_queue import (
     ApproveReviewCommand,
@@ -28,6 +29,7 @@ from custom_components.filament_ledger.domain.error import (
     ReviewAlreadyPendingError,
     ReviewAlreadyResolvedError,
     SpoolDiscardedError,
+    SpoolReconciledSinceReviewError,
     UnresolvedSlotError,
 )
 from custom_components.filament_ledger.domain.event import (
@@ -415,6 +417,48 @@ class TestApprovingAReview:
 
         assert await estimated_consumption_rows(ledger) == []
         assert (await stored_review(ledger, review_id)).state is ReviewState.PENDING
+
+    async def test_a_spool_weighed_while_the_review_waited_blocks_approval(
+        self, ledger: Ledger
+    ) -> None:
+        """The scale is ground truth and it already counted this print: the reconciliation
+        set the balance to the measured 916 g, so charging the 84 g estimate on top would
+        deduct the same grams twice. The measurement stands and the review stays open —
+        dismissing it is the user's decision, not the system's."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        job = a_job(layer_reached=84, total_layers=200, reported_usage={SLOT_1: Grams.of(200)})
+        review_id = await opened(ledger, job)
+        ledger.clock.advance(days=1)
+        weighing = await ledger.use_cases.reconcile_spool.execute(
+            ReconcileSpoolCommand(spool_id=spool_id, measured=Grams.of(916), includes_core=False)
+        )
+        assert weighing.delta == Grams.of(-84)
+
+        with pytest.raises(SpoolReconciledSinceReviewError):
+            await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
+
+        assert await estimated_consumption_rows(ledger) == []
+        assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == Grams.of(916)
+        assert (await stored_review(ledger, review_id)).state is ReviewState.PENDING
+
+    async def test_a_weighing_from_before_the_review_leaves_the_approval_alone(
+        self, ledger: Ledger
+    ) -> None:
+        """Only a measurement taken after the print can contain it. An older reconciliation
+        says nothing about consumption that had not happened yet."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.reconcile_spool.execute(
+            ReconcileSpoolCommand(spool_id=spool_id, measured=Grams.of(990), includes_core=False)
+        )
+        ledger.clock.advance(days=1)
+        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+
+        await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
+
+        assert len(await estimated_consumption_rows(ledger)) == 1
+        assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == Grams.of(919)
 
     async def test_an_unknown_review_is_reported_not_invented(self, ledger: Ledger) -> None:
         with pytest.raises(ReviewNotFoundError):

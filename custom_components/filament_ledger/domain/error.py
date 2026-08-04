@@ -98,6 +98,18 @@ class UnresolvedSlotError(DomainError):
     """
 
 
+class SpoolReconciledSinceReviewError(DomainError):
+    """The spool was weighed after the print the review describes (docs/04 UC-06).
+
+    A reconciliation sets the balance to what the scale said, and the scale had already
+    weighed whatever the print consumed — so charging the estimate on top of it would deduct
+    the same grams twice. The double count `SpoolDiscardedError` refuses, reached by
+    measurement rather than by write-off, and kept apart from it because the remedy differs:
+    ground truth stands, and UC-07's dismissal is what records that this review has nothing
+    left to record.
+    """
+
+
 class NothingToRecordError(DomainError):
     """The requested operation would produce a zero movement, which records nothing."""
 

@@ -207,6 +207,9 @@ assignments (to resolve slots the review froze as unresolved), optional note.
   indistinguishable from a real one after the fact.
 - **Every slot with a non-zero final amount resolves to a spool** — either from the frozen
   resolution or from an assignment supplied now.
+- **No spool about to be charged has been weighed since the review opened.** A reconciliation
+  sets the balance to what the scale read, and the scale had already weighed whatever this
+  print consumed.
 
 **Flow**
 1. Load the review; reject if not `PENDING`.
@@ -224,11 +227,16 @@ assignments (to resolve slots the review froze as unresolved), optional note.
 traceable back to the decision that created it.
 
 **Failures** — review not found; already resolved; negative amount supplied; an unresolved
-slot carrying a non-zero amount.
+slot carrying a non-zero amount; a charged spool weighed since the review opened.
 
 > Step 4 refuses rather than rounds. The alternatives are inventing a spool or dropping a
 > real consumption on the floor, and the second is worse because it leaves no trace. The user
 > is one dropdown away from the answer; the system is not.
+
+> A spool weighed since the review opened is the same double count a discard would cause,
+> reached by measurement instead of by write-off: approving would deduct grams the scale had
+> already accounted for. Refused, not resolved on the user's behalf — UC-07's dismissal is
+> the decision that says the consumption is recorded, just not by this review.
 
 ---
 
