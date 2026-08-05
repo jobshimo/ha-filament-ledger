@@ -88,7 +88,13 @@ its margin on the tabs that leave it empty.
 row and scrolls with it: a review card keeps its own Approve, a trash row keeps its own
 Restore, and the spool detail keeps *Weigh* and *Adjust* under the spool they weigh and
 adjust (§6.5) rather than hoisting them above it. Region 3 is for what acts on everything
-below it, which is also the test for what belongs in it later.
+below it, which is also the test for what belongs in it later. The History filter row (§6.6)
+is the case that proved the test: it narrows every row beneath it, so it pins.
+
+**A table's own column headings pin within region 4.** They are not a fifth region — they
+travel with the table, they release when it scrolls past, and they exist because a heading is
+only useful over the rows it names. The mechanism and the structural change it needed are in
+§6.6; the rule here is that region 4 is a real scrollport, so things inside it may stick to it.
 
 **The content region keeps its scroll position across a repaint.** The panel repaints by
 replacing its markup wholesale ([ADR-0006](adr/0006-vanilla-panel.md)), so the scroller is a
@@ -668,6 +674,87 @@ links to its spool, where §6.5 does the deriving.
 
 The view serves the newest hundred entries. It is a window, not an export.
 
+### The column headings stay put
+
+Forty rows down, a column of numbers with no heading over it is a column nobody can name — so
+the headings pin to the top of the content region while the rows scroll under them. This is the
+shell of §6.1 doing its job one level further in, and it took a change of structure rather than
+one declaration.
+
+`position: sticky` resolves against the nearest ancestor that scrolls, and the wrapper this
+table sat in was one: it carried `overflow-x: auto` for the phone, and CSS computes an
+`overflow` of `visible` to `auto` the moment the other axis is not `visible`. The wrapper
+therefore scrolled in **both** axes, and a sticky heading stuck faithfully to a scrollport
+whose vertical extent never moved. No error, no warning, and a declaration that reads as though
+it should work ([16 §16.9](16-visual-system.md)).
+
+So the wrapper is gone from this one table and the shell's own scroller does both jobs, which
+it was already equipped for. The table is panned sideways on a phone exactly as it was before,
+and **the reader's horizontal position now survives a repaint** for the same reason the vertical
+one does — a push that restored only one of the two would leave somebody looking at the columns
+they had scrolled away from.
+
+The other two ledger tables keep the wrapper. The spool detail's (§6.5) is one card in a stack,
+so panning the region would drag the hero card sideways with it; the Stats table (§6.7) is
+bounded and short. Neither ever puts a reader out of sight of its headings, which is the test.
+
+### Filters
+
+Six controls in the view's action row (§6.1), pinned, because a control that narrows the rows
+below it must not scroll away with the rows it narrows:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  NOTE OR PRINT      FROM        TO       GRAMS MOVED    COLOUR       │
+│  [ Search…      ]  [5/8/26 ]  [       ]  [ 50 ][    ]   ███ ███ ███  │
+│                                                        [ Clear ]     │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+- **Date** — an arbitrary *from* and *to*, both optional and independent of each other. Not the
+  three fixed windows §6.7 offers: Stats compares like with like and needs coarse periods, while
+  the history answers *what happened on the day the part came out wrong?* and needs the day.
+  Both bounds are inclusive, so a *to* of the 5th includes everything that happened on the 5th —
+  sent as that day's last millisecond in the reader's own timezone, because the ledger stores
+  instants and a bare date names a wall clock.
+- **Colour** — a **set**, not one value: *the blacks and the greys* is one question a user asks
+  rather than two. One swatch per colour in the inventory, painted with the colour the user
+  recognises from the card and from the row, and filtered on the value the ledger actually
+  stored. The list is the inventory rather than the colours present in the rows on screen, which
+  narrow as the filter bites — a control that removes its own options as they are used cannot be
+  undone.
+- **Weight** — *at least* and *at most*, as **magnitudes**. A print consumption is stored as
+  −84.1 g, and a user asking for entries over 50 g means that one: they are thinking about how
+  much filament moved, not about which way it went. The labels never imply a sign, because the
+  comparison does not.
+- **Free text** — matches the **note** written on an entry and the **name of the print** it came
+  from. It does not match the entry's own label, which the panel generates and translates, so
+  searching it server-side would match English words against a Spanish screen; and it does not
+  match the spool's name, which has a column of its own and the colour swatches to narrow it.
+  The label on the box says exactly this, because a control that promises more than it does
+  reads as broken.
+- **Clear filters** — one control, and it is the *empty* filter set rather than a command: every
+  field goes absent, the payload is empty, and an empty payload is the unfiltered read the
+  history has always run. It is a special case in neither the panel nor the backend.
+
+**Filtering happens in SQL, never in the panel.** A ledger grows without bound, and shipping the
+whole table to the browser to sieve it there is the kind of decision that works for a year and
+then does not ([05 §5.6](05-ha-integration.md)). The limit applies to what matched, so widening
+a filter can bring older entries back into view, and the sentence under the table says so.
+
+**The filters are state, and they survive a tab change.** The panel repaints by replacing its
+markup wholesale ([ADR-0006](adr/0006-vanilla-panel.md)), so a selection held in the DOM would
+last until the next update arrived; they live on the element exactly as the Stats period does.
+They outlive a tab change for the same reason that one does — walking to the AMS tab to check a
+slot is not withdrawing the question — and only *Clear filters* clears them. They do not outlive
+a reload: the panel persists a language, which is a preference, and not a filter, which is a
+question about right now.
+
+**A search box is a field like any other.** An update arriving mid-word is *held* by the rule in
+§6.8 rather than dropped, and the read the box itself asks for is debounced so that a keystroke
+is not a round trip. Whichever control in the row had focus gets it back after the paint, caret
+and all — the row is pinned, not exempt from being rebuilt.
+
 ### Empty state
 
 ```
@@ -677,6 +764,26 @@ The view serves the newest hundred entries. It is a window, not an export.
        newest first. Register a spool and its opening balance
        becomes the first row.
 ```
+
+No filter row with it: there is nothing to narrow, and offering the controls anyway would teach
+that the ledger is being hidden rather than that it is empty.
+
+### Nothing matched
+
+A ledger with nothing in it and a filter that matched nothing are different questions, and
+conflating them is how a filter comes to read as data loss:
+
+```
+       Nothing matches these filters.
+
+       The ledger still holds every entry it held a moment ago;
+       this slice of it is empty. Widen a date, drop a colour,
+       or clear the filters to see all of it again.
+
+                    [ Clear filters ]
+```
+
+The filter row stays here, because widening it is the only way out.
 
 ---
 
@@ -839,9 +946,10 @@ being updated keeps the reader's place (§6.1).
 
 **One shell, and one scroller.** Every tab is the same four regions, and only the last of them
 moves (§6.1). A tab that wants a row of controls declares it and the shell pins it; a tab that
-does not, does not pay for one. The rule exists so that the next surface needing fixed chrome —
-the History filters this document still owes §6.6 — is a line in an existing shell rather than
-a second mechanism beside it.
+does not, does not pay for one. The rule earned itself on the first surface that tested it: the
+History filter row (§6.6) is a line in the existing shell rather than a second mechanism beside
+it, and the ledger's own column headings pin inside the one scroller rather than inventing a
+second one.
 
 **Confidence is never hidden.** Any surface showing a balance shows its confidence alongside.
 A number presented without its reliability invites false trust.
