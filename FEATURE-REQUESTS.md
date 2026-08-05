@@ -28,7 +28,7 @@ what that change is, so nobody has to take the claim on trust.
 | 6 | Split a print across spools | Buildable **after one model change** | Schema, migration 0004 |
 | 7a | Remaining time, real job duration | Buildable as-is | UI only |
 | 7b | Accumulated hours | Buildable, ours to compute | Behaviour |
-| 7c | More than one printer | Buildable **after one model change** | Schema, its own release |
+| 7c | More than one printer | **Done** (v2.0.0) | Schema, its own release |
 
 The two model changes are set out under items 6 and 7c. Both are **widenings** — every state the
 system can represent today maps onto exactly one state afterwards, so no existing ledger loses a
@@ -279,17 +279,29 @@ as the machine's odometer. `start_time`/`end_time` would make each job's duratio
 own rather than derived from when Home Assistant noticed, which is a real accuracy gain.
 
 **Multi-printer is the largest item in this document by a wide margin.** The single-machine
-assumption is not a UI shortcut; it is baked into the domain:
+assumption is not a UI shortcut; it was baked into the domain:
 
-- `AmsSlot(slot)` carries a slot index and nothing else — no AMS, no printer. Two printers both
-  have a tray 1.
-- `reported_usage` is keyed `dict[SlotIndex, Grams]` for the same reason.
-- The database enforces one spool per slot with a partial unique index over `slot` alone
+- `AmsSlot(slot)` carried a slot index and nothing else — no AMS, no printer. Two printers
+  both have a tray 1.
+- `reported_usage` was keyed `dict[SlotIndex, Grams]` for the same reason.
+- The database enforced one spool per slot with a partial unique index over `slot` alone
   (migration 0001).
 - `BambuLabGateway` documents the limit outright: *"One printer, one AMS … the first (by
   identity) wins and a warning names the ones ignored."*
 
-Every one of those is a correct v1 decision, and every one of them changes together.
+Every one of those was a correct v1 decision, and every one of them changed together.
+
+> **All four are done** (v2.0.0). `AmsSlot` carries a `TrayRef`, every per-tray figure is keyed
+> by one, migration 0007 widened the index to all three parts, and the gateway now resolves
+> every machine in the registry — each with its own trays, its own job sensors and its own
+> device id, with the AMS and Printer tabs drawing a section per machine. Migration 0008
+> finished the two facts the schema still stated in the singular: which machine ran a job, and
+> which machine a direct feed belongs to.
+>
+> **Owner choice turned out not to be needed, and that is the better answer.** The plan said
+> *discovering several, letting the owner choose*. There is nothing to choose: every machine is
+> followed, one inventory covers them all, and a picker would only have been a way to make the
+> owner name the printers they already own before the integration told them anything.
 
 **The model change.** A tray is currently identified by a bare index. It has to become a
 three-part reference — printer, AMS unit, tray — because that is what physically identifies a
@@ -301,9 +313,16 @@ unique index covers all three parts instead of `slot` alone, and the gateway dis
 printer rather than picking the first and warning into a log nobody reads.
 
 **Migration is lossless here too.** Every existing row belongs to the one printer the ledger has
-ever talked to, so each becomes `(that serial, AMS 1, its slot)`. The serial is known at
-migration time because discovery already resolves it. No row is ambiguous, because a
-single-printer history cannot be.
+ever talked to, so each becomes `(that serial, AMS 1, its slot)`. No row is ambiguous, because
+a single-printer history cannot be.
+
+> **Corrected while building it.** The serial is *not* known at migration time: a migration
+> runs inside `Database.migrate()` with a bare SQLite connection, and discovery lives behind
+> a gateway that does not exist there. Migration 0007 writes a reserved `UNIDENTIFIED` serial
+> and the composition root reconciles it once discovery has a real one
+> ([08 §8.4](docs/08-data-model.md)). The losslessness claim is unaffected — a placeholder for
+> a *name* is not a placeholder for a *fact* — but the reason it holds is the single-printer
+> history, not a serial that was never there to read.
 
 So it is buildable and nothing is traded away — but it reaches the domain, the schema, the
 gateway and the AMS view at once. **That earns its own release**, not a line beside a sticky

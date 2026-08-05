@@ -724,18 +724,25 @@ filament_ledger/printer/state
   → { }
   ← {
       "dormant": false,
-      "status": "printing",              # print_status, verbatim state string
-      "progress_pct": 42,                # int or null
-      "current_layer": 71,               # int or null
-      "total_layers": 209,               # int or null
-      "job_name": "vase_final.gcode",    # UNKNOWN_JOB_NAME fallback (gateway:107)
-      "remaining_minutes": 97,           # int or null — null whenever nothing is printing
-      "error": { "active": true, "code": "216172782120927489" } | null,
-      "online": true | null,
-      "connection_mode": "local" | null,
-      "active_tray": 4 | null,
-      "trays": [ { ...per-slot shape of trays/sync, read-only... } ],
-      "observed_print_time":             # this ledger's own sum, or null
+      "tracking":                        # identity, not measurement — see below
+        { "printers": ["00M09A351800000", "01P00A123456789"], "ams": 1, "unnamed": 0 },
+      "machines": [                      # one entry per followed machine, in tracking order
+        {
+          "printer": "00M09A351800000",
+          "status": "printing",          # print_status, verbatim state string
+          "progress_pct": 42,            # int or null
+          "current_layer": 71,           # int or null
+          "total_layers": 209,           # int or null
+          "job_name": "vase_final.gcode",  # UNKNOWN_JOB_NAME fallback
+          "remaining_minutes": 97,       # int or null — null whenever nothing is printing
+          "error": { "active": true, "code": "216172782120927489" } | null,
+          "online": true | null,
+          "connection_mode": "local" | null,
+          "active_tray": 4 | null,
+          "trays": [ { ...per-tray shape of trays/sync, read-only... } ]
+        }
+      ],
+      "observed_print_time":             # this ledger's own sum, every machine, or null
         { "total_minutes": 3164, "prints": 25, "since": "2026-02-05T18:22:04+00:00" }
     }
 ```
@@ -776,10 +783,31 @@ filament_ledger/printer/state
   (`tray_sync.py:98-121`) *without* running `DetectSpool` first. A tab that mutates the
   ledger by being looked at would violate the reader's reasonable model of "just
   looking"; the sync button on the Inventory tab remains the mutation path.
-- **A dormant gateway answers `{ dormant: true }`** and the tab renders the honest
-  empty state, in the voice the sync strip already uses
+- **A dormant gateway answers `{ dormant: true }` and `tracking`, and nothing else**, and
+  the tab renders the honest empty state, in the voice the sync strip already uses
   (`www/filament-ledger-panel.js:426-430`): no printer connected, how to connect one,
   no spinner, no four invented trays.
+
+**Amended (v2.0): every machine is followed, and the payload carries a section each.** The
+measured figures moved inside `machines`; `observed_print_time` did not, because it is this
+ledger's sum over its own job rows and no machine's counter — and the rows written before
+migration 0008 name no machine, so splitting it per printer would file real hours under a
+heading nobody could read ([08 §8.1](08-data-model.md)).
+
+`tracking` rides beside `dormant` while every figure does not, because it is identity rather
+than measurement: a ledger with no printer still has a tray space to mount spools into, and the
+panel has to be able to name it. An empty `printers` is *no machine was identified*, which the
+mount command resolves server-side rather than the panel guessing at
+([05 §5.4](05-ha-integration.md)).
+
+`unnamed` is what is left of v1.4's `ignored`, and the replacement is the feature. That field
+was the honest interim [FEATURE-REQUESTS §7](../FEATURE-REQUESTS.md) asked for: v1 picked the
+first printer by identity and warned about the rest into a log, and v1.4 put the names on the
+tab instead. Now every machine with a readable serial is followed, so the only thing left to
+report is a machine whose serial could not be read — which is passed over because two live
+machines answering to one reserved name would share a single tray space and collide slot for
+slot ([05 §5.8](05-ha-integration.md)). No printer this project has evidence of writes a
+`unique_id` without its serial, so the card asks for a report.
 
 **No new polling.** The ledger is push-shaped (`__init__.py:37-39`); this command reads
 current entity state when called.
@@ -805,14 +833,24 @@ to the server.
 
 ### Panel behaviour
 
-`TABS` gains **Printer** between AMS and Trash. Layout: status line (state, job name,
-error as HMS quad with the verbatim code in the title attribute — the review card's
-pattern, lines 655-665), progress bar with layer counts and the time remaining,
-connection facts (online, mode), the accumulated-hours card, and the four-tray strip
-with each tray's mounted spool from the ledger beside what the printer reports. Every
-displayed figure that is `null` renders as an honest dash, never as zero — a missing
-figure is not a figure of zero ([UC-04](04-use-cases.md) step 2's principle, applied to
-display).
+`TABS` gains **Printer** between AMS and Trash. Layout, **per machine**: status line (state,
+job name, error as HMS quad with the verbatim code in the title attribute — the review card's
+pattern), progress bar with layer counts and the time remaining, connection facts (online,
+mode), and the four-tray strip with each tray's mounted spool from the ledger beside what that
+printer reports. The accumulated-hours card sits once, below them all. Every displayed figure
+that is `null` renders as an honest dash, never as zero — a missing figure is not a figure of
+zero ([UC-04](04-use-cases.md) step 2's principle, applied to display).
+
+**Amended (v2.0): a section per machine, stacked, not a selector**, headed by the serial only
+once there is more than one — the same decision, for the same reason, as the AMS view's
+([06 §6.4](06-ui-spec.md)). The reader is standing at one of their printers; a selector would
+make them identify it by a fifteen-character serial before it told them anything, then remember
+a choice that is a wrong default the first time it matters. A household with one machine sees
+the tab exactly as it always was.
+
+The ledger side of each tray strip matches on the **whole** tray reference. Matching on the
+slot number alone would put the other machine's tray 3 spool under this machine's tray 3, and
+it would read as authoritative.
 
 The accumulated-hours card carries its caveat **inside the card, beside the figure**, and
 not as fine print somewhere below: the sentence naming how many prints the total covers
@@ -825,7 +863,10 @@ figure the data cannot support is not improved by drawing a box around it.
 
 1. With the printer connected and idle: status, connection mode and trays render; the
    progress section shows the honest no-job state, and **remaining time is a dash** rather
-   than `0 min`.
+   than `0 min`. With two printers connected: two sections, each headed by its serial, each
+   carrying its own machine's figures and its own machine's trays — a machine that has gone
+   quiet shows dashes without the one beside it losing a figure, and one accumulated-hours
+   card covers both.
 2. Mid-print: progress, layers, job name and remaining time match the `ha-bambulab`
    entities at the moment of refresh.
 3. With `ha-bambulab` absent: `{ dormant: true }` and the teaching empty state — no

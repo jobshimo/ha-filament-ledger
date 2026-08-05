@@ -12,7 +12,7 @@ from typing import Protocol
 from .service.anomaly_detector import Anomaly
 from .value.confidence import Confidence
 from .value.grams import Grams
-from .value.identifiers import MovementId, PrintJobId, ReviewId, SlotIndex, SpoolId, TagUid
+from .value.identifiers import MovementId, PrintJobId, ReviewId, SpoolId, TagUid, TrayRef
 from .value.movement_type import MovementType
 from .value.review import ReviewReason, ReviewState
 
@@ -31,7 +31,7 @@ class SpoolRegistered(DomainEvent):
 @dataclass(frozen=True, slots=True)
 class SpoolMounted(DomainEvent):
     spool_id: SpoolId
-    slot: SlotIndex
+    tray: TrayRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +151,7 @@ class ReviewResolved(DomainEvent):
 
 @dataclass(frozen=True, slots=True)
 class SpoolDetected(DomainEvent):
-    """A recognisable RFID appeared in a slot while `auto_mount_on_rfid` is off.
+    """A recognisable RFID appeared in a tray while `auto_mount_on_rfid` is off.
 
     Informational — no location changes. Some users keep spools registered to a shelf and
     load them briefly; silently rewriting their locations is not a service. The AMS view
@@ -160,12 +160,12 @@ class SpoolDetected(DomainEvent):
     """
 
     tag_uid: TagUid
-    slot: SlotIndex
+    tray: TrayRef
 
 
 @dataclass(frozen=True, slots=True)
 class UnknownSpoolDetected(DomainEvent):
-    """An unrecognised RFID appeared in a slot.
+    """An unrecognised RFID appeared in a tray.
 
     The system **does not auto-create a spool**. A guessed opening weight is a fabricated
     number, and a fabricated number in a ledger is worse than a missing one — it looks
@@ -173,7 +173,7 @@ class UnknownSpoolDetected(DomainEvent):
     """
 
     tag_uid: TagUid
-    slot: SlotIndex
+    tray: TrayRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +186,7 @@ class AmbiguousTagDetected(DomainEvent):
     """
 
     tag_uid: TagUid
-    slot: SlotIndex
+    tray: TrayRef
     candidates: tuple[SpoolId, ...]
 
 

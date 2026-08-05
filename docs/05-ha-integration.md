@@ -22,9 +22,12 @@ constraint C4.
 
 ## 5.2 Config flow
 
-**Step 1 — Printer.** Discover Bambu Lab devices from `ha-bambulab`. The user selects one, or
-chooses *"No printer — manual inventory only"*, which is a fully supported mode rather than a
-degraded one.
+**Step 1 — Printer.** No step. Every Bambu Lab machine `ha-bambulab` describes is discovered
+at setup and followed (§5.8); a household with none gets *manual inventory only*, which is a
+fully supported mode rather than a degraded one. **The flow asks nothing here on purpose**: a
+picker would make the owner name the machines they already own before the integration told
+them anything, and it would have to be revisited every time one is added. Reloading the entry
+after a printer appears re-runs discovery, which is the whole of the maintenance.
 
 **Step 2 — Defaults.** Default spool opening weight (1000 g), default core weight (measured
 per vendor; Bambu spools ≈ 250 g), and preferred units.
@@ -97,6 +100,8 @@ filament_ledger.register_spool:
 filament_ledger.mount_spool:
   fields:
     spool_id: {required: true,  selector: {text: {}}}
+    printer:  {required: false, selector: {text: {}}}      # absent → the one printer followed; refused when several are
+    ams:      {required: false, selector: {number: {min: 1}}}   # absent → AMS 1
     slot:     {required: true,  selector: {number: {min: 1, max: 4}}}
 
 filament_ledger.unmount_spool:
@@ -106,9 +111,9 @@ filament_ledger.unmount_spool:
 filament_ledger.approve_review:
   fields:
     review_id: {required: true}
-    amounts:   {required: false, selector: {object: {}}}   # {slot: grams}     — overrides estimate
-    assign:    {required: false, selector: {object: {}}}   # {slot: spool_id}  — one spool takes the tray whole
-    charges:   {required: false, selector: {object: {}}}   # {slot: [{spool_id, amount_g}]} — a tray split across spools
+    amounts:   {required: false, selector: {object: {}}}   # [{printer, ams, slot, amount_g}]  — overrides estimate
+    assign:    {required: false, selector: {object: {}}}   # [{printer, ams, slot, spool_id}]  — one spool takes the tray whole
+    charges:   {required: false, selector: {object: {}}}   # [{printer, ams, slot, charges: [{spool_id, amount_g}]}]
     note:      {required: false}
 
 filament_ledger.dismiss_review:
@@ -146,12 +151,33 @@ happens in exactly one place, and the SQLite column carries no default of its ow
 ([08 §8.1](08-data-model.md)) so a bug in that path fails loudly instead of quietly writing a
 zero into the arithmetic behind every future reconciliation.
 
-`approve_review` keys `amounts`, `assign` and `charges` by **slot index**, matching
-[02 §2.3](02-domain-model.md). `assign` gives a tray whole to the spool it names, which is how
-a caller resolves a slot the review recorded as having consumed filament with no spool mounted
-in it. `charges` states the split for a tray that fed from more than one spool — a spool that
-emptied mid-print and was replaced in the same tray — and each tray's charges must add up to
-what that tray confirms. A tray may appear in one of the two, never in both.
+`approve_review` takes `amounts`, `assign` and `charges` as **lists of per-tray entries**,
+each naming its tray with `printer`, `ams` and `slot` ([02 §2.3](02-domain-model.md)). They
+were objects keyed by the tray number until a tray needed three parts to identify it and a
+JSON key could only hold one. A tray named twice in one payload is refused rather than
+resolved by keeping the last: two answers to one question are not a decision.
+
+`assign` gives a tray whole to the spool it names, which is how a caller resolves a tray the
+review recorded as having consumed filament with no spool mounted in it. `charges` states the
+split for a tray that fed from more than one spool — a spool that emptied mid-print and was
+replaced in the same tray — and each tray's charges must add up to what that tray confirms. A
+tray may appear in one of the two, never in both.
+
+**`printer` and `ams` are optional on every tray a caller names**, here and on `mount_spool`,
+and their absence means *the tray space this ledger follows*. An automation written before a
+tray had three parts therefore keeps working **while there is one machine for it to mean**,
+which is right: naming a serial for the only printer in the house would be ceremony rather
+than precision. The absence is resolved by the runtime — the machine the gateway discovered —
+never by a bare placeholder, because a placeholder would open a *second* tray space in which
+every slot looked free ([08 §8.4](08-data-model.md)).
+
+**Amended (v2.0): with more than one machine followed, the absence is refused rather than
+resolved.** There is no such thing as *the* printer then, and every rule that would pick one —
+the first by serial, the one that printed last, the one with the most trays — is a coin toss
+with somebody's spool on the other end. The caller gets a message naming the machines it could
+have meant, and an automation written against v1 needs one field added exactly once. The panel
+never hits this: the AMS section a mount button was drawn in already knows which machine's
+tray was tapped, and sends it ([06 §6.4](06-ui-spec.md)).
 
 ## 5.5 Events
 
@@ -166,13 +192,18 @@ raises them without knowing HA exists; `event_bridge.py` performs the translatio
 | `filament_ledger_spool_depleted` | `spool_id`, `label` |
 | `filament_ledger_confidence_degraded` | `spool_id`, `from`, `to` |
 | `filament_ledger_anomaly_detected` | `spool_id`, `kind`, `detail` |
-| `filament_ledger_unknown_spool_detected` | `tag_uid`, `slot`, `material`, `colour_hex` |
-| `filament_ledger_ambiguous_tag_detected` | `tag_uid`, `slot`, `candidate_spool_ids` |
+| `filament_ledger_unknown_spool_detected` | `tag_uid`, `printer`, `ams`, `slot`, `material`, `colour_hex` |
+| `filament_ledger_ambiguous_tag_detected` | `tag_uid`, `printer`, `ams`, `slot`, `candidate_spool_ids` |
 
-`slots` is a list of `{slot, estimated_g, spool_id}`, where `spool_id` is **null** for a slot
-the review could not attribute. It is keyed by slot rather than by spool because a review can
-legitimately contain a slot with no spool at all ([02 §2.3](02-domain-model.md)) — a payload
-listing spools could not carry that row, which is the row most worth notifying about.
+Every tray event carries `printer` and `ams` beside `slot`. `slot` keeps its name and its
+meaning, so an automation matching on it goes on matching; the two that joined it are what
+stop a tray number from ceasing to identify a tray the moment a second machine exists.
+
+`slots` is a list of `{printer, ams, slot, estimated_g, spool_id}`, where `spool_id` is
+**null** for a tray the review could not attribute. It is keyed by tray rather than by spool
+because a review can legitimately contain a tray with no spool at all
+([02 §2.3](02-domain-model.md)) — a payload listing spools could not carry that row, which is
+the row most worth notifying about.
 
 These make the interesting automations trivial for the user to write:
 
@@ -323,9 +354,54 @@ an upstream refactor into a corrupted ledger.
   no version. Parsing them is a boundary concern and it is fixture-tested against payloads
   captured from a real printer ([09 §9.4](09-testing-strategy.md)) rather than against
   payloads someone believed were correct.
-- Slot numbering is *ours* to define. `AMS 1 Tray 1` maps to `AmsSlot(1)` and
-  `External Spool` maps to `ExternalSpool()`. The translation lives in the gateway and
+- Tray numbering is *ours* to define. `AMS 1 Tray 1` maps to the tray reference for tray 1
+  of AMS 1 **on the machine whose event is being translated**. An `External Spool` figure is
+  still dropped with a warning: a spool on the direct feed now has a location that names its
+  machine ([02 §2.2](02-domain-model.md)), which is a different question from a consumption
+  figure having a tray to be deducted through. The translation lives in the gateway and
   nowhere else.
+- **The printer's serial is read off the job sensors' `unique_id`s**, which upstream writes
+  as `<serial>_<translation_key>` — so removing the key that matched leaves the serial. That
+  is the stable identity `TrayRef` needs ([02 §2.3](02-domain-model.md)), taken from a shape
+  captured on the reference instance rather than from a `translation_key` nobody has
+  confirmed. The tray sensors' `unique_id`s carry the serial too, behind a model prefix whose
+  boundary is written down nowhere, so they are not where it is read from; an AMS whose
+  printer sensors did not resolve reports its trays under the reserved `UNIDENTIFIED` serial,
+  which is exactly what such a ledger's rows carry.
+- **The AMS ordinal comes from the weight attributes, not from the registry.** A tray's
+  `unique_id` carries the AMS unit's *serial*, and the only place an ordinal is ever stated is
+  the `AMS 1 Tray n` attribute keys. v1 dropped every ordinal but 1 with a warning; the
+  gateway names that ordinal instead of leaving it implicit, and still follows **one unit per
+  printer** — where a machine's entries describe several, the first by identity wins and a
+  warning names the rest.
+- **Every machine is followed, since v2.0.** Discovery groups the job sensors by the device
+  they hang off, reads each device's serial off a `unique_id`, and builds one printer per
+  device. Their trays, their job sensors and their device ids are kept apart, and every tray
+  reference carries the serial of the machine that holds it — so two printers' trays live in
+  one mapping without colliding and nothing has to decide which machine a tray 1 is on.
+- **A tray is attributed to the machine its own `unique_id` mentions.** The tray sensors hang
+  off the AMS device rather than the printer, and their `unique_id` reads
+  `A1_<serial>_AMS_<ams serial>_tray_1` — the printer's serial is in there, behind a model
+  prefix whose boundary is written down nowhere. The gateway does not *parse* it: it asks
+  whether a serial the job sensors already resolved **appears in** the string, which needs no
+  format to be true and is checked against the same frozen fixture. With one printer every AMS
+  is its, without consulting the string at all; with none they take the reserved
+  `UNIDENTIFIED` serial, which is exactly what such a ledger's rows carry; with several, an
+  AMS naming no discovered machine is dropped with a warning rather than assigned, because
+  attributing it would put somebody's spool in a printer it is not in.
+- **A machine has to be nameable to be followed.** `UNIDENTIFIED` denotes *the one machine
+  this ledger has always talked to*, so it is handed to a printer whose serial did not resolve
+  only when that printer is the only one there is. With several, an unnamed machine is passed
+  over — two live machines answering to one name would share a single tray space and collide
+  slot for slot — and it is counted on the Printer tab rather than only logged
+  ([14 §14.5](14-corrections-and-trash.md)). No machine this project has evidence of writes a
+  `unique_id` without its serial, which is why the tab asks for a report.
+- **A job event is resolved to its machine by device id, and the serial travels inward.** The
+  bus carries `bambu_lab_event` for the whole house and the payload names only a device, so
+  discovery's device-to-serial map is what says who spoke. Every figure on the translated
+  event is then read from *that* machine's sensors, and the event carries the serial because
+  the use case receiving it correlates an ending against the running job of that machine and
+  cannot recover from anywhere else which one it was ([02 §2.3](02-domain-model.md)).
 - Every one of these values can be absent. The gateway returns "unknown", never a zero. See
   [03 §3.8](03-architecture.md).
 - **Entity ids are localised.** On a Spanish instance the tray sensor is

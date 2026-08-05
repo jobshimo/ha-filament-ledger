@@ -1,4 +1,4 @@
-"""The fallback estimator: progress × the slicer's per-slot totals.
+"""The fallback estimator: progress × the slicer's per-tray totals.
 
 Infrastructure by placement (docs/03-architecture.md §3.5), pure by construction: this
 module needs nothing from Home Assistant, no I/O, no clock — only a `PrintJob`. The
@@ -19,7 +19,7 @@ from decimal import Decimal
 from ...domain.error import EstimationUnavailableError
 from ...domain.model.print_job import PrintJob
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import SlotIndex
+from ...domain.value.identifiers import TrayRef
 from ...domain.value.review import EstimatorKind
 
 ONE = Decimal(1)
@@ -32,8 +32,8 @@ class LinearProgressEstimator:
     def kind(self) -> EstimatorKind:
         return EstimatorKind.LINEAR_PROGRESS
 
-    async def estimate(self, job: PrintJob) -> dict[SlotIndex, Grams]:
-        """Per-slot grams: the best available progress signal times the slicer's totals.
+    async def estimate(self, job: PrintJob) -> dict[TrayRef, Grams]:
+        """Per-tray grams: the best available progress signal times the slicer's totals.
 
         Signals in order of preference (docs/07-consumption-estimation.md §7.3): layers,
         the closest available proxy for material; then `mc_percent`, which tracks time and
@@ -46,10 +46,10 @@ class LinearProgressEstimator:
         """
         totals = job.reported_usage
         if not totals:
-            msg = f"job {job.id} carries no per-slot totals to scale"
+            msg = f"job {job.id} carries no per-tray totals to scale"
             raise EstimationUnavailableError(msg)
         progress = _progress_of(job)
-        return {slot: total.scaled_by(progress) for slot, total in totals.items()}
+        return {tray: total.scaled_by(progress) for tray, total in totals.items()}
 
 
 def _progress_of(job: PrintJob) -> Decimal:

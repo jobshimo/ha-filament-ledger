@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from ..error import InvalidValueError
 from ..value.grams import Grams
-from ..value.identifiers import PrintJobId, SlotIndex
+from ..value.identifiers import PrinterSerial, PrintJobId, TrayRef
 from ..value.percentage import Percentage
 from ..value.print_job_state import PrintJobState
 
@@ -29,6 +29,11 @@ class PrintJob:
     consumed, because the plan was carried out in full; for an interrupted job they are the
     *totals the plan would have consumed*, which is exactly what `LinearProgressEstimator`
     scales by progress. One field, because the printer reports one set of numbers.
+
+    **Keyed by `TrayRef`, not by a bare tray number.** The printer reports one figure per
+    tray, and a tray is only identified once its printer and AMS unit are named — two
+    machines both have a tray 1, so a figure keyed by the number alone would be deducted
+    from whichever spool happened to be in *a* tray 1.
 
     `None` and an empty mapping are different facts, and the schema keeps the column
     nullable for that reason: `None` means the per-tray figure never materialised — a known
@@ -60,11 +65,22 @@ class PrintJob:
     name: str
     state: PrintJobState
     started_at: datetime
+    # Which machine ran it, and **`None` is not a machine** — it is a row written before
+    # this ledger recorded the answer, which is every row that predates migration 0008.
+    # Backfilling those with a name would state something the ledger never knew, and
+    # docs/08 §8.4's rule for a backfill is that it says what the old rows say.
+    #
+    # The consequence is deliberate and is stated in `TrackPrintJob._running_job`: an
+    # ending correlates to a running row of *its own* machine, so a nameless row is
+    # correlated to by nobody. At most one such row can be RUNNING — the print that
+    # spanned the upgrade — and it stays verbatim and reclassifiable, exactly as every
+    # other ending that never arrived does.
+    printer: PrinterSerial | None = None
     ended_at: datetime | None = None
     layer_reached: int | None = None
     total_layers: int | None = None
     progress: Percentage | None = None
-    reported_usage: dict[SlotIndex, Grams] | None = None
+    reported_usage: dict[TrayRef, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
     printer_started_at: datetime | None = None
@@ -115,11 +131,11 @@ class PrintJob:
         if self.ended_at is not None and self.ended_at < self.started_at:
             msg = f"job cannot end at {self.ended_at} before starting at {self.started_at}"
             raise InvalidValueError(msg)
-        for slot, used in (self.reported_usage or {}).items():
+        for tray, used in (self.reported_usage or {}).items():
             # Zero is tolerated: the printer legitimately reports 0 g for a tray the job
             # loaded but barely touched. Negative consumption is not a thing that exists.
             if used.is_negative:
-                msg = f"reported usage for slot {slot} cannot be negative, got {used}"
+                msg = f"reported usage for {tray} cannot be negative, got {used}"
                 raise InvalidValueError(msg)
 
 

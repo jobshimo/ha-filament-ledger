@@ -51,6 +51,12 @@ from custom_components.filament_ledger.application.void_movement import (
     VoidMovement,
 )
 from custom_components.filament_ledger.domain.event import DomainEvent
+from custom_components.filament_ledger.domain.value.identifiers import (
+    AmsIndex,
+    PrinterSerial,
+    SlotIndex,
+    TrayRef,
+)
 from custom_components.filament_ledger.infrastructure.estimation.linear_progress_estimator import (
     LinearProgressEstimator,
 )
@@ -76,6 +82,20 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
 )
 
 EPOCH = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+
+# The machine every scenario here talks to, anonymised the way the registry fixture is.
+A_PRINTER = PrinterSerial("00000000TESTSER")
+ANOTHER_PRINTER = PrinterSerial("00000000OTHERSR")
+
+
+def a_tray(slot: int, *, printer: PrinterSerial = A_PRINTER, ams: int = 1) -> TrayRef:
+    """One tray, named in full — printer, AMS unit, tray.
+
+    The printer and the AMS default because every scenario here is about a ledger following
+    one machine, and spelling a serial out at each of two hundred call sites would bury
+    what each scenario is actually testing. A scenario about *two* machines passes them.
+    """
+    return TrayRef(printer=printer, ams=AmsIndex(ams), slot=SlotIndex(slot))
 
 
 async def run_yielding[T](target: Callable[[], T]) -> T:

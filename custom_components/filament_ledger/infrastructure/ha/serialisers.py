@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     # application test suite imports this module on machines without it. The functions
     # below only read attributes, so the types can stay annotations that never execute.
     from .bambu_gateway import JobStatus
-    from .printer_state import PrinterSnapshot
+    from .printer_state import MachineSnapshot, PrinterSnapshot, PrinterTracking
     from .tray_sync import SlotSyncOutcome, TraySyncResult
 
 
@@ -355,11 +355,17 @@ def tray_sync_result(result: TraySyncResult) -> dict[str, Any]:
 
 def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
     """The hints ride along for `unknown_tag`: the register form pre-fills from them, so
-    the user confirms the one number the tray cannot report (docs/06 §6.4)."""
+    the user confirms the one number the tray cannot report (docs/06 §6.4).
+
+    The tray is named in full — `printer`, `ams`, `slot` — because the panel mounts into
+    this tray and a bare number is no longer an address. `slot` keeps its name and meaning,
+    so the row a reader sees still says *slot 3*."""
     reading = outcome.reading
     spool = outcome.spool
     return {
-        "slot": reading.slot.value,
+        "printer": reading.tray.printer.value,
+        "ams": reading.tray.ams.value,
+        "slot": reading.tray.slot.value,
         "status": outcome.status.value,
         "tag_uid": reading.tag.value if reading.tag else None,
         "name_hint": reading.name,
@@ -371,38 +377,70 @@ def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
 
 
 def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
-    """The Printer tab's read-only glance (docs/14 §14.5).
+    """The Printer tab's read-only glance (docs/14 §14.5, amended v2.0).
 
-    A dormant gateway answers `{"dormant": true}` **and nothing else**: the panel renders
-    the teaching empty state, and shipping a hull of nulls beside the flag would invite it
-    to render dashes for a printer that is not there.
+    A dormant gateway answers `{"dormant": true}` **and `tracking`, and nothing else**: the
+    panel renders the teaching empty state, and shipping a hull of nulls beside the flag
+    would invite it to render dashes for a printer that is not there. `tracking` is the one
+    exception because it is identity rather than measurement — the tray space a mount would
+    land in, and how many machines were found without a name to follow them by.
 
-    Every other figure is nullable, and null means *the printer did not say*. The panel
-    renders each one as a dash, never as a zero — a missing figure is not a figure of zero
-    (docs/04 UC-04 step 2's principle, applied to display).
+    `machines` is one entry per followed printer rather than one hull of figures, which is
+    the whole shape change: the tab renders a section each, and a household with one machine
+    receives a one-element list that reads exactly as the flat payload did.
+
+    Every figure inside a machine is nullable, and null means *that printer did not say*.
+    The panel renders each one as a dash, never as a zero — a missing figure is not a figure
+    of zero (docs/04 UC-04 step 2's principle, applied to display).
     """
     if snapshot.dormant:
-        return {"dormant": True}
-    job = snapshot.job
+        return {"dormant": True, "tracking": _tracking(snapshot.tracking)}
     return {
         "dormant": False,
-        "status": job.status if job else None,
-        "progress_pct": job.progress.rounded if job and job.progress is not None else None,
-        "current_layer": job.current_layer if job else None,
-        "total_layers": job.total_layers if job else None,
-        "job_name": job.name if job else None,
+        "tracking": _tracking(snapshot.tracking),
+        "machines": [_machine(machine) for machine in snapshot.machines],
+        # Outside `machines`, because it is the ledger's sum and not any one printer's:
+        # the rows that predate migration 0008 name no machine to file their hours under.
+        "observed_print_time": _observed_print_time(snapshot.observed_print_time),
+    }
+
+
+def _machine(machine: MachineSnapshot) -> dict[str, Any]:
+    """One machine's section of the tab."""
+    job = machine.job
+    return {
+        "printer": machine.printer.value,
+        "status": job.status,
+        "progress_pct": job.progress.rounded if job.progress is not None else None,
+        "current_layer": job.current_layer,
+        "total_layers": job.total_layers,
+        "job_name": job.name,
         # Minutes, like every other duration on the wire. Null while nothing is printing —
         # the gateway's rule, not the panel's, so the tab has no idle case to invent.
-        "remaining_minutes": job.remaining_minutes if job else None,
+        "remaining_minutes": job.remaining_minutes,
         "error": _printer_error(job),
         # Null until their upstream translation keys are verified on the reference
         # instance and frozen (`FUTURE_PRINT_SENSOR_KEYS`). An undiscovered sensor
         # serialises as null, never as an invented value — the gateway's standing policy.
-        "online": snapshot.online,
-        "connection_mode": snapshot.connection_mode,
-        "active_tray": snapshot.active_tray,
-        "trays": [_slot_sync(outcome) for outcome in snapshot.trays],
-        "observed_print_time": _observed_print_time(snapshot.observed_print_time),
+        "online": machine.online,
+        "connection_mode": machine.connection_mode,
+        "active_tray": machine.active_tray,
+        "trays": [_slot_sync(outcome) for outcome in machine.trays],
+    }
+
+
+def _tracking(tracking: PrinterTracking) -> dict[str, Any]:
+    """Which machines the ledger follows, which AMS ordinal, and how many it could not name.
+
+    `printers` is **empty** when discovery named nobody, and empty is not a name: the panel
+    renders the teaching empty state and the mount command resolves the absence server-side.
+    `unnamed` counts machines whose job sensors resolved but whose serial did not — the one
+    thing left to report now that every nameable machine is followed.
+    """
+    return {
+        "printers": [serial.value for serial in tracking.printers],
+        "ams": tracking.ams.value,
+        "unnamed": tracking.unnamed,
     }
 
 
@@ -424,7 +462,7 @@ def _observed_print_time(observed: ObservedPrintTime | None) -> dict[str, Any] |
     }
 
 
-def _printer_error(job: JobStatus | None) -> dict[str, Any] | None:
+def _printer_error(job: JobStatus) -> dict[str, Any] | None:
     """The error sensor, or null when it said nothing.
 
     The code crosses the wire as a **decimal string**, the same rule the review card's
@@ -432,7 +470,7 @@ def _printer_error(job: JobStatus | None) -> dict[str, Any] | None:
     2^53 — and a JSON number lands in JavaScript as a double, corrupting the code before
     the panel's `hms()` could format it.
     """
-    if job is None or job.error is None:
+    if job.error is None:
         return None
     code = job.error.code
     return {"active": job.error.active, "code": str(code) if code is not None else None}
@@ -482,7 +520,11 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
         "estimated_total_g": grams(total([line.estimated for line in review.lines])),
         "lines": [
             {
-                "slot": line.slot.value,
+                # The tray in full, because approving sends these three back and a bare
+                # number would no longer say which tray was meant.
+                "printer": line.tray.printer.value,
+                "ams": line.tray.ams.value,
+                "slot": line.tray.slot.value,
                 "estimated_g": grams(line.estimated),
                 "charges": [
                     {"spool_id": charge.spool_id, "amount_g": grams(charge.amount)}

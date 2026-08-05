@@ -22,6 +22,11 @@ ReviewId = NewType("ReviewId", str)
 MIN_AMS_SLOT = 1
 MAX_AMS_SLOT = 4
 
+# An AMS unit is numbered from one by the machine itself; there is no AMS 0. No upper bound
+# is stated, because how many units a printer can carry is the machine's business and a
+# ceiling invented here would refuse a real tray on a machine nobody has tested yet.
+MIN_AMS_INDEX = 1
+
 
 def new_spool_id() -> SpoolId:
     return SpoolId(str(uuid.uuid4()))
@@ -57,6 +62,101 @@ class SlotIndex:
 
     def __str__(self) -> str:
         return str(self.value)
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class PrinterSerial:
+    """Which machine — the serial the printer reports about itself.
+
+    A value object rather than a bare `str` for the reason every identity here is one: it
+    is a dictionary key and a component of `TrayRef`, and a `SpoolId` landing in that
+    position must be a type error rather than a tray that matches nothing.
+
+    Ordered, because `TrayRef` is ordered and a reference cannot sort without its first
+    component sorting. Blank is refused: a serial that names no machine is the one value
+    that could never be resolved back to a printer.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value.strip():
+            msg = "PrinterSerial cannot be blank"
+            raise InvalidValueError(msg)
+
+    def __str__(self) -> str:
+        return self.value
+
+
+# The printer a ledger has always talked to but never recorded the serial of. Written by
+# migration 0007 into every row that predates the three-part reference, and by the panel
+# when no printer has been discovered at all.
+#
+# **Accepted rather than refused, which is the opposite of `ABSENT_TAG_SENTINEL` below,
+# and the difference is the point.** Sixteen zeros denotes the *absence* of a tag, so
+# treating it as an identity would merge every untagged spool into one. This sentinel
+# denotes a real machine whose name is unknown — a single-printer ledger has exactly one
+# printer, so every row carrying it belongs to the same one, and the uniqueness of a tray
+# holds under it exactly as it holds under a real serial. It is a name, not a gap.
+#
+# **That argument is why it names at most one live machine.** It is sound only while there
+# is one machine for it to mean, so discovery hands it to a printer whose serial it could
+# not read only when that printer is the only one there is; with several, an unnamed machine
+# is not followed, because two machines answering to one name is precisely the merge this
+# sentinel is safe from being (`bambu_gateway._resolve_names`).
+#
+# Public because the whole boundary shares the fact: the migration writes it, the gateway
+# replaces it once discovery resolves a real serial, and the panel falls back to it while
+# there is no printer to ask.
+UNIDENTIFIED_PRINTER = PrinterSerial("UNIDENTIFIED")
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class AmsIndex:
+    """Which AMS unit, numbered as the printer numbers it — `AMS 1 Tray 4` is index 1.
+
+    Distinct from the AMS unit's own serial, which the entity registry carries and which
+    nothing here needs: the ordinal is what the printer reports its trays under, and it is
+    the half of the reference a user can point at on the machine.
+    """
+
+    value: int
+
+    def __post_init__(self) -> None:
+        if self.value < MIN_AMS_INDEX:
+            msg = f"AMS index must be >= {MIN_AMS_INDEX}, got {self.value}"
+            raise InvalidValueError(msg)
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class TrayRef:
+    """Which tray, on which AMS, on which printer — what physically identifies a tray.
+
+    A bare `SlotIndex` was a correct v1 decision and is no longer a true one: two printers
+    both have a tray 1, and so do two AMS units on one printer. Every surface that used to
+    name a slot names one of these instead — the location a spool is mounted at, the key
+    of a job's per-tray usage, the key of a review's per-tray estimate — because a figure
+    keyed by an ambiguous name is a figure that lands on the wrong spool the first time a
+    second machine appears.
+
+    Ordered, so that every reader — the deduction loop, the review card, the persisted
+    JSON — sees one canonical tray order without each imposing its own. Ordering by printer
+    first is what makes a listing of several machines' trays group itself.
+
+    **Supported since v2.0.** The gateway resolves every machine the registry describes and
+    keys each one's trays under its own serial (docs/05 §5.8), so two printers' trays live
+    in one mapping without colliding and nothing has to decide which machine a tray 1 is on.
+    """
+
+    printer: PrinterSerial
+    ams: AmsIndex
+    slot: SlotIndex
+
+    def __str__(self) -> str:
+        return f"AMS {self.ams} tray {self.slot} on printer {self.printer}"
 
 
 # What the printer reports for a tray holding a spool with no readable tag. Sixteen zeros

@@ -32,9 +32,10 @@ from custom_components.filament_ledger.domain.error import SpoolDiscardedError
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    UNIDENTIFIED_PRINTER,
     PrintJobId,
     ReviewId,
-    SlotIndex,
+    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.location import AmsSlot
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
@@ -49,7 +50,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
-from ..application.conftest import EPOCH
+from ..application.conftest import EPOCH, a_tray
 from .conftest import FakeHass, Harness, a_spool, as_hass
 from .test_bambu_gateway import (
     REGISTRY_ROWS,
@@ -83,7 +84,7 @@ def services(harness: Harness) -> ServiceGateway:
     return ServiceGateway(hass=harness.hass)
 
 
-async def a_review(harness: Harness) -> ReviewId:
+async def a_review(harness: Harness, tray: TrayRef | None = None) -> ReviewId:
     """A pending review for a cancelled print, opened through the real use case."""
     job = PrintJob(
         id=PrintJobId("job-1"),
@@ -92,7 +93,7 @@ async def a_review(harness: Harness) -> ReviewId:
         started_at=EPOCH,
         layer_reached=71,
         total_layers=209,
-        reported_usage={SlotIndex(1): Grams.of(209)},
+        reported_usage={(tray if tray is not None else a_tray(1)): Grams.of(209)},
     )
     return await harness.ledger.use_cases.open_pending_review.execute(
         OpenPendingReviewCommand(job=job, reason=ReviewReason.CANCELLED)
@@ -169,13 +170,18 @@ class TestSchemas:
             pytest.param(SERVICE_APPROVE_REVIEW, {}, id="approve-without-a-review-id"),
             pytest.param(
                 SERVICE_APPROVE_REVIEW,
-                {"review_id": "r", "amounts": {9: 10}},
+                {"review_id": "r", "amounts": [{"slot": 9, "amount_g": 10}]},
                 id="approve-with-a-slot-past-the-last",
             ),
             pytest.param(
                 SERVICE_APPROVE_REVIEW,
-                {"review_id": "r", "amounts": {1: -5}},
+                {"review_id": "r", "amounts": [{"slot": 1, "amount_g": -5}]},
                 id="approve-with-a-negative-amount",
+            ),
+            pytest.param(
+                SERVICE_APPROVE_REVIEW,
+                {"review_id": "r", "amounts": [{"slot": 1, "ams": 0, "amount_g": 10}]},
+                id="approve-with-an-ams-below-the-first",
             ),
             pytest.param(SERVICE_DISMISS_REVIEW, {}, id="dismiss-without-a-review-id"),
         ],
@@ -283,13 +289,27 @@ class TestEachServiceReachesTheLedger:
         self, services: ServiceGateway, harness: Harness
     ) -> None:
         """The service mirrors UC-06's surface: the user's number overrides the estimate,
-        and only approval writes to the ledger."""
+        and only approval writes to the ledger.
+
+        **The tray is named by slot alone**, which is the shape an automation written
+        before a tray had three parts sends. The runtime answers the absent printer with
+        the machine this ledger follows, so the entry lands on the tray the review froze
+        rather than in a second tray space where nothing is mounted.
+        """
+        # The harness wires no printer, so the tray space this ledger follows is the
+        # unidentified one — the same name migration 0007 writes, and the same one the
+        # runtime hands a caller who named none. The scenario is coherent because both
+        # halves come from the same place; in production the gateway supplies both.
+        tray = a_tray(1, printer=UNIDENTIFIED_PRINTER)
         spool_id = await a_spool(harness.ledger)
-        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
-        review_id = await a_review(harness)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, tray)
+        review_id = await a_review(harness, tray=tray)
 
         await services.call(
-            SERVICE_APPROVE_REVIEW, review_id=review_id, amounts={"1": 31}, note="weighed it"
+            SERVICE_APPROVE_REVIEW,
+            review_id=review_id,
+            amounts=[{"slot": 1, "amount_g": 31}],
+            note="weighed it",
         )
 
         detail = await harness.ledger.use_cases.queries.detail(spool_id)
@@ -301,7 +321,7 @@ class TestEachServiceReachesTheLedger:
         self, services: ServiceGateway, harness: Harness
     ) -> None:
         spool_id = await a_spool(harness.ledger)
-        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         review_id = await a_review(harness)
 
         await services.call(SERVICE_DISMISS_REVIEW, review_id=review_id, note="first layer")
@@ -336,7 +356,7 @@ class TestEachServiceReachesTheLedger:
         await services.call(SERVICE_SYNC_TRAYS)
 
         location = (await harness.ledger.use_cases.queries.detail(spool_id)).summary.spool.location
-        assert location == AmsSlot(SlotIndex(1))
+        assert location == AmsSlot(a_tray(1))
         assert harness.coordinator.refresh_count == 1
 
     async def test_sync_trays_without_a_wired_pass_is_a_quiet_no_op(

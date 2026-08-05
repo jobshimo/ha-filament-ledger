@@ -36,7 +36,6 @@ from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
     ReviewId,
-    SlotIndex,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.movement_type import MovementType
@@ -54,7 +53,7 @@ from custom_components.filament_ledger.sensor import (
     async_setup_entry,
 )
 
-from ..application.conftest import EPOCH, Ledger
+from ..application.conftest import EPOCH, Ledger, a_tray
 from .conftest import Harness, a_spool, as_hass
 
 
@@ -92,7 +91,7 @@ async def a_review(ledger: Ledger, job_id: str) -> ReviewId:
         started_at=EPOCH,
         layer_reached=71,
         total_layers=209,
-        reported_usage={SlotIndex(1): Grams.of(209)},
+        reported_usage={a_tray(1): Grams.of(209)},
     )
     return await ledger.use_cases.open_pending_review.execute(
         OpenPendingReviewCommand(job=job, reason=ReviewReason.CANCELLED)

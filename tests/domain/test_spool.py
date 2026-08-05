@@ -29,7 +29,7 @@ from custom_components.filament_ledger.domain.value.location import (
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
 
-from .conftest import EPOCH, a_spool, at
+from .conftest import A_PRINTER, EPOCH, a_spool, a_tray, at
 
 
 class TestInvariants:
@@ -84,19 +84,22 @@ class TestLocation:
         assert a_spool().location == Storage()
 
     def test_mounting_and_unmounting(self) -> None:
-        spool = a_spool().mounted_in(SlotIndex(1))
-        assert spool.location == AmsSlot(SlotIndex(1))
+        spool = a_spool().mounted_in(a_tray(1))
+        assert spool.location == AmsSlot(a_tray(1))
         assert is_mounted(spool.location)
         assert spool.unmounted().location == Storage()
         assert not is_mounted(Storage())
 
-    def test_the_external_spool_counts_as_mounted(self) -> None:
-        assert is_mounted(a_spool().mounted_externally().location)
-        assert a_spool().mounted_externally().location == ExternalSpool()
+    def test_the_external_spool_counts_as_mounted_and_names_its_machine(self) -> None:
+        """One direct feed per printer (docs/02 §2.2): the location carries the serial, so
+        two machines can each be fed a reel without the ledger calling them one place."""
+        mounted = a_spool().mounted_externally(A_PRINTER)
+        assert is_mounted(mounted.location)
+        assert mounted.location == ExternalSpool(A_PRINTER)
 
     def test_moving_returns_a_new_instance(self) -> None:
         original = a_spool()
-        moved = original.mounted_in(SlotIndex(2))
+        moved = original.mounted_in(a_tray(2))
         assert original.location == Storage()
         assert moved is not original
 
@@ -117,7 +120,7 @@ class TestDiscard:
     def test_a_discarded_spool_cannot_move(self) -> None:
         spool = a_spool().discarded(at(days=1))
         with pytest.raises(SpoolDiscardedError):
-            spool.mounted_in(SlotIndex(1))
+            spool.mounted_in(a_tray(1))
 
     def test_a_discarded_spool_cannot_be_edited(self) -> None:
         spool = a_spool().discarded(at(days=1))
@@ -130,7 +133,7 @@ class TestDiscard:
             spool.discarded(at(days=2))
 
     def test_discarding_returns_the_spool_to_storage(self) -> None:
-        spool = a_spool().mounted_in(SlotIndex(3)).discarded(at(days=1))
+        spool = a_spool().mounted_in(a_tray(3)).discarded(at(days=1))
         assert spool.location == Storage()
 
 
@@ -138,7 +141,7 @@ class TestDeletionIsNotDiscarding:
     """docs/14 §14.4.3. The intent modal's two answers must stay two facts."""
 
     def test_deleting_retracts_the_registration_and_frees_the_slot(self) -> None:
-        spool = a_spool().mounted_in(SlotIndex(3)).deleted(at(days=1))
+        spool = a_spool().mounted_in(a_tray(3)).deleted(at(days=1))
 
         assert spool.is_deleted
         assert not spool.is_discarded
@@ -152,7 +155,7 @@ class TestDeletionIsNotDiscarding:
         spool = a_spool().deleted(at(days=1))
 
         with pytest.raises(SpoolDeletedError):
-            spool.mounted_in(SlotIndex(1))
+            spool.mounted_in(a_tray(1))
         with pytest.raises(SpoolDeletedError):
             spool.with_details(label="renamed")
         with pytest.raises(SpoolDeletedError):
@@ -168,7 +171,7 @@ class TestDeletionIsNotDiscarding:
             spool.deleted(at(days=2))
 
     def test_restoring_clears_the_retraction_but_not_the_slot(self) -> None:
-        spool = a_spool().mounted_in(SlotIndex(3)).deleted(at(days=1)).restored()
+        spool = a_spool().mounted_in(a_tray(3)).deleted(at(days=1)).restored()
 
         assert not spool.is_deleted
         assert spool.is_in_inventory

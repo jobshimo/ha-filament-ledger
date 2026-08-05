@@ -73,7 +73,7 @@ project.
 
 ```
 ConsumptionEstimator  (port, domain)
-    estimate(job: PrintJob) -> {SlotIndex: Grams}
+    estimate(job: PrintJob) -> {TrayRef: Grams}
     raises EstimationUnavailable
 
 ├── GcodeLayerEstimator      preferred · accurate

@@ -1,9 +1,11 @@
 """SQLite implementation of `PrintJobRepository`.
 
 Upsert on every save: a job's state and counters evolve as the printer reports, and this
-table records the latest claim. The per-slot maps travel as JSON milligram integers —
-`{"1": 40000}` — because the milligram is the ledger's unit and a float in a stored
-document would reintroduce exactly the drift `Grams` exists to prevent.
+table records the latest claim. The per-tray figures travel as a JSON list of milligram
+integers — `[{"printer": "…", "ams": 1, "slot": 1, "mg": 40000}]` — because the milligram
+is the ledger's unit and a float in a stored document would reintroduce exactly the drift
+`Grams` exists to prevent. `tray_json` states why the tray is named this way and not with a
+composite key.
 """
 
 from __future__ import annotations
@@ -15,15 +17,16 @@ from datetime import UTC, datetime
 
 from ...domain.model.print_job import PrintJob
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import PrintJobId, SlotIndex
+from ...domain.value.identifiers import PrinterSerial, PrintJobId, TrayRef
 from ...domain.value.percentage import Percentage
 from ...domain.value.print_job_state import PrintJobState
 from .database import Database
+from .tray_json import tray_fields, tray_from
 
 COLUMNS = (
     "id, name, state, started_at, ended_at, layer_reached, total_layers, "
     "progress_pct, reported_usage, raw_gcode_state, raw_print_error, "
-    "printer_started_at, printer_ended_at, consumption_recorded"
+    "printer_started_at, printer_ended_at, consumption_recorded, printer"
 )
 
 
@@ -35,19 +38,24 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def usage_to_json(usage: dict[SlotIndex, Grams] | None) -> str | None:
+def usage_to_json(usage: dict[TrayRef, Grams] | None) -> str | None:
     """`None` stays NULL. A missing per-tray figure and an empty report are different
     facts, and collapsing them here would undo the distinction the nullable column and
-    the entity both keep (docs/04-use-cases.md UC-04)."""
+    the entity both keep (docs/04-use-cases.md UC-04).
+
+    Sorted, so one job's document is byte-identical whatever order the printer named its
+    trays in — the same reason this function always sorted."""
     if usage is None:
         return None
-    return json.dumps({str(slot.value): grams.milligrams for slot, grams in sorted(usage.items())})
+    return json.dumps(
+        [{**tray_fields(tray), "mg": grams.milligrams} for tray, grams in sorted(usage.items())]
+    )
 
 
-def usage_from_json(text: str | None) -> dict[SlotIndex, Grams] | None:
+def usage_from_json(text: str | None) -> dict[TrayRef, Grams] | None:
     if text is None:
         return None
-    return {SlotIndex(int(slot)): Grams(int(mg)) for slot, mg in json.loads(text).items()}
+    return {tray_from(entry): Grams(int(entry["mg"])) for entry in json.loads(text)}
 
 
 def _to_job(row: sqlite3.Row) -> PrintJob:
@@ -56,11 +64,16 @@ def _to_job(row: sqlite3.Row) -> PrintJob:
         msg = f"print job {row['id']} has no started_at"
         raise ValueError(msg)
     progress = row["progress_pct"]
+    printer = row["printer"]
     return PrintJob(
         id=PrintJobId(row["id"]),
         name=row["name"],
         state=PrintJobState(row["state"]),
         started_at=started,
+        # NULL stays `None` rather than becoming the sentinel: 0008 deliberately named no
+        # machine for the rows that predate it, and hydrating one here would put the name
+        # back that the migration refused to invent.
+        printer=PrinterSerial(printer) if printer else None,
         ended_at=_parse(row["ended_at"]),
         layer_reached=row["layer_reached"],
         total_layers=row["total_layers"],
@@ -87,7 +100,7 @@ class SqlitePrintJobRepository:
     async def save(self, job: PrintJob) -> None:
         await self.database.execute(
             f"""
-            INSERT INTO print_job ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO print_job ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 state = excluded.state,
@@ -101,7 +114,8 @@ class SqlitePrintJobRepository:
                 raw_print_error = excluded.raw_print_error,
                 printer_started_at = excluded.printer_started_at,
                 printer_ended_at = excluded.printer_ended_at,
-                consumption_recorded = excluded.consumption_recorded
+                consumption_recorded = excluded.consumption_recorded,
+                printer = excluded.printer
             """,
             (
                 job.id,
@@ -121,16 +135,29 @@ class SqlitePrintJobRepository:
                 _iso(job.printer_started_at) if job.printer_started_at else None,
                 _iso(job.printer_ended_at) if job.printer_ended_at else None,
                 int(job.consumption_recorded),
+                job.printer.value if job.printer is not None else None,
             ),
         )
 
-    async def list_recent(self, limit: int) -> list[PrintJob]:
+    async def list_recent(self, limit: int, printer: PrinterSerial | None = None) -> list[PrintJob]:
         """Newest first — the order a history panel reads. Ties (a burst of jobs sharing a
-        timestamp) break on insertion order so the listing is stable across calls."""
-        rows = await self.database.fetch_all(
-            f"SELECT {COLUMNS} FROM print_job ORDER BY started_at DESC, rowid DESC LIMIT ?",
-            (limit,),
-        )
+        timestamp) break on insertion order so the listing is stable across calls.
+
+        `printer` narrows to one machine's rows. The equality also excludes every row whose
+        column is NULL, which is the port's stated rule rather than an artefact of SQL: a
+        job that names no machine is not this machine's job.
+        """
+        if printer is None:
+            rows = await self.database.fetch_all(
+                f"SELECT {COLUMNS} FROM print_job ORDER BY started_at DESC, rowid DESC LIMIT ?",
+                (limit,),
+            )
+        else:
+            rows = await self.database.fetch_all(
+                f"SELECT {COLUMNS} FROM print_job WHERE printer = ? "
+                f"ORDER BY started_at DESC, rowid DESC LIMIT ?",
+                (printer.value, limit),
+            )
         return [_to_job(row) for row in rows]
 
     async def list_in_period(self, since: datetime | None) -> list[PrintJob]:

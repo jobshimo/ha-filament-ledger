@@ -87,6 +87,16 @@ mount_spool:
     spool_id:
       required: true
       selector: { text: }
+    # Optional while one machine is followed, and required once several are: a bare slot
+    # names as many trays as there are printers, and the call is refused rather than guessed
+    # at (docs/05 §5.4).
+    printer:
+      required: false
+      selector: { text: }
+    ams:
+      required: false
+      selector:
+        number: { min: 1, mode: box }
     slot:
       required: true
       selector:
