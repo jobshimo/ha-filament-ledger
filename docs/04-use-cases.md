@@ -332,6 +332,28 @@ a query has no business emitting events or mutating state.
 Full audit trail for one spool: every movement, its source, its note, and the running balance
 after each entry.
 
+Across every spool it is the same trail without the running balance — none derives from a
+cross-spool slice — and there it takes **criteria**: a date from, a date to, the colours of
+the spools whose entries to keep, a band the entry's weight must fall in, and free text. All
+optional, all independent, all combined with AND, and **all applied in SQL**. A ledger grows
+without bound, so a read that fetched it whole and sieved it afterwards would serve the newest
+hundred *entries* rather than the newest hundred *matches* — silently, and more wrongly the
+longer the ledger got.
+
+Two of them need saying plainly, because both are guessable the wrong way:
+
+- **The weight is a magnitude, never the stored sign.** A print consumption is written as
+  −84.1 g, and somebody asking for entries over 50 g is asking how much filament moved rather
+  than which way it went.
+- **The free text searches the entry's own name, which is not one column.** It is the note and
+  the print job's name — the two pieces of stored text a History row renders beside its label
+  ([06 §6.6](06-ui-spec.md)). The label itself is generated from the movement's type and
+  translated in the panel, so it is not stored text and not searchable; the spool's name is a
+  column of its own, with the colour filter to narrow it.
+
+The absence of every criterion is the unfiltered history. That is what *clear all* is — no
+flag, no separate call, just the empty filter.
+
 This is the use case that makes the ledger *worth* being a ledger. Without it, immutability is
 overhead with no payoff.
 

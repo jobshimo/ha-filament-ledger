@@ -44,6 +44,10 @@ from custom_components.filament_ledger.domain.event import (
     SpoolRegistered,
 )
 from custom_components.filament_ledger.domain.model.movement import Movement
+from custom_components.filament_ledger.domain.port.repositories import (
+    NO_FILTERS,
+    MovementFilter,
+)
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
@@ -383,8 +387,10 @@ class UnappendableMovements:
     async def list_since(self, spool_id: SpoolId, moment: datetime) -> list[Movement]:
         return await self.inner.list_since(spool_id, moment)
 
-    async def list_recent(self, limit: int) -> list[Movement]:
-        return await self.inner.list_recent(limit)
+    async def list_recent(
+        self, limit: int, criteria: MovementFilter = NO_FILTERS
+    ) -> list[Movement]:
+        return await self.inner.list_recent(limit, criteria)
 
     async def list_in_period(self, since: datetime | None) -> list[Movement]:
         return await self.inner.list_in_period(since)

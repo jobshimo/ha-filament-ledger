@@ -10,12 +10,14 @@ that is the whole design — an API that could set one would make the ledger dec
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Final
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_track_state_change_event
 
@@ -44,6 +46,7 @@ from ...const import (
     DOMAIN,
 )
 from ...domain.error import DomainError
+from ...domain.port.repositories import MovementFilter
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
@@ -79,8 +82,30 @@ from .tray_sync import TraySyncResult
 # adapter would turn a typo into a stack trace instead of a message.
 _SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
 
+#: How many colours one history filter may name. A household's palette is a few dozen, so
+#: the bound costs nobody anything — and it is here because an unbounded list eventually
+#: meets SQLite's own parameter limit, which arrives as an unhandled `OperationalError`
+#: rather than as a sentence the panel can show.
+_MAX_FILTER_COLOURS: Final = 64
+
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _moment(value: object) -> datetime:
+    """One end of the history's date filter, read off the wire.
+
+    `cv.datetime` refuses anything that is not a timestamp. The offset is refused on top of
+    that, because a bound without one names a wall clock and the ledger stores instants:
+    guessing the host's timezone would make one saved filter mean two different windows on
+    two installations restored from the same backup. There is nothing to guess — the
+    browser knows its own offset, and the panel sends it.
+    """
+    parsed = cv.datetime(value)
+    if parsed.tzinfo is None:
+        msg = f"a date filter needs an offset, got {value!r}"
+        raise vol.Invalid(msg)
+    return parsed
 
 
 def async_register_commands(hass: HomeAssistant) -> None:
@@ -157,6 +182,31 @@ def _tag_edit(payload: dict[str, Any]) -> TagEdit:
         return UNSET
     raw = payload["tag_uid"]
     return None if raw is None else TagUid(raw)
+
+
+def _movement_filter(payload: dict[str, Any]) -> MovementFilter:
+    """Read the History tab's filter payload off the wire.
+
+    Absent means unfiltered, field by field, so a message carrying none of these keys
+    builds `NO_FILTERS` — the value object's own empty state — and *clear every filter*
+    needs no command, no flag and no branch anywhere. A search box the user has emptied
+    sends `""`, which is the same absence and is read as one.
+
+    Everything numeric and every date was refused by the schema before this ran. A
+    malformed colour is refused here, by `Colour.parse`, whose `InvalidValueError` is a
+    `DomainError` and so reaches the panel through `guarded` as a message.
+    """
+    colours = payload.get("colours")
+    minimum = payload.get("min_g")
+    maximum = payload.get("max_g")
+    return MovementFilter(
+        since=payload.get("since"),
+        until=payload.get("until"),
+        colours=frozenset(Colour.parse(value) for value in colours or ()),
+        min_magnitude=Grams.of(minimum) if minimum is not None else None,
+        max_magnitude=Grams.of(maximum) if maximum is not None else None,
+        search=(payload.get("search") or "").strip() or None,
+    )
 
 
 def _material(payload: dict[str, Any]) -> Material:
@@ -554,6 +604,19 @@ async def handle_trays_sync(
         # Bounded like every adapter input: a limit of zero would render an empty history
         # over a full ledger, and an unbounded one invites the panel to ask for everything.
         vol.Optional("limit"): vol.All(vol.Coerce(int), vol.Range(min=1, max=500)),
+        # The filters, each optional and each independent of the others (docs/06 §6.6). An
+        # absent key is that filter cleared, so a message carrying none of them is the
+        # whole history — which is what makes *clear every filter* an empty payload rather
+        # than a command of its own.
+        vol.Optional("since"): _moment,
+        vol.Optional("until"): _moment,
+        vol.Optional("colours"): vol.All([str], vol.Length(max=_MAX_FILTER_COLOURS)),
+        # Magnitudes, therefore non-negative: the question is how many grams moved, never
+        # which way they went. Bounded here rather than left to `Grams.of`, which would
+        # take −50 without complaint and then match nothing for a reason nobody could see.
+        vol.Optional("min_g"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional("max_g"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional("search"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -561,9 +624,18 @@ async def handle_trays_sync(
 async def handle_movements(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """The global history, newest first — UC-12 across every spool (docs/05 §5.6)."""
+    """The global history, newest first — UC-12 across every spool (docs/05 §5.6).
+
+    **The filters are applied server-side**, in SQL, for the reason `handle_statistics`
+    applies its period there and then some: a ledger grows without bound, so shipping it
+    whole for the panel to sieve would put a query in the one layer this project cannot
+    test *and* grow the payload for ever. Nothing is written, so `async_refresh` is
+    deliberately not called: narrowing a view changes nothing for the entities to hear.
+    """
     runtime = _runtime(hass)
-    lines = await runtime.use_cases.queries.movement_history(limit=int(msg.get("limit", 100)))
+    lines = await runtime.use_cases.queries.movement_history(
+        limit=int(msg.get("limit", 100)), criteria=_movement_filter(msg)
+    )
     connection.send_result(msg["id"], [movement_line(line) for line in lines])
 
 

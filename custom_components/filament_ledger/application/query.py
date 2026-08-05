@@ -22,6 +22,8 @@ from ..domain.model.print_job import PrintJob
 from ..domain.model.spool import Spool
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import (
+    NO_FILTERS,
+    MovementFilter,
     MovementRepository,
     MovementVoidRepository,
     PrintJobRepository,
@@ -465,8 +467,24 @@ class Queries:
             ],
         )
 
-    async def movement_history(self, limit: int = 100) -> list[GlobalHistoryLine]:
-        """UC-12 across every spool: the newest `limit` entries, newest first.
+    async def movement_history(
+        self, limit: int = 100, criteria: MovementFilter = NO_FILTERS
+    ) -> list[GlobalHistoryLine]:
+        """UC-12 across every spool: the newest `limit` entries matching `criteria`.
+
+        `criteria` reaches SQL untouched — date bounds, the colours of the spools an entry
+        may belong to, a band the entry's *magnitude* must fall in, and free text. Nothing
+        here re-implements any of it, which is the point: a history that grew without bound
+        would eventually not fit in the reply, let alone in a browser.
+
+        **What the free text searches is the entry's own name**, which is not one column.
+        The History table's entry cell renders three things (docs/06 §6.6): a label, the
+        job name, and the note. The note and the job name are stored text the user wrote or
+        the printer reported, and both are searched. The label is not: it is generated in
+        the panel from the movement's `type` and translated, so searching it server-side
+        would match English words against a Spanish screen. The spool's name is not
+        searched either — it is a column of its own beside the entry, with a colour filter
+        of its own to narrow it.
 
         Spools and jobs are fetched once per distinct id, not once per row — a hundred
         prints from one spool is one spool read. A movement whose spool row is missing
@@ -486,15 +504,16 @@ class Queries:
           the net is honest and the story is complete.
 
         The limit bounds the slice that is read, not the rows that survive it, exactly as
-        the missing-spool skip has always worked. Filtering inside SQL would mean the
-        history query consulting the void table, and docs/adr/0007 keeps that table out of
-        the read path that matters.
+        the missing-spool skip has always worked. Those two exclusions stay in Python while
+        the user's filters go to SQL, and the asymmetry is deliberate: filtering them
+        inside SQL would mean the history query consulting the void table, and
+        docs/adr/0007 keeps that table out of the read path that matters.
         """
         lines: list[GlobalHistoryLine] = []
         spools: dict[SpoolId, Spool | None] = {}
         jobs: dict[PrintJobId, PrintJob | None] = {}
         chapters = await self.open_chapters()
-        for movement in await self.movements.list_recent(limit):
+        for movement in await self.movements.list_recent(limit, criteria):
             if chapters.covers(movement):
                 continue
             if movement.spool_id not in spools:
