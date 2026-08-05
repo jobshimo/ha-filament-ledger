@@ -143,7 +143,7 @@ CREATE TABLE pending_review (
     reason           TEXT    NOT NULL,           -- CANCELLED|FAILED|UNCLASSIFIED|UNMAPPED_USAGE
     estimated_usage  TEXT    NOT NULL,           -- JSON {slot: mg}
     confirmed_usage  TEXT,                       -- JSON {slot: mg}
-    slot_resolution  TEXT    NOT NULL,           -- JSON {slot: spool_id|null}, frozen at open
+    slot_resolution  TEXT    NOT NULL,           -- JSON [{slot, spool_id, mg}], frozen at open
     estimator_used   TEXT    NOT NULL,           -- GCODE_LAYER|LINEAR_PROGRESS|NONE
     state            TEXT    NOT NULL,           -- PENDING|APPROVED|DISMISSED
     opened_at        TEXT    NOT NULL,
@@ -170,17 +170,28 @@ CREATE TABLE schema_version (
 
 ## 8.2 JSON columns
 
-`reported_usage`, `estimated_usage`, `confirmed_usage` and `slot_resolution` hold JSON maps
-rather than child tables.
+`reported_usage`, `estimated_usage`, `confirmed_usage` and `slot_resolution` hold JSON rather
+than child tables.
 
-Justified because they are always read and written whole, never queried by key, and bounded at
-four entries by the hardware. A child table would add joins and migrations for no query
-benefit.
+Justified because they are always read and written whole, never queried by key, and bounded by
+the hardware — four trays, and in practice a spool or two per tray. A child table would add
+joins and migrations for no query benefit.
 
-All four are keyed by **slot index**, not by spool. `slot_resolution` carries the slot→spool
-mapping frozen when the review opened, with `null` for a slot that had no spool mounted —
-which is the case a spool-keyed map could not represent at all
+The first three are **maps keyed by slot index**, not by spool, because the printer reports one
+figure per tray and can report nothing else — and because a slot with no spool mounted is
+exactly the case a spool-keyed map could not represent at all
 ([02 §2.3](02-domain-model.md)).
+
+`slot_resolution` is the attribution, and since migration 0004 it is a **list of charges**,
+`[{slot, spool_id, mg}]`, ordered by slot. It was a `{slot: spool_id|null}` map, which was the
+one limitation that mattered: a spool that empties mid-print and is replaced in the same tray
+leaves that tray's single reported figure belonging to two spools, and a map could only name
+one of them. A tray may now appear in the list more than once, and a tray absent from it
+entirely is one that froze with no spool — which is what `null` used to say.
+
+The rewrite is lossless in both directions, which is why it could be a data migration rather
+than a new column: every old entry became exactly one charge carrying the amount that tray was
+charged, and every null became no charge. See §8.4.
 
 **This is a deliberate exception, not a licence.** Anything queried, aggregated, or filtered
 gets a real column. Movements — the data that is actually queried by range and summed — are
@@ -216,6 +227,20 @@ Rules:
   half-applied reversal is worse than no reversal.
 
 `migrations/0001_initial.sql` is the schema above.
+
+`0004_review_charges.sql` rewrites `slot_resolution` from a map to a list of charges (§8.2).
+It is the one migration so far that reinterprets data rather than adding to it, and it is
+allowed because the reinterpretation is **lossless and mechanical**: each `{slot: spool_id}`
+entry becomes exactly one charge for that slot carrying the amount that slot was charged —
+the confirmed figure where a decision recorded one, the estimate otherwise — and each `null`
+becomes no charge, which is already what an unresolved tray meant. There is nothing to
+interpret and nothing to lose, so no review says anything different afterwards than it said
+before. That claim is not asserted but tested: `tests/application/test_migrations.py`
+populates a database in the old shape with literal SQL, migrates it with the real runner, and
+compares what the current mapper reads back against a second, independent reading of the old
+columns — estimate per tray, confirmed amount per tray, the one spool each tray resolved to,
+and the charges an approval turned into movements. The movement table is untouched, so the
+rule above holds where it matters most.
 
 ---
 

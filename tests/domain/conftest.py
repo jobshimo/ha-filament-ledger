@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from custom_components.filament_ledger.domain.model.movement import Movement, record
 from custom_components.filament_ledger.domain.model.pending_review import (
     PendingReview,
+    ReviewCharge,
     ReviewLine,
     open_review,
 )
@@ -131,7 +132,21 @@ def a_cancelled_job(
 
 
 def a_line(slot: int, estimated: float, spool_id: SpoolId | None = A_SPOOL_ID) -> ReviewLine:
-    return ReviewLine(slot=SlotIndex(slot), estimated=Grams.of(estimated), spool_id=spool_id)
+    """One tray as `OpenPendingReview` freezes it: the mounted spool takes the whole
+    estimate, and no mounted spool freezes as no charge at all."""
+    return ReviewLine(
+        slot=SlotIndex(slot),
+        estimated=Grams.of(estimated),
+        charges=(
+            (ReviewCharge(spool_id=spool_id, amount=Grams.of(estimated)),)
+            if spool_id is not None
+            else ()
+        ),
+    )
+
+
+def a_charge(grams: float, spool_id: SpoolId = A_SPOOL_ID) -> ReviewCharge:
+    return ReviewCharge(spool_id=spool_id, amount=Grams.of(grams))
 
 
 def a_pending_review(*lines: ReviewLine) -> PendingReview:

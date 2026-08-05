@@ -299,29 +299,44 @@ make that impossible.
 The approval queue. This entity is the mechanism behind principle #1.
 
 ```
-ReviewId               id
-PrintJobId             job_id
-ReviewReason           reason           -- CANCELLED | FAILED | UNCLASSIFIED | UNMAPPED_USAGE
-{SlotIndex: Grams}     estimated_usage
-{SlotIndex: Grams}?    confirmed_usage  -- user-supplied; overrides estimate
-{SlotIndex: SpoolId?}  slot_resolution  -- frozen at creation; None = no spool was mounted
-EstimatorKind          estimator_used   -- which strategy produced the estimate
-ReviewState            state            -- PENDING | APPROVED | DISMISSED
-datetime               opened_at
-datetime?              resolved_at
-str?                   resolution_note
+ReviewId                     id
+PrintJobId                   job_id
+ReviewReason                 reason           -- CANCELLED | FAILED | UNCLASSIFIED | UNMAPPED_USAGE
+{SlotIndex: Grams}           estimated_usage
+{SlotIndex: Grams}?          confirmed_usage  -- user-supplied; overrides estimate
+[(SlotIndex, ReviewCharge)]  charges          -- frozen at creation; empty = no spool was mounted
+EstimatorKind                estimator_used   -- which strategy produced the estimate
+ReviewState                  state            -- PENDING | APPROVED | DISMISSED
+datetime                     opened_at
+datetime?                    resolved_at
+str?                         resolution_note
+
+ReviewCharge = (SpoolId spool_id, Grams amount)
 ```
+
+The entity holds one `ReviewLine` per tray — its `estimated` figure and its `charges` — and
+the two collections above are how a reader asks for one or the other.
 
 **Amounts are keyed by slot, not by spool.** An earlier draft keyed them by `SpoolId`, which
 made the case that most needs a review impossible to represent: [UC-04](04-use-cases.md)
 opens a review precisely when a slot reported usage and *no spool was mounted in it*. There
-is no `SpoolId` to key that entry with. Keying by slot and carrying the resolution separately
+is no `SpoolId` to key that entry with. Keying by slot and carrying the attribution separately
 lets the review say the only honest thing available — *"slot 3 used 12 g and I do not know
 which spool was in it"* — and lets the user supply the missing half.
 
-`slot_resolution` is **frozen when the review opens**, not looked up at approval time. A
-spool unmounted between the print ending and the user getting to the queue must not silently
-redirect the deduction to whatever is in the slot now.
+**The estimate is per tray; the attribution is per charge.** They are different shapes, and
+conflating them was a real limitation rather than a tidy simplification. The printer reports
+one figure per tray and can report nothing else, so `estimated_usage` is a map. But a spool
+that empties mid-print and is replaced in the same tray leaves that one figure belonging to
+*two* spools, and a `{slot: SpoolId}` map cannot say so — it can only charge the whole print
+to whichever spool happened to be mounted when the job ended, and credit the one that fed the
+first half with nothing. So the attribution is a list of charges, and a tray may appear in it
+more than once.
+
+The charges are **frozen when the review opens**, not looked up at approval time. A spool
+unmounted between the print ending and the user getting to the queue must not silently
+redirect the deduction to whatever is in the slot now. A tray with a mounted spool freezes as
+one charge for its whole estimate — the honest proposal for a tray nobody has said was shared.
 
 `ReviewReason` gains `UNMAPPED_USAGE` for a job that reached `FINISHED` with usage on an
 unresolvable slot. The other three describe *why the print stopped*, and this one does not —
@@ -330,12 +345,18 @@ the print did not stop, the inventory was incomplete.
 **Invariants**
 
 - A review in `PENDING` has produced no movements. The balance is untouched until resolution.
-- Approving generates exactly one `ESTIMATED_CONSUMPTION` movement per **resolved** slot with
-  a non-zero amount.
-- **A slot with a non-zero confirmed amount and no resolved spool blocks approval.** The user
-  must assign a spool, zero the amount, or dismiss. Approving it would either invent a spool
-  or discard a real consumption silently, and both are the failure this project exists to
-  prevent.
+- Approving generates exactly one `ESTIMATED_CONSUMPTION` movement per non-zero **charge**.
+- **Each tray's charges add up to what that tray confirms.** One rule where there used to be
+  two, and it says both. A tray with a non-zero amount and nothing attributed fails it, which
+  is the refusal the queue has always made: the user must assign a spool, zero the amount, or
+  dismiss, because approving it would either invent a spool or discard a real consumption
+  silently. A tray with 10 g attributed out of 300 fails it too — the other 290 g came off
+  *something*, and accepting the shortfall would lose them with no trace. It is also what
+  makes the panel's **[ Load the rest ]** a subtraction rather than a feature: what is left
+  to charge is the tray's amount minus what is charged so far ([06 §6.3](06-ui-spec.md)).
+- **A tray charges each spool at most once.** Its attribution answers *how many grams did
+  each spool give*, which is one figure per spool; the same spool twice is one answer written
+  as two.
 - **Resolution is idempotent.** A review already `APPROVED` or `DISMISSED` cannot be resolved
   again. Without this, a double-click deducts twice — and in a ledger, a duplicate entry is
   indistinguishable from a real one after the fact.

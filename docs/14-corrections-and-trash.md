@@ -251,7 +251,7 @@ actually fed it*, with the job's accounting following the material.
 New use case **`ReassignMovement`** — one class, one public method, one transaction
 boundary, the [04](04-use-cases.md) format:
 
-**Input** — `movement_id`, `to_spool_id`, optional note.
+**Input** — `movement_id`, `to_spool_id`, optional amount, optional note.
 
 **Preconditions**
 - The movement exists, is **DECREASE-direction** (`MovementType.direction`,
@@ -261,12 +261,17 @@ boundary, the [04](04-use-cases.md) format:
   longer anywhere.
 - The target spool exists, is in inventory (not `DISCARDED`, not `DELETED`), and differs
   from the movement's spool.
+- If an amount is named, `0 < amount ≤ |movement.amount|`. A magnitude of nothing writes a
+  pair that cancels out and explains nothing — the same emptiness a reassignment to the
+  source itself is refused for. A magnitude larger than the charge moves grams the charge
+  never held: the target debited for material it never received, the source credited for
+  material it never lost, which is the ledger inventing filament.
 
 **Flow** (one unit of work; events after commit, per the invariant every use case in
 `application/` states)
 1. Load and validate movement and both spools.
-2. Append a `REASSIGNMENT` movement of **+X** on the wrongly charged spool, where
-   `X = |movement.amount|`.
+2. Append a `REASSIGNMENT` movement of **+X** on the wrongly charged spool, where `X` is the
+   named amount, or `|movement.amount|` when none was named.
 3. Append a `REASSIGNMENT` movement of **−X** on the target spool.
 4. Both carry `reassigns_movement_id = movement_id`, and both **inherit the original's
    `job_id` and `review_id`** — per-print accounting follows the material, which is what
@@ -284,8 +289,16 @@ boundary, the [04](04-use-cases.md) format:
 legs traceable to the movement they correct.
 
 **Failures** — movement not found; movement not DECREASE; movement voided; target
-missing, discarded, deleted, or identical to the source. All domain/application errors,
-all surfaced through `guarded`.
+missing, discarded, deleted, or identical to the source; an amount of zero or less, or one
+larger than the charge. All domain/application errors, all surfaced through `guarded`.
+
+**Part of a charge may move.** A spool that emptied mid-print and was replaced in the same
+tray leaves one charge belonging to two spools, and the pair for a named magnitude corrects
+exactly that — the source keeps the grams it really gave. It is the review queue's split
+([06 §6.3](06-ui-spec.md)), reached after the charge has landed rather than before, and the
+ledger cannot tell the two apart afterwards because both are the same compensating pair.
+Both are wanted, because the discovery comes at both times: sometimes while approving the
+review, sometimes a week later looking at History.
 
 `MovementType` gains `REASSIGNMENT` with direction `EITHER` (`movement_type.py:71-81`):
 one type for both legs, distinguished by sign, because the pair is one correction and
@@ -299,9 +312,13 @@ reassignable again. Chains are legal and honest, and each link is recorded.
 
 ```
 filament_ledger/movements/reassign
-  → { movement_id: str, to_spool_id: str, note?: str | null }
-  ← { ok: true }
+  → { movement_id: str, to_spool_id: str, amount_g?: number, note?: str | null }
+  ← { ok: true, moved_g: number }
 ```
+
+`amount_g` is omitted to move the whole charge, which is what a reassignment has always
+done — and omitting it is what lets the backend move the entry's own magnitude at full
+precision rather than the tenth the panel displays.
 
 The note is optional, unlike UC-10's mandatory reason, and the difference is principled:
 an adjustment without a reason is inexplicable, but a reassignment explains itself
@@ -326,6 +343,11 @@ grammar cannot reference usably; the curated service list
 
   Spool picker excludes discarded and deleted spools, the same filter the review card's
   picker applies (`www/filament-ledger-panel.js:730-735`). Optional note field.
+- A **How much to move** field, seeded with the whole charge and capped at it. Typing less
+  is the partial reassignment above, and the sentence follows the field as it is typed: a
+  promise about the grams that does not track what is about to be sent is worse than no
+  promise. Left at the whole charge, the field is omitted from the message entirely, so the
+  backend moves the entry's own magnitude rather than the tenth the field displays.
 - After success: standard `guarded` refresh. Both legs appear in History labelled
   **Reassigned** (`HISTORY_LABELS` gains the key, lines 45-53), each row's detail naming
   the counterpart spool.
@@ -344,6 +366,9 @@ grammar cannot reference usably; the curated service list
    near its anomaly threshold raises the event).
 6. Reassigning a reassignment debit leg works and chains the linkage.
 7. The modal's stated gram figures match what lands in the ledger, to one decimal.
+8. A named amount moves exactly that magnitude and leaves the remainder on the source, with
+   both legs inheriting `job_id` and `review_id` exactly as the whole-charge path does; zero,
+   a negative, and more than the charge holds are each refused with nothing written.
 
 ### Test obligations
 

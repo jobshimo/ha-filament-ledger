@@ -132,6 +132,13 @@ async def void_rows(ledger: Ledger) -> list[dict[str, object]]:
     return [dict(row) for row in rows]
 
 
+async def reassignment_rows(ledger: Ledger) -> list[tuple[object, ...]]:
+    rows = await ledger.database.fetch_all(
+        "SELECT spool_id, amount_mg FROM movement WHERE type = 'REASSIGNMENT' ORDER BY rowid"
+    )
+    return [tuple(row) for row in rows]
+
+
 async def balance_of(ledger: Ledger, spool_id: SpoolId) -> Grams:
     return (await ledger.use_cases.queries.detail(spool_id)).summary.balance
 
@@ -561,6 +568,109 @@ class TestReassigningACharge:
             (wrong, 84_100, "job-1", charge),
             (right, -84_100, "job-1", charge),
         ]
+
+    async def test_a_named_amount_moves_only_that_part_and_leaves_the_rest(
+        self, ledger: Ledger
+    ) -> None:
+        """The review queue's split, reached after the charge has landed: the spool that
+        fed the first half keeps what it really gave, and the rest moves."""
+        emptied = await a_spool(ledger, label="Emptied mid-print")
+        replacement = await a_spool(ledger, label="Loaded in its place")
+        charge = await a_print_charge(ledger, emptied)
+
+        moved = await ledger.use_cases.reassign_movement.execute(
+            ReassignMovementCommand(
+                movement_id=charge, to_spool_id=replacement, amount=Grams.of(60)
+            )
+        )
+
+        assert moved == Grams.of(60)
+        # 84.1 charged, 60 moved: the source is left carrying the 24.1 g it really gave.
+        assert await balance_of(ledger, emptied) == Grams.of("975.9")
+        assert await balance_of(ledger, replacement) == Grams.of(940)
+
+        legs = await ledger.database.fetch_all(
+            "SELECT spool_id, amount_mg, job_id, review_id, reassigns_movement_id FROM movement "
+            "WHERE type = 'REASSIGNMENT' ORDER BY rowid"
+        )
+        # Every link inherited exactly as the whole-charge path inherits them.
+        assert [tuple(row) for row in legs] == [
+            (emptied, 60_000, "job-1", None, charge),
+            (replacement, -60_000, "job-1", None, charge),
+        ]
+
+    async def test_the_whole_charge_may_be_named_explicitly(self, ledger: Ledger) -> None:
+        """The boundary is inclusive: naming all of it is the ordinary reassignment, and
+        the panel sends the whole figure whenever the user leaves the field alone."""
+        wrong = await a_spool(ledger)
+        right = await a_spool(ledger)
+        charge = await a_print_charge(ledger, wrong)
+
+        moved = await ledger.use_cases.reassign_movement.execute(
+            ReassignMovementCommand(movement_id=charge, to_spool_id=right, amount=Grams.of("84.1"))
+        )
+
+        assert moved == Grams.of("84.1")
+        assert await balance_of(ledger, wrong) == Grams.of(1000)
+
+    async def test_more_than_the_charge_holds_is_refused_and_writes_nothing(
+        self, ledger: Ledger
+    ) -> None:
+        """Moving grams the charge never held debits the target for material it never
+        received — the ledger inventing filament, which is the one impossible failure."""
+        wrong = await a_spool(ledger)
+        right = await a_spool(ledger)
+        charge = await a_print_charge(ledger, wrong)
+
+        with pytest.raises(InvalidValueError, match="cannot give up"):
+            await ledger.use_cases.reassign_movement.execute(
+                ReassignMovementCommand(
+                    movement_id=charge, to_spool_id=right, amount=Grams.of("84.2")
+                )
+            )
+
+        assert await reassignment_rows(ledger) == []
+        assert await balance_of(ledger, wrong) == Grams.of("915.9")
+        assert await balance_of(ledger, right) == Grams.of(1000)
+
+    @pytest.mark.parametrize("amount", [Grams.zero(), Grams.of(-5)])
+    async def test_a_magnitude_of_nothing_or_less_is_refused(
+        self, ledger: Ledger, amount: Grams
+    ) -> None:
+        """A pair that cancels out explains nothing — the same emptiness a reassignment
+        to the source itself is refused for."""
+        wrong = await a_spool(ledger)
+        right = await a_spool(ledger)
+        charge = await a_print_charge(ledger, wrong)
+
+        with pytest.raises(InvalidValueError, match="moves nothing"):
+            await ledger.use_cases.reassign_movement.execute(
+                ReassignMovementCommand(movement_id=charge, to_spool_id=right, amount=amount)
+            )
+
+        assert await reassignment_rows(ledger) == []
+
+    async def test_a_partial_leg_is_reassignable_again_for_part_of_itself(
+        self, ledger: Ledger
+    ) -> None:
+        """Three spools in one tray is unusual and not impossible, and nothing about the
+        chain the specification calls legal changes when the magnitudes are partial."""
+        first = await a_spool(ledger, label="First")
+        second = await a_spool(ledger, label="Second")
+        third = await a_spool(ledger, label="Third")
+        charge = await a_print_charge(ledger, first)
+        await ledger.use_cases.reassign_movement.execute(
+            ReassignMovementCommand(movement_id=charge, to_spool_id=second, amount=Grams.of(60))
+        )
+        debit = await newest_of_type(ledger, MovementType.REASSIGNMENT)
+
+        await ledger.use_cases.reassign_movement.execute(
+            ReassignMovementCommand(movement_id=debit, to_spool_id=third, amount=Grams.of(20))
+        )
+
+        assert await balance_of(ledger, first) == Grams.of("975.9")
+        assert await balance_of(ledger, second) == Grams.of(960)
+        assert await balance_of(ledger, third) == Grams.of(980)
 
     async def test_it_announces_both_legs_and_then_the_correction(self, ledger: Ledger) -> None:
         wrong = await a_spool(ledger)

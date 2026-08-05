@@ -191,6 +191,21 @@ const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFra
 const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
 
 /**
+ * Round to the tenth, which is the precision a single movement is known to.
+ *
+ * Every gram figure the review card compares goes through this first. Binary floating
+ * point makes 300 − 10 − 289.9 a hair away from 0.1, and a remainder that reads `0.0 g`
+ * while the Approve button stays disabled is a card calling the user a liar.
+ */
+const round1 = (value) => Math.round(value * 10) / 10;
+
+/** A typed gram field as a number, or `null` when it is not one. Blank reads as zero. */
+const typedGrams = (raw) => {
+  const value = raw === "" ? 0 : Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+};
+
+/**
  * One end of the history's date filter, as the instant the reader means.
  *
  * Two traps, both silent, and this is the only place either is paid for.
@@ -625,6 +640,12 @@ class FilamentLedgerPanel extends HTMLElement {
   /** True while the user is mid-task and a repaint would interrupt them. */
   _busy() {
     if (this._dialog) return true;
+    // A tray the user has split is an edit in progress even with nothing focused: the
+    // extra charge rows exist only in the DOM, and a repaint would throw them away along
+    // with every figure typed into them. A review always arrives with at most one charge
+    // per tray, so a second row is always the user's own work. Same judgement as the
+    // dialog above — a held update is recoverable, a discarded decision is not.
+    if (this.shadowRoot.querySelector(".rv-charge + .rv-charge")) return true;
     const focused = this.shadowRoot.activeElement;
     return Boolean(focused && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName));
   }
@@ -916,6 +937,18 @@ class FilamentLedgerPanel extends HTMLElement {
       case "review-distribute":
         this._distribute(target.closest(".rv-card"));
         break;
+      // The three that edit a tray's attribution in place (docs/06 §6.3). None of them
+      // re-renders the view: a render() here would rebuild every card and drop every
+      // figure the user has typed into the others.
+      case "review-add":
+        this._addCharge(target.closest(".rv-tray"));
+        break;
+      case "review-drop":
+        this._dropCharge(target);
+        break;
+      case "review-rest":
+        this._loadRest(target);
+        break;
       case "review-approve":
         this._approveReview(target.closest(".rv-card"), id);
         break;
@@ -1109,6 +1142,10 @@ class FilamentLedgerPanel extends HTMLElement {
     // the review card does: a render() per keystroke steals the focus mid-number.
     const form = event.target.closest("form[data-form='edit-spool']");
     if (form) this._syncEditForm(form);
+    // Same discipline, and the same reason: the reassign modal promises what it is about
+    // to send, so the promise has to follow the amount as it is typed.
+    const reassign = event.target.closest("form[data-form='reassign']");
+    if (reassign) this._syncReassignForm(reassign);
   }
 
   _onSubmit(event) {
@@ -1244,6 +1281,13 @@ class FilamentLedgerPanel extends HTMLElement {
           this.call("movements/reassign", {
             movement_id: this._dialog.movement_id,
             to_spool_id: data.to_spool_id,
+            // Omitted when the field still holds the whole charge, so the backend moves
+            // the entry's own magnitude at full precision rather than the tenth the
+            // field displays — the same rule the review card's untouched trays follow.
+            amount_g:
+              data.amount_g && data.amount_g !== form.dataset.whole
+                ? Number(data.amount_g)
+                : undefined,
             note: data.note || null,
           }),
         );
@@ -2527,7 +2571,7 @@ class FilamentLedgerPanel extends HTMLElement {
           estimator === `est.${review.estimator}` ? esc(review.estimator) : estimator
         }</div>`;
 
-    const rows = review.lines.map((line) => this.reviewRow(line)).join("");
+    const rows = review.lines.map((line) => this.reviewTray(line)).join("");
     const total =
       review.lines.length > 1
         ? `<div class="rv-total">${t("review.total", {
@@ -2535,10 +2579,12 @@ class FilamentLedgerPanel extends HTMLElement {
           })}</div>`
         : "";
 
-    // Approve starts disabled whenever a non-zero row has no spool — the button and the
-    // domain rule (02 §2.3) must never disagree about what is legal.
+    // Approve starts disabled whenever a non-zero tray charges nothing — the button and
+    // the domain rule (02 §2.3) must never disagree about what is legal. A tray freezes
+    // with at most one charge, so nothing can start out partly attributed; the running
+    // remainder in `_syncReviewCard` is what watches for that as the user types.
     const blockedSlots = review.lines
-      .filter((line) => !line.spool_id && line.estimated_g !== 0)
+      .filter((line) => !line.charges.length && line.estimated_g !== 0)
       .map((line) => line.slot);
     const blocked = blockedSlots.length > 0;
 
@@ -2570,40 +2616,117 @@ class FilamentLedgerPanel extends HTMLElement {
       </article>`;
   }
 
-  reviewRow(line) {
+  /**
+   * One tray: the figure the printer reported for it, and the spools it is charged to
+   * (docs/06 §6.3).
+   *
+   * The two are separate rows because they are separate facts. A tray's amount is one
+   * number — the printer reports one per tray and can report nothing else — while its
+   * attribution is a list, because a spool that empties mid-print and is replaced in the
+   * same tray leaves that one number belonging to two spools.
+   *
+   * With one charge the tray reads exactly as it always has: a swatch, a name, and the
+   * tray's own figure, because with one charge the two numbers are the same number and
+   * showing it twice would invite them to disagree. `[ + Add spool ]` is what reveals the
+   * per-charge fields, and `data-frozen` is what the collapsed row renders off — the spool
+   * the review froze, so a tray that has been split and unsplit comes back to a picker
+   * rather than to a name it can no longer change.
+   */
+  reviewTray(line) {
     const t = this._t;
-    const spool = line.spool_id ? this._spools.find((s) => s.id === line.spool_id) : null;
-    const amount = `
-      <span class="rv-slot">${t("ams.slot", { slot: line.slot })}</span>
-      <input class="rv-amt num" type="number" min="0" step="0.1" value="${esc(line.estimated_g.toFixed(1))}"> g`;
+    const frozen = line.charges.length === 1 ? line.charges[0].spool_id : "";
+    const charges = line.charges.length
+      ? line.charges.map((c) => ({ spool_id: c.spool_id, amount: c.amount_g.toFixed(1) }))
+      : // A tray the review froze without a spool still gets a row: the amount is known,
+        // the spool is not, and the user is the one who knows which it was (docs/06 §6.3).
+        [{ spool_id: "", amount: "" }];
 
-    if (line.spool_id) {
-      return `
-        <div class="rv-row" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}">
-          <span class="rv-dot" style="background:${esc(spool?.colour ?? "transparent")}"></span>
-          <span class="rv-spool">${spool ? esc(spool.name) : t("review.unknownSpool")}</span>
-          ${amount}
-        </div>`;
-    }
+    return `
+      <div class="rv-tray" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}"
+        data-frozen="${esc(frozen)}">
+        <div class="rv-row">
+          <span class="rv-slot">${t("ams.slot", { slot: line.slot })}</span>
+          <input class="rv-amt num" type="number" min="0" step="0.1"
+            value="${esc(line.estimated_g.toFixed(1))}"> g
+        </div>
+        <div class="rv-charges">${this.reviewCharges(charges, frozen)}</div>
+        <div class="rv-trayfoot">
+          <button class="link" data-action="review-add">${t("review.addSpool")}</button>
+          <span class="rv-left"></span>
+        </div>
+      </div>`;
+  }
 
-    // A slot the review froze without a spool is shown, never hidden (docs/06 §6.3): the
-    // amount is known, the spool is not, and the user is the one who knows which it was.
+  /**
+   * A tray's charge rows. One row is the collapsed form; two or more is the split.
+   *
+   * Rebuilt whole whenever a charge is added or removed, from values read back out of the
+   * DOM, so the panel keeps one renderer for both densities — the alternative is markup
+   * that is assembled in one place and patched in another, which is how the two drift.
+   */
+  reviewCharges(charges, frozen) {
+    const t = this._t;
+    const single = charges.length === 1;
     // Retired spools stay out of the picker, by either route — charging one is refused by
     // the domain (docs/14 §14.4.5). The overview already omits them; the filter is stated
     // so the rule is visible where the picker is read.
-    const options = this._spools
-      .filter((s) => s.state !== "DISCARDED" && s.state !== "DELETED")
-      .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`)
+    const spools = this._spools.filter((s) => s.state !== "DISCARDED" && s.state !== "DELETED");
+    return charges
+      .map((charge) => {
+        // Named off the *unfiltered* list: a spool retired since the review opened is
+        // still the spool this tray froze, and calling it unknown would hide the very
+        // fact the user needs in order to understand the refusal that follows.
+        const spool = charge.spool_id
+          ? this._spools.find((s) => s.id === charge.spool_id)
+          : null;
+        const named = single && charge.spool_id && charge.spool_id === frozen;
+        const who = named
+          ? `<span class="rv-dot" style="background:${esc(spool?.colour ?? "transparent")}"></span>
+             <span class="rv-spool">${spool ? esc(spool.name) : t("review.unknownSpool")}</span>`
+          : `<span class="rv-warn">${charge.spool_id ? "" : "⚠"}</span>
+             <span class="rv-pickline">${single ? t("review.whichSpool") : ""}
+               <select class="rv-pick">
+                 <option value="">${t("review.chooseSpool")}</option>
+                 ${spools
+                   .map(
+                     (s) =>
+                       `<option value="${esc(s.id)}" ${s.id === charge.spool_id ? "selected" : ""}>${esc(s.name)} — ${s.balance_g} g</option>`,
+                   )
+                   .join("")}
+               </select>
+             </span>`;
+        // The per-charge figure and its two buttons exist only in the split: with one
+        // charge the tray's own figure is the charge's figure, by the invariant.
+        const share = single
+          ? ""
+          : `<input class="rv-share num" type="number" min="0" step="0.1" value="${esc(charge.amount)}"> g
+             <button class="link" data-action="review-rest"
+               title="${t("review.loadRestTitle")}">${t("review.loadRest")}</button>
+             <button class="rowact" data-action="review-drop"
+               title="${t("review.dropChargeTitle")}">×</button>`;
+        return `<div class="rv-charge${charge.spool_id ? "" : " unresolved"}">${who}${share}</div>`;
+      })
       .join("");
-    return `
-      <div class="rv-row unresolved" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}">
-        <span class="rv-warn">⚠</span>
-        <span class="rv-spool muted">${t("review.noSpoolRecorded")}</span>
-        ${amount}
-        <div class="rv-pickline">${t("review.whichSpool")}
-          <select class="rv-pick"><option value="">${t("review.chooseSpool")}</option>${options}</select>
-        </div>
-      </div>`;
+  }
+
+  /**
+   * A tray's charges as the DOM currently holds them.
+   *
+   * The collapsed row carries no figure of its own, so it reports the tray's — which is
+   * what the domain does with a single charge, and saying it here keeps the remainder, the
+   * hint and the approval payload reading one shape rather than three.
+   */
+  _trayCharges(tray) {
+    const rows = [...tray.querySelectorAll(".rv-charge")];
+    const trayAmount = tray.querySelector(".rv-amt").value;
+    return rows.map((row) => {
+      const pick = row.querySelector(".rv-pick");
+      const share = row.querySelector(".rv-share");
+      return {
+        spool_id: pick ? pick.value : tray.dataset.frozen,
+        amount: share ? share.value : trayAmount,
+      };
+    });
   }
 
   /**
@@ -2614,47 +2737,139 @@ class FilamentLedgerPanel extends HTMLElement {
    */
   _approveHint(slots) {
     if (!slots.length) return "";
-    const list = slots
-      .map((slot) => this._t("review.slotWord", { slot }))
-      .join(this._t("act.and"));
-    return fill(this._t("review.blockedHint"), "slots", list);
+    return fill(this._t("review.blockedHint"), "slots", this._slotList(slots));
   }
 
-  /** Re-derive the card's total, hint and Approve state from its inputs, in place. */
+  /** The trays a hint is about, as prose: *slot 1 and slot 3*. */
+  _slotList(slots) {
+    return slots.map((slot) => this._t("review.slotWord", { slot })).join(this._t("act.and"));
+  }
+
+  /**
+   * Re-derive the card's totals, remainders, hint and Approve state from its inputs, in
+   * place — a render() per keystroke would steal the focus mid-number.
+   *
+   * The remainder is the whole of *load the rest*: a tray's charges must add up to what
+   * that tray confirms (docs/02 §2.3), so what is left to charge is a subtraction, and
+   * the button below merely performs it. Approve is disabled while any tray is short —
+   * the button and the domain rule must never disagree about what is legal.
+   */
   _syncReviewCard(card) {
+    const t = this._t;
     let total = 0;
     let invalid = false;
     const unattributed = [];
-    for (const row of card.querySelectorAll(".rv-row")) {
-      const raw = row.querySelector(".rv-amt").value;
-      const value = raw === "" ? 0 : Number(raw);
-      if (!Number.isFinite(value) || value < 0) {
+    const unbalanced = [];
+    for (const tray of card.querySelectorAll(".rv-tray")) {
+      const leftEl = tray.querySelector(".rv-left");
+      // Cleared first: a tray whose amount has just become unreadable has no remainder to
+      // state, and leaving the last one standing would be a figure about nothing.
+      leftEl.textContent = "";
+      const amount = typedGrams(tray.querySelector(".rv-amt").value);
+      if (amount === null) {
         invalid = true;
         continue;
       }
-      total += value;
-      const pick = row.querySelector(".rv-pick");
-      if (pick && !pick.value && value !== 0) unattributed.push(row.dataset.slot);
+      total += amount;
+
+      let attributed = 0;
+      let missing = false;
+      for (const charge of this._trayCharges(tray)) {
+        const share = typedGrams(charge.amount);
+        if (share === null) {
+          invalid = true;
+          continue;
+        }
+        attributed += share;
+        if (share !== 0 && !charge.spool_id) missing = true;
+      }
+      if (missing) unattributed.push(tray.dataset.slot);
+
+      const left = round1(amount - attributed);
+      if (left !== 0) unbalanced.push(tray.dataset.slot);
+      leftEl.textContent =
+        left > 0
+          ? t("review.remaining", { grams: left.toFixed(1) })
+          : left < 0
+            ? t("review.overCharged", { grams: (-left).toFixed(1) })
+            : "";
     }
 
     const totalEl = card.querySelector(".rv-total b");
     if (totalEl) totalEl.textContent = total.toFixed(1);
 
-    const blocked = invalid || unattributed.length > 0;
+    const blocked = invalid || unattributed.length > 0 || unbalanced.length > 0;
     card.querySelector(".rv-approve").disabled = blocked;
     const hint = card.querySelector(".rv-hint");
     hint.hidden = !blocked;
     hint.textContent = unattributed.length
       ? this._approveHint(unattributed)
-      : this._t("review.invalidAmounts");
+      : unbalanced.length
+        ? fill(t("review.remainderHint"), "slots", this._slotList(unbalanced))
+        : t("review.invalidAmounts");
   }
 
   /**
-   * Split the weighed total across the rows in the same proportion as the frozen
-   * estimates (docs/06 §6.3) — a click, not arithmetic. With one row it replaces the
+   * Give a tray a second spool (docs/06 §6.3).
+   *
+   * The charge rows are rebuilt from what the DOM currently holds rather than re-rendered
+   * from the wire, so everything already typed into this tray survives — and the new row
+   * starts empty, because a row seeded with the remainder would leave **[ Load the rest ]**
+   * with nothing to say the first time it is offered.
+   */
+  _addCharge(tray) {
+    const charges = this._trayCharges(tray);
+    charges.push({ spool_id: "", amount: "" });
+    this._renderCharges(tray, charges);
+  }
+
+  /** Take a spool off a tray. Only ever offered on a split, so one row always remains. */
+  _dropCharge(button) {
+    const tray = button.closest(".rv-tray");
+    const rows = [...tray.querySelectorAll(".rv-charge")];
+    const charges = this._trayCharges(tray);
+    charges.splice(rows.indexOf(button.closest(".rv-charge")), 1);
+    this._renderCharges(tray, charges);
+  }
+
+  /**
+   * Charge this spool everything the tray has not attributed yet — the subtraction the
+   * invariant makes obvious, so the user does not do it on a phone at the printer.
+   *
+   * Clamped at zero: an over-charged tray already says so beside the button, and a
+   * negative charge is refused by the domain rather than quietly turned into a credit.
+   */
+  _loadRest(button) {
+    const tray = button.closest(".rv-tray");
+    const row = button.closest(".rv-charge");
+    const index = [...tray.querySelectorAll(".rv-charge")].indexOf(row);
+    const amount = typedGrams(tray.querySelector(".rv-amt").value);
+    if (amount === null) return;
+    const others = this._trayCharges(tray).reduce(
+      (sum, charge, i) => (i === index ? sum : sum + (typedGrams(charge.amount) ?? 0)),
+      0,
+    );
+    row.querySelector(".rv-share").value = Math.max(0, round1(amount - others)).toFixed(1);
+    this._syncReviewCard(tray.closest(".rv-card"));
+  }
+
+  _renderCharges(tray, charges) {
+    tray.querySelector(".rv-charges").innerHTML = this.reviewCharges(charges, tray.dataset.frozen);
+    this._syncReviewCard(tray.closest(".rv-card"));
+  }
+
+  /**
+   * Split the weighed total across the **trays** in the same proportion as the frozen
+   * estimates (docs/06 §6.3) — a click, not arithmetic. With one tray it replaces the
    * value outright, which is the same rule with one term. When every estimate is zero —
    * the no-data card — the spec names no proportion, so the split is even: the honest
    * default when nothing distinguishes the slots.
+   *
+   * The sibling of **[ Load the rest ]**, and deliberately the same idea: the panel does
+   * the arithmetic the user would otherwise do at the printer. This one divides one
+   * measured total across trays by proportion; that one divides one tray's amount across
+   * its spools by subtraction. Neither invents a figure — both only redistribute one the
+   * user supplied.
    *
    * Rounding: cumulative, one decimal like every movement — row i gets
    * round1(cumulative share through i) − round1(cumulative share through i−1). The
@@ -2670,56 +2885,77 @@ class FilamentLedgerPanel extends HTMLElement {
     const total = weighed.value === "" ? NaN : Number(weighed.value);
     if (!Number.isFinite(total) || total < 0) return;
 
-    const rows = [...card.querySelectorAll(".rv-row")];
-    const basis = rows.map((row) => Number(row.dataset.orig) || 0);
+    const trays = [...card.querySelectorAll(".rv-tray")];
+    const basis = trays.map((tray) => Number(tray.dataset.orig) || 0);
     const basisTotal = basis.reduce((a, b) => a + b, 0);
     const shares =
-      basisTotal > 0 ? basis.map((b) => b / basisTotal) : basis.map(() => 1 / rows.length);
+      basisTotal > 0 ? basis.map((b) => b / basisTotal) : basis.map(() => 1 / trays.length);
 
-    const round1 = (value) => Math.round(value * 10) / 10;
     let cumShare = 0;
     let cumRounded = 0;
-    rows.forEach((row, i) => {
+    trays.forEach((tray, i) => {
       cumShare += shares[i];
-      // The last row closes on exactly 1, so float drift in the running share can never
+      // The last tray closes on exactly 1, so float drift in the running share can never
       // leave the sum a tenth short of — or past — what the scale read.
-      const next = round1(total * (i === rows.length - 1 ? 1 : cumShare));
-      row.querySelector(".rv-amt").value = round1(next - cumRounded).toFixed(1);
+      const next = round1(total * (i === trays.length - 1 ? 1 : cumShare));
+      tray.querySelector(".rv-amt").value = round1(next - cumRounded).toFixed(1);
       cumRounded = next;
     });
     this._syncReviewCard(card);
   }
 
   /**
-   * Approve with only the overrides the user actually changed: `amounts` carries a slot
+   * Approve with only the overrides the user actually changed: `amounts` carries a tray
    * only when its value differs from what the card DISPLAYED — the estimate seeded into
    * the input at one decimal — and `assign` only the pickers with a choice. The
    * comparison must round `data-orig` the same way the seed did (`toFixed(1)`):
    * `data-orig` keeps the full-precision estimate for Distribute's basis, and comparing
-   * the one-decimal input against it would flag every untouched row as edited whenever
+   * the one-decimal input against it would flag every untouched tray as edited whenever
    * the estimate carries sub-0.1 g precision, silently replacing the frozen estimate
-   * with its rounded display value server-side. Untouched rows are omitted, so the
+   * with its rounded display value server-side. Untouched trays are omitted, so the
    * backend charges the full-precision frozen estimate. An input cleared to empty reads
-   * as 0, sent iff 0 differs from the displayed seed — clearing a non-zero row is a
+   * as 0, sent iff 0 differs from the displayed seed — clearing a non-zero tray is a
    * deliberate "this slot consumed nothing". JSON object keys are strings; the schema's
    * Coerce(int) reads them as slots.
+   *
+   * A **split** tray is the one exception to that omission, and it has to be: its charges
+   * are the one-decimal figures the user typed, and the backend refuses an approval whose
+   * charges do not add up to the tray's amount. Sending the split without the amount would
+   * measure those tenths against a frozen estimate carrying more precision and fail on a
+   * hundredth of a gram the user cannot see, let alone act on. So a split tray confirms
+   * exactly what the card showed — which is also what the user decided, row by row.
+   *
+   * `assign` rather than a one-entry `charges` for the collapsed picker, deliberately: the
+   * shorthand gives the tray whole to the chosen spool at whatever precision the backend
+   * already holds, and a charge list would round it on the way past.
    */
   _approveReview(card, reviewId) {
     const payload = { review_id: reviewId };
     const amounts = {};
     const assign = {};
-    for (const row of card.querySelectorAll(".rv-row")) {
-      const raw = row.querySelector(".rv-amt").value;
-      const value = raw === "" ? 0 : Number(raw);
-      const seeded = Number(Number(row.dataset.orig).toFixed(1));
-      if (Number.isFinite(value) && value >= 0 && value !== seeded) {
-        amounts[row.dataset.slot] = value;
+    const charges = {};
+    for (const tray of card.querySelectorAll(".rv-tray")) {
+      const slot = tray.dataset.slot;
+      const value = typedGrams(tray.querySelector(".rv-amt").value);
+      const seeded = Number(Number(tray.dataset.orig).toFixed(1));
+      const rows = this._trayCharges(tray);
+      const split = rows.length > 1;
+      if (value !== null && (value !== seeded || split)) amounts[slot] = value;
+
+      if (split) {
+        charges[slot] = rows
+          .filter((charge) => charge.spool_id)
+          .map((charge) => ({
+            spool_id: charge.spool_id,
+            amount_g: typedGrams(charge.amount) ?? 0,
+          }));
+      } else if (rows[0].spool_id && rows[0].spool_id !== tray.dataset.frozen) {
+        assign[slot] = rows[0].spool_id;
       }
-      const pick = row.querySelector(".rv-pick");
-      if (pick && pick.value) assign[row.dataset.slot] = pick.value;
     }
     if (Object.keys(amounts).length) payload.amounts = amounts;
     if (Object.keys(assign).length) payload.assign = assign;
+    if (Object.keys(charges).length) payload.charges = charges;
     const note = card.querySelector(".rv-note").value.trim();
     if (note) payload.note = note;
     this.guarded(() => this.call("reviews/approve", payload));
@@ -3403,9 +3639,14 @@ class FilamentLedgerPanel extends HTMLElement {
    * Move a charge to the spool that actually fed the print (docs/14 §14.3).
    *
    * **The modal states what will happen to the grams before anything is sent**, and the
-   * figures it prints are the ones the ledger will hold: both legs are |amount| of the
-   * entry named in `movement_id`, to one decimal, which is the precision a single
-   * movement is known to.
+   * figures it prints are the ones the ledger will hold: both legs are the amount in the
+   * field, to one decimal, which is the precision a single movement is known to.
+   *
+   * The field starts at the whole charge, which is what a reassignment has always moved.
+   * Typing less is the review card's split reached after the fact — a spool that emptied
+   * mid-print and was replaced in the same tray — and the sentence follows the field as
+   * it is typed, because a promise about the grams that does not track what is about to
+   * be sent is worse than no promise.
    */
   reassignForm() {
     const t = this._t;
@@ -3424,17 +3665,40 @@ class FilamentLedgerPanel extends HTMLElement {
         ${this.formActions(null)}`;
     }
     return `
-      <form data-form="reassign">
+      <form data-form="reassign" data-whole="${esc(moved)}" data-spool="${esc(subject.spool_name)}">
         <h3>${t("dlg.reassignTitle")}</h3>
-        <p class="cx-says">${t("dlg.reassignSays", {
+        <p class="cx-says rs-says">${t("dlg.reassignSays", {
           grams: moved,
           spool: subject.spool_name,
         })}</p>
         <label>${t("dlg.reassignTo")}<select name="to_spool_id">${options}</select></label>
+        <label>${t("dlg.reassignAmount")}
+          <input class="rs-amount" name="amount_g" type="number" min="0.1" step="0.1"
+            max="${esc(moved)}" value="${esc(moved)}">
+          <small>${t("dlg.reassignAmountHelp", { grams: moved })}</small>
+        </label>
         <label>${t("act.note")}<input name="note" placeholder="${t("act.optional")}"></label>
         <p class="muted small">${t("dlg.reassignFoot")}</p>
         ${this.formActions(t("dlg.reassign"))}
       </form>`;
+  }
+
+  /**
+   * Keep the reassign modal's promise equal to what the button will send.
+   *
+   * Patched in place, like the review card and the edit dialog: a render() per keystroke
+   * would rebuild the modal and take the focus out of the number being typed. An amount
+   * outside the charge leaves the sentence on the last figure that made sense rather than
+   * printing a promise the backend is about to refuse.
+   */
+  _syncReassignForm(form) {
+    const whole = Number(form.dataset.whole);
+    const typed = typedGrams(form.querySelector(".rs-amount").value);
+    if (typed === null || typed === 0 || typed > whole) return;
+    form.querySelector(".rs-says").innerHTML = this._t("dlg.reassignSays", {
+      grams: typed.toFixed(1),
+      spool: form.dataset.spool,
+    });
   }
 
   /**
@@ -4195,7 +4459,20 @@ table.ledger td.src { padding-left: 14px; }
   background: var(--fl-surface-sunken); border-radius: 0 8px 8px 0; }
 .rv-nodata .t { font-weight: 500; }
 .rv-rows { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+/* A tray is its figure and the spools it is charged to, stacked: one number on the tray
+   line, one row per spool under it. The indent is what says the charges belong to the
+   tray above them rather than to the card. */
+.rv-tray { display: flex; flex-direction: column; gap: 4px; }
+.rv-tray + .rv-tray { border-top: 1px solid var(--fl-line); padding-top: 8px; }
 .rv-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.rv-tray > .rv-row { justify-content: space-between; }
+.rv-charges { display: flex; flex-direction: column; gap: 4px; padding-left: 14px; }
+.rv-charge { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  font-size: 13.5px; }
+.rv-trayfoot { display: flex; align-items: baseline; gap: 10px; padding-left: 14px;
+  flex-wrap: wrap; }
+.rv-left { margin-left: auto; font-size: 12.5px; color: var(--fl-warn);
+  font-variant-numeric: tabular-nums; }
 .rv-dot { width: 14px; height: 14px; border-radius: 4px; flex: none;
   border: 1px solid var(--fl-line); }
 .rv-warn { flex: none; width: 14px; text-align: center; }
@@ -4204,8 +4481,11 @@ table.ledger td.src { padding-left: 14px; }
 input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; border-radius: 8px;
   border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
   color: var(--fl-ink); text-align: right; font-variant-numeric: tabular-nums; }
-.rv-pickline { flex-basis: 100%; padding-left: 23px; font-size: 12.5px;
+/* The picker sits inside its own charge row now, so it stretches rather than claiming a
+   line of its own the way it did when the tray and its one spool shared a row. */
+.rv-pickline { flex: 1 1 180px; min-width: 0; font-size: 12.5px;
   color: var(--fl-ink-dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rv-charge button.link { align-self: center; font-size: 12.5px; white-space: nowrap; }
 .rv-pick { font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px;
   border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
   color: var(--fl-ink); }

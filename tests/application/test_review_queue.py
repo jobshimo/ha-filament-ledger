@@ -39,7 +39,10 @@ from custom_components.filament_ledger.domain.event import (
     ReviewResolved,
     SpoolDepleted,
 )
-from custom_components.filament_ledger.domain.model.pending_review import PendingReview
+from custom_components.filament_ledger.domain.model.pending_review import (
+    PendingReview,
+    ReviewCharge,
+)
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.confidence import Confidence
@@ -142,9 +145,10 @@ class TestOpeningAReview:
         review = await stored_review(ledger, review_id)
         assert review.state is ReviewState.PENDING
         assert review.reason is ReviewReason.CANCELLED
-        # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool.
+        # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool as one
+        # charge for the whole estimate.
         assert review.estimated_usage == {SLOT_1: Grams.of(71)}
-        assert review.slot_resolution == {SLOT_1: spool_id}
+        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.of(71)))]
         assert review.estimator_used is EstimatorKind.LINEAR_PROGRESS
         # No movement. No balance changed. That is the whole point of PENDING.
         assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == Grams.of(1000)
@@ -212,7 +216,7 @@ class TestOpeningAReview:
 
         review = await stored_review(ledger, await opened(ledger, job))
 
-        assert review.slot_resolution == {SLOT_1: None}
+        assert review.charges == []
 
     async def test_the_ambient_channel_refuses_to_estimate(self, ledger: Ledger) -> None:
         """`open_within_unit` runs while the caller holds the ledger's one write lock,
@@ -261,7 +265,7 @@ class TestOpeningAReview:
             await ledger.database.execute(
                 "INSERT INTO pending_review (id, job_id, reason, estimated_usage, "
                 "slot_resolution, estimator_used, state, opened_at) "
-                "VALUES ('rogue', 'job-1', 'CANCELLED', '{}', '{}', 'NONE', 'PENDING', "
+                "VALUES ('rogue', 'job-1', 'CANCELLED', '{}', '[]', 'NONE', 'PENDING', "
                 "'2026-08-02T12:00:00+00:00')"
             )
 
@@ -345,7 +349,61 @@ class TestApprovingAReview:
 
         [row] = await estimated_consumption_rows(ledger)
         assert row["spool_id"] == spool_id
-        assert (await stored_review(ledger, review_id)).slot_resolution == {SLOT_1: spool_id}
+        assert (await stored_review(ledger, review_id)).charges == [
+            (SLOT_1, ReviewCharge(spool_id, Grams.of(71)))
+        ]
+
+    async def test_a_split_tray_deducts_from_both_spools_in_one_approval(
+        self, ledger: Ledger
+    ) -> None:
+        """A spool emptied mid-print and was replaced in the same tray. The printer
+        reported one figure; it belongs to two spools, and one decision says so."""
+        emptied = await a_spool(ledger)
+        replacement = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(emptied, SLOT_1)
+        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+
+        await ledger.use_cases.approve_review.execute(
+            ApproveReviewCommand(
+                review_id=review_id,
+                charges={
+                    SLOT_1: (
+                        ReviewCharge(emptied, Grams.of(11)),
+                        ReviewCharge(replacement, Grams.of(60)),
+                    )
+                },
+            )
+        )
+
+        rows = await estimated_consumption_rows(ledger)
+        assert [(row["spool_id"], row["amount_mg"]) for row in rows] == [
+            (emptied, -11000),
+            (replacement, -60000),
+        ]
+        # Both legs name the print, so per-print accounting still follows the material.
+        assert {row["job_id"] for row in rows} == {"job-1"}
+        assert {row["review_id"] for row in rows} == {review_id}
+        assert (await ledger.use_cases.queries.detail(emptied)).summary.balance == Grams.of(989)
+        assert (await ledger.use_cases.queries.detail(replacement)).summary.balance == Grams.of(940)
+
+    async def test_a_split_that_leaves_grams_unattributed_writes_nothing(
+        self, ledger: Ledger
+    ) -> None:
+        """The remainder came off something. Accepting the shortfall would lose it."""
+        emptied = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(emptied, SLOT_1)
+        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+
+        with pytest.raises(UnresolvedSlotError, match="must add up"):
+            await ledger.use_cases.approve_review.execute(
+                ApproveReviewCommand(
+                    review_id=review_id,
+                    charges={SLOT_1: (ReviewCharge(emptied, Grams.of(11)),)},
+                )
+            )
+
+        assert await estimated_consumption_rows(ledger) == []
+        assert (await stored_review(ledger, review_id)).state is ReviewState.PENDING
 
     async def test_a_double_click_cannot_deduct_twice(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
@@ -678,7 +736,9 @@ class TestPersistedRoundTrip:
         assert review.state is ReviewState.APPROVED
         assert review.confirmed_usage == {SLOT_1: Grams.of(31)}
         assert review.estimated_usage == {SLOT_1: Grams.of(71)}
-        assert review.slot_resolution == {SLOT_1: spool_id}
+        # The single frozen charge followed the corrected amount: with one charge the sum
+        # invariant admits exactly one split, so nothing was decided on anybody's behalf.
+        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.of(31)))]
         assert review.estimator_used is EstimatorKind.LINEAR_PROGRESS
         assert review.reason is ReviewReason.CANCELLED
         assert review.opened_at == EPOCH
