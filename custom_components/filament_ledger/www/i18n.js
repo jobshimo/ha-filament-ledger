@@ -605,6 +605,14 @@ const EN = {
     "Measured across [[count]] prints this ledger has recorded since [[since]]. It is not " +
     "the machine's lifetime counter — the printer reports no such figure — so the total " +
     "starts the day Filament Ledger was installed, not the day the printer was.",
+  "printer.trackingHeading": "More than one printer found",
+  "printer.trackingFollowing": "This ledger is following printer [[serial]].",
+  "printer.trackingFollowingUnnamed":
+    "This ledger is following the one printer it resolved; that printer did not report a " +
+    "serial.",
+  "printer.trackingIgnored":
+    "Also found, and not tracked: [[serials]]. This version follows a single printer, so " +
+    "nothing from the others reaches the ledger — no trays, no prints, no consumption.",
   "printer.traysHeading": "Trays",
   "printer.trayLedger": "ledger: [[spool]]",
   "printer.trayLedgerEmpty": "ledger: nothing mounted",
@@ -1185,6 +1193,15 @@ const ES = {
     "No es el contador de vida de la máquina: la impresora no informa esa cifra, así que " +
     "el total empieza el día en que se instaló Filament Ledger, no el día en que se " +
     "estrenó la impresora.",
+  "printer.trackingHeading": "Se encontró más de una impresora",
+  "printer.trackingFollowing": "Este registro sigue a la impresora [[serial]].",
+  "printer.trackingFollowingUnnamed":
+    "Este registro sigue a la única impresora que pudo resolver; esa impresora no informó " +
+    "de ningún número de serie.",
+  "printer.trackingIgnored":
+    "También se encontraron, y no se siguen: [[serials]]. Esta versión sigue a una sola " +
+    "impresora, así que nada de las demás llega al registro: ni bandejas, ni impresiones, " +
+    "ni consumo.",
   "printer.traysHeading": "Bandejas",
   "printer.trayLedger": "registro: [[spool]]",
   "printer.trayLedgerEmpty": "registro: nada montado",

@@ -37,7 +37,6 @@ from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
-    SlotIndex,
     SpoolId,
     TagUid,
 )
@@ -51,9 +50,9 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
-from .conftest import Ledger
+from .conftest import Ledger, a_tray
 
-SLOT_1 = SlotIndex(1)
+TRAY_1 = a_tray(1)
 
 
 async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
@@ -90,7 +89,7 @@ class TestDeletingASpool:
         location change from quantity change extends to it."""
         deleted = await a_spool(ledger, label="Registered twice by mistake")
         replacement = await a_spool(ledger, label="The real one")
-        await ledger.use_cases.mount_spool.execute(deleted, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(deleted, TRAY_1)
         before = await movement_count(ledger)
 
         await ledger.use_cases.delete_spool.execute(deleted)
@@ -102,7 +101,7 @@ class TestDeletingASpool:
         assert (row["location_kind"], row["location_slot"]) == ("STORAGE", None)
         # The slot is free *immediately*: the partial unique index learned to ignore
         # deleted spools, so this mount neither displaces a ghost nor collides with one.
-        await ledger.use_cases.mount_spool.execute(replacement, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(replacement, TRAY_1)
         assert (await stored(ledger, replacement))["location_slot"] == 1
 
     async def test_it_announces_itself_after_the_commit(self, ledger: Ledger) -> None:
@@ -145,7 +144,7 @@ class TestDeletingASpool:
         await ledger.use_cases.delete_spool.execute(spool_id)
 
         with pytest.raises(SpoolDeletedError):
-            await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+            await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         with pytest.raises(SpoolDeletedError):
             await ledger.use_cases.edit_spool_details.execute(spool_id, label="renamed")
         with pytest.raises(SpoolDeletedError):
@@ -162,9 +161,9 @@ class TestRestoringASpool:
         taking it back would displace a spool the user physically loaded."""
         deleted = await a_spool(ledger, label="Mistake")
         replacement = await a_spool(ledger, label="The real one")
-        await ledger.use_cases.mount_spool.execute(deleted, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(deleted, TRAY_1)
         await ledger.use_cases.delete_spool.execute(deleted)
-        await ledger.use_cases.mount_spool.execute(replacement, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(replacement, TRAY_1)
         ledger.events.published.clear()
 
         await ledger.use_cases.restore_spool.execute(deleted)
@@ -173,7 +172,7 @@ class TestRestoringASpool:
         assert row["deleted_at"] is None
         assert (row["location_kind"], row["location_slot"]) == ("STORAGE", None)
         # The occupant is untouched.
-        occupant = await SqliteSpoolRepository(ledger.database).find_by_location(AmsSlot(SLOT_1))
+        occupant = await SqliteSpoolRepository(ledger.database).find_by_location(AmsSlot(TRAY_1))
         assert occupant is not None
         assert occupant.id == replacement
         (event,) = ledger.events.of(SpoolRestored)
@@ -274,7 +273,7 @@ class TestVisibilityAndStatistics:
         MEDIUM.
         """
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         review_id = await ledger.use_cases.open_pending_review.execute(
             OpenPendingReviewCommand(
                 job=PrintJob(
@@ -284,7 +283,7 @@ class TestVisibilityAndStatistics:
                     started_at=ledger.clock.now(),
                 ),
                 reason=ReviewReason.CANCELLED,
-                amounts={SLOT_1: Grams.of(70)},
+                amounts={TRAY_1: Grams.of(70)},
             )
         )
         await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
@@ -430,12 +429,12 @@ class TestTheRepositoryStopsSeeingDeletedSpools:
 
     async def test_a_deleted_spool_holds_no_position(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         spools = SqliteSpoolRepository(ledger.database)
 
         await ledger.use_cases.delete_spool.execute(spool_id)
 
-        assert await spools.find_by_location(AmsSlot(SLOT_1)) is None
+        assert await spools.find_by_location(AmsSlot(TRAY_1)) is None
 
     async def test_list_excludes_deleted_by_default_and_the_trash_asks_for_them(
         self, ledger: Ledger

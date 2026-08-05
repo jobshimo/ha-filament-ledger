@@ -26,7 +26,6 @@ from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
     ReviewId,
-    SlotIndex,
     SpoolId,
     TagSource,
     TagUid,
@@ -39,6 +38,7 @@ from custom_components.filament_ledger.domain.value.print_job_state import Print
 from custom_components.filament_ledger.domain.value.review import EstimatorKind, ReviewReason
 from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
 from custom_components.filament_ledger.infrastructure.ha.event_bridge import LEDGER_EVENTS
+from custom_components.filament_ledger.infrastructure.ha.printer_state import ReadPrinterState
 from custom_components.filament_ledger.infrastructure.ha.tray_sync import TraySync
 from custom_components.filament_ledger.infrastructure.ha.websocket_api import (
     async_register_commands,
@@ -47,7 +47,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
-from ..application.conftest import EPOCH
+from ..application.conftest import A_PRINTER, EPOCH, a_tray
 from .conftest import FakeHass, Harness, a_spool, as_hass
 
 # The captured reference instance: the same registry rows and tray attributes the gateway
@@ -59,6 +59,26 @@ from .test_bambu_gateway import (
     plant_registry,
     tray_state,
 )
+
+
+# One tray as the panel names it on the wire: the three parts, exactly as `a_tray(1)`
+# spells them in the ledger these tests build.
+def tray_wire(slot: int) -> dict[str, object]:
+    """One tray as the panel names it: the three parts `a_tray` spells in the ledger."""
+    return {"printer": A_PRINTER.value, "ams": 1, "slot": slot}
+
+
+TRAY_1_WIRE = tray_wire(1)
+
+
+def _tray_of(line: dict[str, object]) -> dict[str, object]:
+    """The tray a review line named, ready to be sent back with an answer attached.
+
+    Read off the payload rather than restated, because that is what the panel does: the
+    card renders the tray the review froze, and approving quotes it back.
+    """
+    return {key: line[key] for key in ("printer", "ams", "slot")}
+
 
 LIST = "filament_ledger/spools/list"
 GET = "filament_ledger/spools/get"
@@ -198,7 +218,7 @@ async def an_open_review(
         layer_reached=71,
         total_layers=209,
         progress=Percentage.of(34),
-        reported_usage={SlotIndex(1): Grams.of(209)},
+        reported_usage={a_tray(1): Grams.of(209)},
         raw_gcode_state="pause",
         raw_print_error=raw_print_error,
     )
@@ -266,24 +286,35 @@ class TestSchemasRejectMalformedMessages:
             pytest.param(REVIEWS_APPROVE, {}, id="approve-without-a-review-id"),
             pytest.param(
                 REVIEWS_APPROVE,
-                {"review_id": "r", "amounts": {"9": 10}},
+                {"review_id": "r", "amounts": [{"slot": 9, "amount_g": 10}]},
                 id="approve-with-a-slot-past-the-last",
             ),
             pytest.param(
                 REVIEWS_APPROVE,
-                {"review_id": "r", "amounts": {"1": -5}},
+                {"review_id": "r", "amounts": [{"slot": 1, "amount_g": -5}]},
                 id="approve-with-a-negative-amount",
             ),
             pytest.param(
                 REVIEWS_APPROVE,
-                {"review_id": "r", "amounts": {"1": "much"}},
+                {"review_id": "r", "amounts": [{"slot": 1, "amount_g": "much"}]},
                 id="approve-with-a-textual-amount",
             ),
             pytest.param(
                 REVIEWS_APPROVE,
-                {"review_id": "r", "assign": {"0": "spool"}},
+                {"review_id": "r", "assign": [{"slot": 0, "spool_id": "spool"}]},
                 id="approve-assigning-below-the-first-slot",
             ),
+            pytest.param(
+                REVIEWS_APPROVE,
+                {"review_id": "r", "amounts": [{"slot": 1, "ams": 0, "amount_g": 10}]},
+                id="approve-with-an-ams-below-the-first",
+            ),
+            pytest.param(
+                REVIEWS_APPROVE,
+                {"review_id": "r", "amounts": [{"amount_g": 10}]},
+                id="approve-with-an-entry-naming-no-tray",
+            ),
+            pytest.param(MOUNT, {"spool_id": "s", "slot": 1, "ams": 0}, id="mount-into-ams-zero"),
             pytest.param(REVIEWS_DISMISS, {}, id="dismiss-without-a-review-id"),
             pytest.param(MOVEMENTS, {"limit": "many"}, id="movements-with-a-textual-limit"),
             pytest.param(MOVEMENTS, {"limit": 0}, id="movements-with-a-zero-limit"),
@@ -345,7 +376,13 @@ class TestList:
         assert payload["state"] == "SEALED"
         assert payload["confidence"] == "HIGH"
         assert payload["needs_weighing"] is False
-        assert payload["location"] == {"kind": "STORAGE", "slot": None, "label": "Storage"}
+        assert payload["location"] == {
+            "kind": "STORAGE",
+            "printer": None,
+            "ams": None,
+            "slot": None,
+            "label": "Storage",
+        }
         assert payload["movement_count"] == 1
         assert payload["has_anomaly"] is False
 
@@ -776,19 +813,58 @@ class TestMountAndUnmount:
     async def test_a_mounted_spool_reports_its_slot_to_the_panel(self, ws: WsClient) -> None:
         spool_id = await a_created_spool(ws)
 
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=2)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(2))
         (payload,) = await ws.result_list(LIST)
-        assert payload["location"] == {"kind": "AMS_SLOT", "slot": 2, "label": "AMS slot 2"}
+        assert payload["location"] == {
+            "kind": "AMS_SLOT",
+            "printer": A_PRINTER.value,
+            "ams": 1,
+            "slot": 2,
+            "label": "AMS slot 2",
+        }
 
         await ws.result_dict(UNMOUNT, spool_id=spool_id)
         (payload,) = await ws.result_list(LIST)
-        assert payload["location"] == {"kind": "STORAGE", "slot": None, "label": "Storage"}
+        assert payload["location"] == {
+            "kind": "STORAGE",
+            "printer": None,
+            "ams": None,
+            "slot": None,
+            "label": "Storage",
+        }
+
+    async def test_a_caller_that_names_no_printer_lands_in_the_tray_space_in_use(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The compatibility that matters, and the corruption it prevents.
+
+        An automation written before a tray had three parts sends a slot and nothing else.
+        The absence is answered by the runtime — the machine this ledger follows — never by
+        a bare sentinel: the migrated rows already carry the discovered serial, and
+        defaulting to the sentinel would open a *second* tray space in which every slot
+        looked free. Two spools in tray 1, with the widened index correctly seeing two
+        different trays and looking away.
+        """
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        harness.runtime.printer = ReadPrinterState(
+            gateway=BambuLabGateway(as_hass(harness.hass)),
+            spools=SqliteSpoolRepository(harness.ledger.database),
+            queries=harness.ledger.use_cases.queries,
+        )
+        spool_id = await a_created_spool(ws)
+
+        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+
+        location = (
+            await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        ).summary.spool.location
+        assert location == AmsSlot(a_tray(1))
 
     async def test_every_mutation_refreshes_the_entities(
         self, ws: WsClient, harness: Harness
     ) -> None:
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         await ws.result_dict(UNMOUNT, spool_id=spool_id)
         assert harness.coordinator.refresh_count == 3
 
@@ -803,7 +879,7 @@ class TestReviewsList:
         """Everything the card in docs/06 §6.3 renders, in one payload: the job's name
         and raw error, the named estimator, the frozen per-line facts."""
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         review_id = await an_open_review(harness)
 
         (payload,) = await ws.result_list(REVIEWS_LIST)
@@ -828,6 +904,10 @@ class TestReviewsList:
             "estimated_total_g": 71.0,
             "lines": [
                 {
+                    # The tray in full: approving sends these three back, and a bare
+                    # number would no longer say which tray was meant.
+                    "printer": A_PRINTER.value,
+                    "ams": 1,
                     "slot": 1,
                     "estimated_g": 71.0,
                     "charges": [{"spool_id": spool_id, "amount_g": 71.0}],
@@ -844,7 +924,15 @@ class TestReviewsList:
 
         (payload,) = await ws.result_list(REVIEWS_LIST)
 
-        assert payload["lines"] == [{"slot": 1, "estimated_g": 71.0, "charges": []}]
+        assert payload["lines"] == [
+            {
+                "printer": A_PRINTER.value,
+                "ams": 1,
+                "slot": 1,
+                "estimated_g": 71.0,
+                "charges": [],
+            }
+        ]
 
     async def test_a_64_bit_hms_code_crosses_the_wire_as_the_exact_decimal_string(
         self, ws: WsClient, harness: Harness
@@ -866,7 +954,7 @@ class TestReviewsList:
         `NONE` with every line frozen at zero. The spools were mounted, so the rows are
         attributed — only the amounts are missing."""
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         job = PrintJob(
             id=PrintJobId("job-nodata"),
             name="bracket_v4.3mf",
@@ -874,7 +962,7 @@ class TestReviewsList:
             started_at=EPOCH,
             # No layers, no percent: estimation is unavailable, and the review opens with
             # the explicit no-data flag instead of a fabricated figure.
-            reported_usage={SlotIndex(1): Grams.of(209)},
+            reported_usage={a_tray(1): Grams.of(209)},
             raw_gcode_state="finish",
         )
         await harness.ledger.use_cases.open_pending_review.execute(
@@ -888,7 +976,13 @@ class TestReviewsList:
         assert payload["raw_print_error"] is None
         assert payload["estimated_total_g"] == 0.0
         assert payload["lines"] == [
-            {"slot": 1, "estimated_g": 0.0, "charges": [{"spool_id": spool_id, "amount_g": 0.0}]}
+            {
+                "printer": A_PRINTER.value,
+                "ams": 1,
+                "slot": 1,
+                "estimated_g": 0.0,
+                "charges": [{"spool_id": spool_id, "amount_g": 0.0}],
+            }
         ]
 
     async def test_the_vocabularies_the_panel_branches_on_are_pinned(self) -> None:
@@ -907,7 +1001,7 @@ class TestReviewsList:
 class TestReviewsApprove:
     async def test_approval_deducts_and_refreshes(self, ws: WsClient, harness: Harness) -> None:
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         review_id = await an_open_review(harness)
         refreshes = harness.coordinator.refresh_count
 
@@ -922,16 +1016,17 @@ class TestReviewsApprove:
     async def test_the_users_numbers_override_and_assignments_resolve(
         self, ws: WsClient, harness: Harness
     ) -> None:
-        """JSON object keys arrive as strings; the schema reads them as slot indices."""
+        """Each entry names the tray the card rendered, which is what the panel sends back."""
         spool_id = await a_created_spool(ws)
         await an_open_review(harness)
         (pending,) = await ws.result_list(REVIEWS_LIST)
+        (line,) = cast("list[dict[str, object]]", pending["lines"])
 
         await ws.result_dict(
             REVIEWS_APPROVE,
             review_id=pending["id"],
-            amounts={"1": 12.5},
-            assign={"1": spool_id},
+            amounts=[{**_tray_of(line), "amount_g": 12.5}],
+            assign=[{**_tray_of(line), "spool_id": spool_id}],
             note="weighed the waste",
         )
 
@@ -951,18 +1046,21 @@ class TestReviewsApprove:
         reported one figure for that tray; it belongs to two spools (docs/06 §6.3)."""
         emptied = await a_created_spool(ws)
         replacement = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=emptied, slot=1)
+        await ws.result_dict(MOUNT, spool_id=emptied, **tray_wire(1))
         review_id = await an_open_review(harness)
 
         await ws.result_dict(
             REVIEWS_APPROVE,
             review_id=review_id,
-            charges={
-                "1": [
-                    {"spool_id": emptied, "amount_g": 11},
-                    {"spool_id": replacement, "amount_g": 60},
-                ]
-            },
+            charges=[
+                {
+                    **TRAY_1_WIRE,
+                    "charges": [
+                        {"spool_id": emptied, "amount_g": 11},
+                        {"spool_id": replacement, "amount_g": 60},
+                    ],
+                }
+            ],
         )
 
         history = cast(
@@ -990,13 +1088,13 @@ class TestReviewsApprove:
         """The same refusal, reached from the other side: 11 g of a 71 g tray attributed
         leaves 60 g that came off something, and accepting it would lose them."""
         emptied = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=emptied, slot=1)
+        await ws.result_dict(MOUNT, spool_id=emptied, **tray_wire(1))
         review_id = await an_open_review(harness)
 
         code, message = await ws.error(
             REVIEWS_APPROVE,
             review_id=review_id,
-            charges={"1": [{"spool_id": emptied, "amount_g": 11}]},
+            charges=[{**TRAY_1_WIRE, "charges": [{"spool_id": emptied, "amount_g": 11}]}],
         )
 
         assert code == "UnresolvedSlotError"
@@ -1007,7 +1105,7 @@ class TestReviewsApprove:
         self, ws: WsClient, harness: Harness
     ) -> None:
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         review_id = await an_open_review(harness)
         await ws.result_dict(REVIEWS_APPROVE, review_id=review_id)
 
@@ -1028,7 +1126,7 @@ class TestReviewsDismiss:
         self, ws: WsClient, harness: Harness
     ) -> None:
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         review_id = await an_open_review(harness)
 
         result = await ws.result_dict(
@@ -1113,7 +1211,7 @@ class TestMovements:
         """The linkage the movement rows already store, resolved for the table: `job_id`
         becomes the name the user recognises, `review_id` travels verbatim."""
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         review_id = await an_open_review(harness)
         await ws.result_dict(REVIEWS_APPROVE, review_id=review_id)
 
@@ -1249,7 +1347,7 @@ class TestStatistics:
                 state=PrintJobState.FINISHED,
                 started_at=EPOCH,
                 ended_at=EPOCH + timedelta(minutes=minutes),
-                reported_usage={SlotIndex(1): Grams.of(used)},
+                reported_usage={a_tray(1): Grams.of(used)},
             )
         )
 
@@ -1275,7 +1373,7 @@ class TestStatistics:
     ) -> None:
         """Everything the Stats tab renders, in one payload."""
         spool_id = await a_created_spool(ws, label="PLA Basic Black")
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         await self.a_recorded_print(harness)
         await ws.result_dict(
             DISCARD, spool_id=spool_id, mode="partial", reason="tangled", amount_g=12.4
@@ -1308,7 +1406,7 @@ class TestStatistics:
         """The whole point of the parameter: the browser never filters, so it never needs
         the ledger, and the visibility law stays in one testable place."""
         spool_id = await a_created_spool(ws)
-        await ws.result_dict(MOUNT, spool_id=spool_id, slot=1)
+        await ws.result_dict(MOUNT, spool_id=spool_id, **tray_wire(1))
         await harness.ledger.use_cases.record_print_consumption.execute(
             PrintJob(
                 id=PrintJobId("job-old"),
@@ -1316,7 +1414,7 @@ class TestStatistics:
                 state=PrintJobState.FINISHED,
                 started_at=EPOCH - timedelta(days=200),
                 ended_at=EPOCH - timedelta(days=200) + timedelta(minutes=60),
-                reported_usage={SlotIndex(1): Grams.of(500)},
+                reported_usage={a_tray(1): Grams.of(500)},
             )
         )
 
@@ -1409,7 +1507,7 @@ class TestTraysSync:
         location = (
             await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
         ).summary.spool.location
-        assert location == AmsSlot(SlotIndex(1))
+        assert location == AmsSlot(a_tray(1))
         assert harness.coordinator.refresh_count == refreshes + 1
 
     async def test_an_unknown_tag_travels_with_the_register_form_hints(
@@ -1423,6 +1521,8 @@ class TestTraysSync:
 
         slots = cast("list[dict[str, object]]", result["slots"])
         assert slots[3] == {
+            "printer": A_PRINTER.value,
+            "ams": 1,
             "slot": 4,
             "status": "unknown_tag",
             "tag_uid": "4289A97100000100",
@@ -1448,6 +1548,8 @@ class TestTraysSync:
 
         slots = cast("list[dict[str, object]]", result["slots"])
         assert slots[0] == {
+            "printer": A_PRINTER.value,
+            "ams": 1,
             "slot": 1,
             "status": "detected",
             "tag_uid": "3C45C3DB00000100",
@@ -1477,6 +1579,8 @@ class TestTraysSync:
 
         slots = cast("list[dict[str, object]]", result["slots"])
         assert slots[0] == {
+            "printer": A_PRINTER.value,
+            "ams": 1,
             "slot": 1,
             "status": "ambiguous_tag",
             "tag_uid": "3C45C3DB00000100",

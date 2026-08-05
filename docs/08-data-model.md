@@ -22,6 +22,8 @@ CREATE TABLE spool (
     opening_weight_mg INTEGER NOT NULL CHECK (opening_weight_mg > 0),
     core_weight_mg    INTEGER NOT NULL CHECK (core_weight_mg >= 0),
     location_kind     TEXT    NOT NULL,          -- STORAGE|AMS_SLOT|EXTERNAL_SPOOL
+    location_printer  TEXT,                      -- non-null only for AMS_SLOT (0007)
+    location_ams      INTEGER,                   -- non-null only for AMS_SLOT (0007)
     location_slot     INTEGER,                   -- non-null only for AMS_SLOT
     tag_uid           TEXT,
     registered_at     TEXT    NOT NULL,
@@ -35,7 +37,7 @@ CREATE INDEX idx_spool_tag       ON spool(tag_uid) WHERE tag_uid IS NOT NULL;
 CREATE INDEX idx_spool_discarded ON spool(discarded_at);
 
 CREATE UNIQUE INDEX idx_spool_slot
-    ON spool(location_slot)
+    ON spool(location_printer, location_ams, location_slot)
     WHERE location_kind = 'AMS_SLOT' AND discarded_at IS NULL;
 
 CREATE UNIQUE INDEX idx_spool_external
@@ -55,9 +57,17 @@ flow and is applied by the service layer ([05 §5.4](05-ha-integration.md)), in 
 `DEFAULT 0` here would turn that bug into a silent 250 g error inside every reconciliation —
 see [02 §2.8](02-domain-model.md).
 
-The two unique indexes enforce the physical facts that a slot holds one spool and the direct
+The two unique indexes enforce the physical facts that a tray holds one spool and the direct
 feed holds one spool. A cross-aggregate invariant that only lives in application code is one
 race condition away from being violated.
+
+**`idx_spool_slot` covers the whole tray reference since migration 0007**, not `location_slot`
+alone. Two printers both have a tray 1, and an index over the number alone would have refused
+the second machine's tray 1 to the ledger the moment the model could hold one — which is the
+opposite of the invariant it exists to state. `location_printer` and `location_ams` are the
+other two parts of `TrayRef` ([02 §2.3](02-domain-model.md)) and are set exactly when
+`location_slot` is; SQLite's `ALTER TABLE` cannot carry a cross-column `CHECK`, so that
+pairing is enforced in the domain, the same division migration 0003 made for `tag_source`.
 
 ```sql
 CREATE TABLE movement (
@@ -124,7 +134,7 @@ CREATE TABLE print_job (
     layer_reached    INTEGER,
     total_layers     INTEGER,
     progress_pct     REAL,
-    reported_usage   TEXT,                       -- JSON {slot: mg}
+    reported_usage   TEXT,                       -- JSON [{printer, ams, slot, mg}]
     raw_gcode_state  TEXT,                       -- verbatim, see Q1
     raw_print_error  INTEGER,                    -- verbatim, see Q1
     consumption_recorded INTEGER NOT NULL DEFAULT 0
@@ -141,9 +151,9 @@ CREATE TABLE pending_review (
     id               TEXT PRIMARY KEY,
     job_id           TEXT    NOT NULL REFERENCES print_job(id),
     reason           TEXT    NOT NULL,           -- CANCELLED|FAILED|UNCLASSIFIED|UNMAPPED_USAGE
-    estimated_usage  TEXT    NOT NULL,           -- JSON {slot: mg}
-    confirmed_usage  TEXT,                       -- JSON {slot: mg}
-    slot_resolution  TEXT    NOT NULL,           -- JSON [{slot, spool_id, mg}], frozen at open
+    estimated_usage  TEXT    NOT NULL,           -- JSON [{printer, ams, slot, mg}]
+    confirmed_usage  TEXT,                       -- JSON [{printer, ams, slot, mg}]
+    slot_resolution  TEXT    NOT NULL,           -- JSON [{printer, ams, slot, spool_id, mg}]
     estimator_used   TEXT    NOT NULL,           -- GCODE_LAYER|LINEAR_PROGRESS|NONE
     state            TEXT    NOT NULL,           -- PENDING|APPROVED|DISMISSED
     opened_at        TEXT    NOT NULL,
@@ -177,21 +187,28 @@ Justified because they are always read and written whole, never queried by key, 
 the hardware — four trays, and in practice a spool or two per tray. A child table would add
 joins and migrations for no query benefit.
 
-The first three are **maps keyed by slot index**, not by spool, because the printer reports one
-figure per tray and can report nothing else — and because a slot with no spool mounted is
+All four are **lists of entries keyed by tray**, not by spool, because the printer reports one
+figure per tray and can report nothing else — and because a tray with no spool mounted is
 exactly the case a spool-keyed map could not represent at all
 ([02 §2.3](02-domain-model.md)).
 
-`slot_resolution` is the attribution, and since migration 0004 it is a **list of charges**,
-`[{slot, spool_id, mg}]`, ordered by slot. It was a `{slot: spool_id|null}` map, which was the
-one limitation that mattered: a spool that empties mid-print and is replaced in the same tray
-leaves that tray's single reported figure belonging to two spools, and a map could only name
-one of them. A tray may now appear in the list more than once, and a tray absent from it
-entirely is one that froze with no spool — which is what `null` used to say.
+**Each entry names the tray in full — `printer`, `ams`, `slot` — since migration 0007.** The
+first three were maps keyed by the tray number, and a JSON key holds one value while a tray
+takes three to identify it. A composite key would have needed a separator that can never
+appear in a printer serial, and nobody can promise that about somebody else's hardware; a list
+of objects has no such problem and stays readable in a database browser, which is where a
+stored document is actually inspected. `slot_resolution` had already been a list since 0004,
+so this is one shape rather than two.
 
-The rewrite is lossless in both directions, which is why it could be a data migration rather
-than a new column: every old entry became exactly one charge carrying the amount that tray was
-charged, and every null became no charge. See §8.4.
+`slot_resolution` is the attribution, and since migration 0004 it carries a `spool_id`. It was
+a `{slot: spool_id|null}` map, which was the one limitation that mattered: a spool that empties
+mid-print and is replaced in the same tray leaves that tray's single reported figure belonging
+to two spools, and a map could only name one of them. A tray may now appear in the list more
+than once, and a tray absent from it entirely is one that froze with no spool — which is what
+`null` used to say.
+
+Both rewrites are lossless in both directions, which is why they could be data migrations
+rather than new columns. See §8.4.
 
 **This is a deliberate exception, not a licence.** Anything queried, aggregated, or filtered
 gets a real column. Movements — the data that is actually queried by range and summed — are
@@ -255,6 +272,36 @@ compares what the current mapper reads back against a second, independent readin
 columns — estimate per tray, confirmed amount per tray, the one spool each tray resolved to,
 and the charges an approval turned into movements. The movement table is untouched, so the
 rule above holds where it matters most.
+
+`0007_a_tray_knows_its_printer.sql` is the second such reinterpretation, and it is lossless
+for a reason that has nothing to do with cleverness: **every existing row belongs to the one
+printer this ledger has ever talked to**, so each becomes `(that serial, AMS 1, its slot)`. A
+single-printer history cannot be ambiguous. AMS 1 because that is the only AMS this ledger has
+ever followed and the only ordinal the printer has ever reported for it
+([12](12-field-notes.md)) — the gateway dropped every other ordinal with a warning long before
+this migration existed.
+
+**The serial comes from nowhere, and that is the honest answer.** A migration runs inside
+`Database.migrate()` with a bare SQLite connection: no Home Assistant, no gateway, nothing to
+ask. So every row takes the reserved `UNIDENTIFIED` serial, and the composition root replaces
+it once discovery has resolved a real one — `printer_adoption.adopt_unidentified_trays`, run
+after `migrate()` and *before* the startup reconciliation pass. The order is load-bearing: a
+pass that ran first would look tray 3 up under the newly discovered serial, find it free, and
+mount a second spool into it, with the widened index correctly seeing two different trays and
+looking away.
+
+**A ledger whose printer is never seen again keeps the placeholder for ever, and nothing
+breaks.** Uniqueness holds under it exactly as under a real serial — every row shares one
+printer, which is true — the inventory reads the same, and a mount lands in the same tray
+space, because a caller that names no printer is answered with the tray space the ledger is
+actually using rather than with a bare sentinel. The only thing that never happens is the rows
+learning a name.
+
+Adoption rewrites `spool` and nothing else. A job's `reported_usage` and a review's frozen
+lines are records of what was said at the time, and this ledger does not rewrite what it
+recorded ([ADR-0001](adr/0001-append-only-ledger.md)); nothing resolves a spool through those
+trays, so the placeholder there is both harmless and true — nobody knew the name when the row
+was written. The location is the one place the name is *used* rather than remembered.
 
 ---
 

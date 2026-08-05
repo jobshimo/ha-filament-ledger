@@ -12,7 +12,7 @@ no filament.
 An occupied tray whose tag is unreadable changes nothing. The use cases in
 docs/04-use-cases.md authorise automatic action on a tag appearing (UC-02) or the tray
 emptying (UC-03) — an unreadable tag is neither. It identifies no spool to mount, and the
-spool the ledger has in that slot may well be the untagged one the user mounted by hand;
+spool the ledger has in that tray may well be the untagged one the user mounted by hand;
 unmounting it on silence would fight every manual mount of a third-party spool.
 """
 
@@ -31,7 +31,7 @@ from ..domain.event import (
 )
 from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
-from ..domain.value.identifiers import SlotIndex, TagUid
+from ..domain.value.identifiers import TagUid, TrayRef
 from ..domain.value.location import AmsSlot
 from ..domain.value.tray_reading import TrayReading
 from .move_spool import displace_and_mount
@@ -55,7 +55,7 @@ class DetectSpool:
 
     async def execute(self, reading: TrayReading) -> None:
         if reading.empty:
-            await self._tray_emptied(reading.slot)
+            await self._tray_emptied(reading.tray)
             return
         if reading.tag is None:
             return  # unreadable tag: nothing automatic is possible — see the module docstring
@@ -63,25 +63,25 @@ class DetectSpool:
             # Informational, and deliberately unresolved: the user asked the system not to
             # move spools, so it reports the sighting and the AMS view offers a manual
             # [ Mount ] button instead.
-            await self.events.publish(SpoolDetected(tag_uid=reading.tag, slot=reading.slot))
+            await self.events.publish(SpoolDetected(tag_uid=reading.tag, tray=reading.tray))
             return
-        await self._tag_appeared(reading.tag, reading.slot)
+        await self._tag_appeared(reading.tag, reading.tray)
 
-    async def _tray_emptied(self, slot: SlotIndex) -> None:
+    async def _tray_emptied(self, tray: TrayRef) -> None:
         """UC-03, automatic: the spool left the machine, so it is in storage now.
 
         No occupant, no work — the replayed reading of an empty tray must not invent an
         unmount for a spool that was never there.
         """
         async with self.uow:
-            occupant = await self.spools.find_by_location(AmsSlot(slot))
+            occupant = await self.spools.find_by_location(AmsSlot(tray))
             if occupant is not None:
                 await self.spools.save(occupant.unmounted())
         # Published after the commit — never for a write that could still roll back.
         if occupant is not None:
             await self.events.publish(SpoolUnmounted(spool_id=occupant.id))
 
-    async def _tag_appeared(self, tag: TagUid, slot: SlotIndex) -> None:
+    async def _tag_appeared(self, tag: TagUid, tray: TrayRef) -> None:
         """UC-02, automatic: resolve the tag, then mount — or ask.
 
         The whole read-compute-write runs inside one unit of work: resolution and
@@ -94,20 +94,20 @@ class DetectSpool:
             # inventory, and a tag matching only discarded spools is an unknown tag.
             candidates = await self.spools.find_by_tag(tag)
             if not candidates:
-                to_publish.append(UnknownSpoolDetected(tag_uid=tag, slot=slot))
+                to_publish.append(UnknownSpoolDetected(tag_uid=tag, tray=tray))
             elif len(candidates) > 1:
                 to_publish.append(
                     AmbiguousTagDetected(
                         tag_uid=tag,
-                        slot=slot,
+                        tray=tray,
                         candidates=tuple(spool.id for spool in candidates),
                     )
                 )
-            elif (spool := candidates[0]).location != AmsSlot(slot):
-                displaced = await displace_and_mount(self.spools, spool, slot)
+            elif (spool := candidates[0]).location != AmsSlot(tray):
+                displaced = await displace_and_mount(self.spools, spool, tray)
                 if displaced is not None:
                     to_publish.append(SpoolUnmounted(spool_id=displaced))
-                to_publish.append(SpoolMounted(spool_id=spool.id, slot=slot))
+                to_publish.append(SpoolMounted(spool_id=spool.id, tray=tray))
             # Already mounted here: the replayed reading confirms the ledger. No write,
             # no event — announcing a mount that did not happen would be a lie.
         for event in to_publish:

@@ -14,7 +14,10 @@ import pytest
 from custom_components.filament_ledger.domain.error import EstimationUnavailableError
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import PrintJobId, SlotIndex
+from custom_components.filament_ledger.domain.value.identifiers import (
+    PrintJobId,
+    TrayRef,
+)
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import EstimatorKind
@@ -22,9 +25,11 @@ from custom_components.filament_ledger.infrastructure.estimation.linear_progress
     LinearProgressEstimator,
 )
 
+from .conftest import a_tray
+
 EPOCH = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
-SLOT_1 = SlotIndex(1)
-SLOT_2 = SlotIndex(2)
+TRAY_1 = a_tray(1)
+TRAY_2 = a_tray(2)
 
 estimator = LinearProgressEstimator()
 
@@ -34,7 +39,7 @@ def a_job(
     layer_reached: int | None = None,
     total_layers: int | None = None,
     progress: Percentage | None = None,
-    reported_usage: dict[SlotIndex, Grams] | None = None,
+    reported_usage: dict[TrayRef, Grams] | None = None,
 ) -> PrintJob:
     return PrintJob(
         id=PrintJobId("job-under-estimation"),
@@ -56,41 +61,41 @@ class TestProgressSignals:
             layer_reached=30,
             total_layers=100,
             progress=Percentage.of(90),
-            reported_usage={SLOT_1: Grams.of(100)},
+            reported_usage={TRAY_1: Grams.of(100)},
         )
-        assert await estimator.estimate(job) == {SLOT_1: Grams.of(30)}
+        assert await estimator.estimate(job) == {TRAY_1: Grams.of(30)}
 
     async def test_percent_is_the_fallback_when_layers_are_missing(self) -> None:
-        job = a_job(progress=Percentage.of(25), reported_usage={SLOT_1: Grams.of(100)})
-        assert await estimator.estimate(job) == {SLOT_1: Grams.of(25)}
+        job = a_job(progress=Percentage.of(25), reported_usage={TRAY_1: Grams.of(100)})
+        assert await estimator.estimate(job) == {TRAY_1: Grams.of(25)}
 
     async def test_half_a_signal_is_no_signal(self) -> None:
         """`layer_reached` without `total_layers` is a numerator with no denominator."""
-        job = a_job(layer_reached=30, reported_usage={SLOT_1: Grams.of(100)})
+        job = a_job(layer_reached=30, reported_usage={TRAY_1: Grams.of(100)})
         with pytest.raises(EstimationUnavailableError):
             await estimator.estimate(job)
 
     async def test_a_layer_count_past_the_plan_is_clamped_to_the_whole_plan(self) -> None:
         """Priming and the slicer's counting disagree at the edges; scaling past the
         totals would claim more filament than the whole plan contains."""
-        job = a_job(layer_reached=105, total_layers=100, reported_usage={SLOT_1: Grams.of(80)})
-        assert await estimator.estimate(job) == {SLOT_1: Grams.of(80)}
+        job = a_job(layer_reached=105, total_layers=100, reported_usage={TRAY_1: Grams.of(80)})
+        assert await estimator.estimate(job) == {TRAY_1: Grams.of(80)}
 
     async def test_a_job_stopped_before_its_first_layer_computes_zero(self) -> None:
         """A computed zero is returned, not suppressed — the contract forbids inventing
         a zero to paper over a failure, not arithmetic whose honest answer is nothing."""
-        job = a_job(layer_reached=0, total_layers=60, reported_usage={SLOT_1: Grams.of(80)})
-        assert await estimator.estimate(job) == {SLOT_1: Grams.zero()}
+        job = a_job(layer_reached=0, total_layers=60, reported_usage={TRAY_1: Grams.of(80)})
+        assert await estimator.estimate(job) == {TRAY_1: Grams.zero()}
 
 
 class TestRefusals:
     async def test_no_signal_at_all_raises_rather_than_guesses(self) -> None:
         with pytest.raises(EstimationUnavailableError):
-            await estimator.estimate(a_job(reported_usage={SLOT_1: Grams.of(100)}))
+            await estimator.estimate(a_job(reported_usage={TRAY_1: Grams.of(100)}))
 
     @pytest.mark.parametrize("usage", [None, {}], ids=["missing", "empty"])
     async def test_no_totals_to_scale_raises_rather_than_guesses(
-        self, usage: dict[SlotIndex, Grams] | None
+        self, usage: dict[TrayRef, Grams] | None
     ) -> None:
         job = a_job(layer_reached=30, total_layers=100, reported_usage=usage)
         with pytest.raises(EstimationUnavailableError):
@@ -104,17 +109,17 @@ class TestProportionality:
         job = a_job(
             layer_reached=71,
             total_layers=209,
-            reported_usage={SLOT_1: Grams.of(209), SLOT_2: Grams.of("41.8")},
+            reported_usage={TRAY_1: Grams.of(209), TRAY_2: Grams.of("41.8")},
         )
         assert await estimator.estimate(job) == {
-            SLOT_1: Grams.of(71),
-            SLOT_2: Grams.of("14.2"),
+            TRAY_1: Grams.of(71),
+            TRAY_2: Grams.of("14.2"),
         }
 
     async def test_rounding_lands_on_the_nearest_milligram(self) -> None:
         # 1/3 of 100 g: 33333.33... mg must round, not truncate.
-        job = a_job(layer_reached=1, total_layers=3, reported_usage={SLOT_1: Grams.of(100)})
-        assert await estimator.estimate(job) == {SLOT_1: Grams(33333)}
+        job = a_job(layer_reached=1, total_layers=3, reported_usage={TRAY_1: Grams.of(100)})
+        assert await estimator.estimate(job) == {TRAY_1: Grams(33333)}
 
 
 class TestProvenance:

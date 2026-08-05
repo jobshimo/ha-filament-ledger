@@ -724,6 +724,8 @@ filament_ledger/printer/state
   → { }
   ← {
       "dormant": false,
+      "tracking":                        # identity, not measurement — see below
+        { "printer": "00M09A351800000", "ams": 1, "ignored": ["01P00A123456789"] },
       "status": "printing",              # print_status, verbatim state string
       "progress_pct": 42,                # int or null
       "current_layer": 71,               # int or null
@@ -734,7 +736,7 @@ filament_ledger/printer/state
       "online": true | null,
       "connection_mode": "local" | null,
       "active_tray": 4 | null,
-      "trays": [ { ...per-slot shape of trays/sync, read-only... } ],
+      "trays": [ { ...per-tray shape of trays/sync, read-only... } ],
       "observed_print_time":             # this ledger's own sum, or null
         { "total_minutes": 3164, "prints": 25, "since": "2026-02-05T18:22:04+00:00" }
     }
@@ -776,10 +778,25 @@ filament_ledger/printer/state
   (`tray_sync.py:98-121`) *without* running `DetectSpool` first. A tab that mutates the
   ledger by being looked at would violate the reader's reasonable model of "just
   looking"; the sync button on the Inventory tab remains the mutation path.
-- **A dormant gateway answers `{ dormant: true }`** and the tab renders the honest
-  empty state, in the voice the sync strip already uses
+- **A dormant gateway answers `{ dormant: true }` and `tracking`, and nothing else**, and
+  the tab renders the honest empty state, in the voice the sync strip already uses
   (`www/filament-ledger-panel.js:426-430`): no printer connected, how to connect one,
   no spinner, no four invented trays.
+
+**Amended (v2.0): `tracking` names the machine this ledger follows, and the ones it does
+not.** It rides beside `dormant` while every figure above it does not, because it is
+identity rather than measurement: a ledger with no printer still has a tray space to mount
+spools into, and the panel has to be able to name it — a `null` `printer` is *no machine was
+identified*, which the mount command resolves server-side rather than the panel guessing at
+([05 §5.4](05-ha-integration.md)).
+
+`ignored` is the honest interim [FEATURE-REQUESTS §7](../FEATURE-REQUESTS.md) asks for.
+v1 already picked the first printer by identity and warned about the rest — into a log, which
+is not a place anybody looks. The tab now says so, and only when there is something to say: a
+household with one machine sees no new card, because nothing new is true of it. **There is
+nothing to press.** This is a statement about today's behaviour, not the beginning of
+following a second machine; the model can represent one ([02 §2.3](02-domain-model.md)) and
+the gateway has not learned to track one.
 
 **No new polling.** The ledger is push-shaped (`__init__.py:37-39`); this command reads
 current entity state when called.

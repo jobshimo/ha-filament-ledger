@@ -6,16 +6,19 @@ sit in the queue for days while spools are swapped in and out of the machine, an
 at approval time would deduct a cancelled Tuesday print from whatever happens to be in slot
 2 on Friday (docs/04-use-cases.md UC-05).
 
-Amounts are keyed by *slot*, not by spool. The case that most needs a review is a slot that
+Amounts are keyed by *tray*, not by spool. The case that most needs a review is a tray that
 reported usage with no spool mounted in it — there is no `SpoolId` to key that entry with.
 A line says the only honest thing available: *"slot 3 used 12 g and I do not know which
 spool was in it"* — and lets the user supply the missing half (docs/02-domain-model.md §2.3).
+The tray is named in full — printer, AMS unit, tray — because a review may sit in the queue
+for days, and a bare tray number would come back ambiguous the moment a second machine
+existed to have one.
 
 **The estimate and the attribution are not the same shape.** A tray's estimate is one
 figure because the printer reports one figure per tray and can report nothing else. Its
 attribution is a list, because a spool that empties mid-print and is replaced in the same
 tray leaves that one figure belonging to two spools. The two were one-to-one for as long as
-a tray fed from one spool for a whole print, and a model that keyed the attribution by slot
+a tray fed from one spool for a whole print, and a model that keyed the attribution by tray
 could not express the moment they stopped being.
 """
 
@@ -27,7 +30,7 @@ from datetime import datetime
 
 from ..error import InvalidValueError, ReviewAlreadyResolvedError, UnresolvedSlotError
 from ..value.grams import Grams, total
-from ..value.identifiers import PrintJobId, ReviewId, SlotIndex, SpoolId, new_review_id
+from ..value.identifiers import PrintJobId, ReviewId, SpoolId, TrayRef, new_review_id
 from ..value.review import EstimatorKind, ReviewReason, ReviewState
 
 
@@ -57,7 +60,7 @@ class ReviewLine:
     the review opened, and the approval flow is where the user supplies the answer.
     """
 
-    slot: SlotIndex
+    tray: TrayRef
     estimated: Grams
     charges: tuple[ReviewCharge, ...] = ()
 
@@ -65,14 +68,14 @@ class ReviewLine:
         # Amounts on a review are consumption magnitudes; the sign is applied when a
         # movement is written. A negative magnitude has no physical reading.
         if self.estimated.is_negative:
-            msg = f"slot {self.slot} cannot have a negative estimate, got {self.estimated}"
+            msg = f"{self.tray} cannot have a negative estimate, got {self.estimated}"
             raise InvalidValueError(msg)
         spools = [charge.spool_id for charge in self.charges]
         if len(set(spools)) != len(spools):
             # A tray's attribution answers *how many grams did each spool give*, which is
             # one figure per spool. The same spool twice is one answer written as two, and
             # every reader that maps the list back by spool would silently keep the last.
-            msg = f"slot {self.slot} charges the same spool twice"
+            msg = f"{self.tray} charges the same spool twice"
             raise InvalidValueError(msg)
 
     @property
@@ -90,14 +93,14 @@ class PendingReview:
     estimator_used: EstimatorKind
     state: ReviewState
     opened_at: datetime
-    confirmed_usage: dict[SlotIndex, Grams] | None = None
+    confirmed_usage: dict[TrayRef, Grams] | None = None
     resolved_at: datetime | None = None
     resolution_note: str | None = None
 
     def __post_init__(self) -> None:
-        slots = [line.slot for line in self.lines]
-        if len(set(slots)) != len(slots):
-            msg = f"review {self.id} carries the same slot twice"
+        trays = [line.tray for line in self.lines]
+        if len(set(trays)) != len(trays):
+            msg = f"review {self.id} carries the same tray twice"
             raise InvalidValueError(msg)
         # A pending review with a resolution timestamp — or a resolved one without — is a
         # record that contradicts itself, and both halves would be believed by somebody.
@@ -111,25 +114,25 @@ class PendingReview:
     # -- derived -----------------------------------------------------------------------
 
     @property
-    def estimated_usage(self) -> dict[SlotIndex, Grams]:
-        return {line.slot: line.estimated for line in self.lines}
+    def estimated_usage(self) -> dict[TrayRef, Grams]:
+        return {line.tray: line.estimated for line in self.lines}
 
     @property
-    def charges(self) -> list[tuple[SlotIndex, ReviewCharge]]:
+    def charges(self) -> list[tuple[TrayRef, ReviewCharge]]:
         """Every charge with the tray it belongs to, in tray order and then entry order.
 
         The flat shape the `slot_resolution` column stores, so the repository writes it
         without re-deriving anything — and the shape a reader asking *which spools does
         this print charge* wants, which no per-tray view can answer in one pass.
         """
-        return [(line.slot, charge) for line in self.lines for charge in line.charges]
+        return [(line.tray, charge) for line in self.lines for charge in line.charges]
 
     @property
     def is_resolved(self) -> bool:
         return self.state.is_resolved
 
     @property
-    def confirmed_charges(self) -> list[tuple[SlotIndex, Grams, SpoolId]]:
+    def confirmed_charges(self) -> list[tuple[TrayRef, Grams, SpoolId]]:
         """Every non-zero confirmed charge with the spool it lands on, in tray order.
 
         Empty until approval. Zero amounts never appear — a zero movement records nothing
@@ -140,8 +143,8 @@ class PendingReview:
         if self.confirmed_usage is None:
             return []
         return [
-            (slot, charge.amount, charge.spool_id)
-            for slot, charge in self.charges
+            (tray, charge.amount, charge.spool_id)
+            for tray, charge in self.charges
             if not charge.amount.is_zero
         ]
 
@@ -160,9 +163,9 @@ class PendingReview:
         self,
         *,
         at: datetime,
-        amounts: Mapping[SlotIndex, Grams] | None = None,
-        assignments: Mapping[SlotIndex, SpoolId] | None = None,
-        charges: Mapping[SlotIndex, tuple[ReviewCharge, ...]] | None = None,
+        amounts: Mapping[TrayRef, Grams] | None = None,
+        assignments: Mapping[TrayRef, SpoolId] | None = None,
+        charges: Mapping[TrayRef, tuple[ReviewCharge, ...]] | None = None,
         note: str | None = None,
     ) -> PendingReview:
         """Steps 2–5 and 7 of UC-06: merge the user's corrections, refuse the unresolvable.
@@ -173,8 +176,8 @@ class PendingReview:
         arithmetic from the caller because one spool takes the tray whole. A tray may
         appear in one of the two, never in both: they are two answers to one question, and
         letting one win silently is how a user's second thought gets discarded. All three
-        may only reference slots the review froze — the queue card renders exactly these
-        rows, so an override for any other slot is a caller bug, not a decision.
+        may only reference trays the review froze — the queue card renders exactly these
+        rows, so an override for any other tray is a caller bug, not a decision.
 
         **The invariant:** each tray's charges add up to what that tray confirms. It is one
         rule where there used to be two, and it says both of them. A tray with a non-zero
@@ -198,32 +201,34 @@ class PendingReview:
         ):
             unknown = sorted(set(overrides or {}) - set(frozen))
             if unknown:
-                msg = f"{name} supplied for slot(s) {unknown} this review does not cover"
+                stated = "; ".join(str(tray) for tray in unknown)
+                msg = f"{name} supplied for tray(s) this review does not cover: {stated}"
                 raise InvalidValueError(msg)
         contested = sorted(set(assignments or {}) & set(charges or {}))
         if contested:
+            stated = "; ".join(str(tray) for tray in contested)
             msg = (
-                f"slot(s) {[slot.value for slot in contested]} carry both an assignment "
-                f"and a charge list; they are two answers to one question"
+                f"tray(s) {stated} carry both an assignment and a charge list; "
+                f"they are two answers to one question"
             )
             raise InvalidValueError(msg)
-        for slot, amount in (amounts or {}).items():
+        for tray, amount in (amounts or {}).items():
             if amount.is_negative:
-                msg = f"slot {slot} cannot be confirmed at a negative {amount}"
+                msg = f"{tray} cannot be confirmed at a negative {amount}"
                 raise InvalidValueError(msg)
 
         final_amounts = {**frozen, **(amounts or {})}
         final_lines = tuple(
             replace(
                 line,
-                charges=_attribution(line, final_amounts[line.slot], assignments, charges),
+                charges=_attribution(line, final_amounts[line.tray], assignments, charges),
             )
             for line in self.lines
         )
-        unbalanced = [line for line in final_lines if line.attributed != final_amounts[line.slot]]
+        unbalanced = [line for line in final_lines if line.attributed != final_amounts[line.tray]]
         if unbalanced:
             stated = "; ".join(
-                f"slot {line.slot} confirms {final_amounts[line.slot]} "
+                f"slot {line.tray.slot} confirms {final_amounts[line.tray]} "
                 f"and charges {line.attributed}"
                 for line in unbalanced
             )
@@ -256,8 +261,8 @@ class PendingReview:
 def _attribution(
     line: ReviewLine,
     amount: Grams,
-    assignments: Mapping[SlotIndex, SpoolId] | None,
-    charges: Mapping[SlotIndex, tuple[ReviewCharge, ...]] | None,
+    assignments: Mapping[TrayRef, SpoolId] | None,
+    charges: Mapping[TrayRef, tuple[ReviewCharge, ...]] | None,
 ) -> tuple[ReviewCharge, ...]:
     """One tray's charges as the decision leaves them: restated, assigned, or inherited.
 
@@ -269,10 +274,10 @@ def _attribution(
     different matter: rescaling them would be the system choosing a split, so the invariant
     refuses and the caller restates it.
     """
-    supplied = (charges or {}).get(line.slot)
+    supplied = (charges or {}).get(line.tray)
     if supplied is not None:
         return supplied
-    assigned = (assignments or {}).get(line.slot)
+    assigned = (assignments or {}).get(line.tray)
     if assigned is not None:
         return (ReviewCharge(spool_id=assigned, amount=amount),)
     if len(line.charges) == 1:
@@ -290,14 +295,14 @@ def open_review(
 ) -> PendingReview:
     """Build a new review in `PENDING`, generating its identity.
 
-    Lines are stored sorted by slot so that every reader — the queue card, the approval
+    Lines are stored sorted by tray so that every reader — the queue card, the approval
     loop, the persisted JSON — sees the same order without each imposing its own.
     """
     return PendingReview(
         id=new_review_id(),
         job_id=job_id,
         reason=reason,
-        lines=tuple(sorted(lines, key=lambda line: line.slot)),
+        lines=tuple(sorted(lines, key=lambda line: line.tray)),
         estimator_used=estimator_used,
         state=ReviewState.PENDING,
         opened_at=opened_at,

@@ -1,7 +1,7 @@
 """How much an interrupted print consumed — a port, because *how* is a strategy.
 
 Two implementations behind this interface (docs/07-consumption-estimation.md §7.3), and
-every one obeys the same contract: return per-slot grams, or raise
+every one obeys the same contract: return per-tray grams, or raise
 `EstimationUnavailableError`. None returns `None` to signal failure, and none invents a
 zero — that is Liskov substitution in practice, and it is what keeps UC-05 unable to be
 broken by which strategy happens to run.
@@ -17,7 +17,7 @@ from typing import Protocol
 
 from ..model.print_job import PrintJob
 from ..value.grams import Grams
-from ..value.identifiers import SlotIndex
+from ..value.identifiers import TrayRef
 from ..value.review import EstimatorKind
 
 
@@ -32,8 +32,8 @@ class ConsumptionEstimator(Protocol):
         """
         ...
 
-    async def estimate(self, job: PrintJob) -> dict[SlotIndex, Grams]:
-        """Per-slot grams consumed up to where the job stopped.
+    async def estimate(self, job: PrintJob) -> dict[TrayRef, Grams]:
+        """Per-tray grams consumed up to where the job stopped.
 
         Raises `EstimationUnavailableError` when no figure can honestly be produced.
         """

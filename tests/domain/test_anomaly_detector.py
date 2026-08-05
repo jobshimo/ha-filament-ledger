@@ -13,10 +13,9 @@ from custom_components.filament_ledger.domain.service.anomaly_detector import (
     AnomalyKind,
 )
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Storage
 
-from .conftest import A_SPOOL_ID
+from .conftest import A_SPOOL_ID, a_tray
 
 detector = AnomalyDetector()
 OPENING = Grams.of(1000)
@@ -26,7 +25,7 @@ def kinds(*, balance_g: float, printing: bool = False, mounted: bool = True) -> 
     found = detector.inspect(
         spool_id=A_SPOOL_ID,
         balance=Grams.of(balance_g),
-        location=AmsSlot(SlotIndex(1)) if mounted else Storage(),
+        location=AmsSlot(a_tray(1)) if mounted else Storage(),
         is_printing=printing,
     )
     return {anomaly.kind for anomaly in found}
@@ -122,7 +121,7 @@ class TestTheTwoBalanceFlagsAreMutuallyExclusive:
         found = detector.inspect(
             spool_id=A_SPOOL_ID,
             balance=Grams.of(-40),
-            location=AmsSlot(SlotIndex(1)),
+            location=AmsSlot(a_tray(1)),
             is_printing=True,
         )
         assert [anomaly.kind for anomaly in found] == [AnomalyKind.NEGATIVE_BALANCE]
@@ -131,7 +130,7 @@ class TestTheTwoBalanceFlagsAreMutuallyExclusive:
         found = detector.inspect(
             spool_id=A_SPOOL_ID,
             balance=Grams.zero(),
-            location=AmsSlot(SlotIndex(1)),
+            location=AmsSlot(a_tray(1)),
             is_printing=True,
         )
         assert [anomaly.kind for anomaly in found] == [AnomalyKind.DEPLETED_WHILE_LOADED]

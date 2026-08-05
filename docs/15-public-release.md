@@ -321,12 +321,13 @@ design ready than to grow it under pressure.
 
 **Ground rules for the design pass.**
 
-- **Slot keys become `(printer, slot)`.** Today `SlotIndex` 1..4 is globally unique
-  (`domain/value/identifiers.py:41-58`) and everything slot-shaped — locations,
-  review lines, tray readings, the unique mount index
-  (`migrations/0001_initial.sql:42-44`) — assumes it. This is the deep cut: the domain
-  value, the schema, the WS shapes and the panel views all widen together, and the
-  migration must map existing rows onto the single known printer.
+- ~~**Slot keys become `(printer, slot)`.**~~ **Done in v2.0.0**, and as three parts rather
+  than two: `TrayRef` is printer, AMS unit and tray ([02 §2.3](02-domain-model.md)). The
+  domain value, the schema, the wire shapes and the panel widened together, and migration
+  0007 mapped every existing row onto the one printer the ledger has ever talked to. The
+  serial turned out *not* to be readable at migration time — see
+  [08 §8.4](08-data-model.md) — so the rows take a reserved placeholder that startup
+  reconciles. Everything below this line is still to do.
 - **One gateway per printer**, selected by device — either config-entry subentries or
   a device selector in the options flow; the design pass decides which after checking
   what HA's subentry support looks like at implementation time. Discovery already

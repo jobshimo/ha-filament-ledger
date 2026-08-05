@@ -22,17 +22,42 @@ from dataclasses import dataclass, field
 
 from ...application.query import ObservedPrintTime, Queries
 from ...domain.port.repositories import SpoolRepository
-from .bambu_gateway import BambuLabGateway, JobStatus
+from ...domain.value.identifiers import AmsIndex, PrinterSerial
+from .bambu_gateway import TRACKED_AMS, BambuLabGateway, JobStatus
 from .tray_sync import SlotSyncOutcome, slot_outcome
+
+
+@dataclass(frozen=True, slots=True)
+class PrinterTracking:
+    """Which machine this ledger follows, and which ones it found and left alone.
+
+    Identity, not measurement — which is why this rides beside `dormant` while every figure
+    in the snapshot below does not. A ledger with no printer still has a tray space to
+    mount spools into and the panel has to be able to name it; a hull of nulls would invite
+    dashes for a printer that is not there, and a missing tray space would leave the AMS
+    view guessing.
+
+    `printer` is `None` when discovery named nobody. The panel sends that absence back as
+    it found it, and the mount command resolves it to `UNIDENTIFIED_PRINTER` server-side —
+    the one place that knows what an unidentified printer is called.
+
+    `ignored` is the honest statement of today's limit: these machines are in the registry,
+    this ledger is not following them, and v1 said so only in a log nobody reads.
+    """
+
+    printer: PrinterSerial | None = None
+    ams: AmsIndex = TRACKED_AMS
+    ignored: tuple[PrinterSerial, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class PrinterSnapshot:
     """One glance at the printer, as of the moment it was asked.
 
-    `dormant` is the honest no-printer flag, and it is the *whole* answer when it is set:
-    the panel renders the teaching empty state rather than a spinner or four invented
-    trays. Everything else is nullable, and null always means *the printer did not say*.
+    `dormant` is the honest no-printer flag, and — bar `tracking`, which says why beside
+    itself — it is the *whole* answer when it is set: the panel renders the teaching empty
+    state rather than a spinner or four invented trays. Everything else is nullable, and
+    null always means *the printer did not say*.
 
     `observed_print_time` is the one figure here the printer did not say at all: it is the
     ledger's own sum over the jobs it has recorded, which is why it carries the day it
@@ -41,6 +66,7 @@ class PrinterSnapshot:
     """
 
     dormant: bool
+    tracking: PrinterTracking = PrinterTracking()
     job: JobStatus | None = None
     # The three sensors docs/14 §14.5 names beyond the discovered set. They stay `None`
     # until their upstream `translation_key`s are read off the reference instance and
@@ -69,14 +95,22 @@ class ReadPrinterState:
     queries: Queries
 
     async def execute(self) -> PrinterSnapshot:
+        # Tracking is answered on both branches. A dormant gateway still has a tray space
+        # — the one it would mount into — and a registry full of printers it is not
+        # following is exactly the fact worth reporting when it followed none of them.
+        tracking = PrinterTracking(
+            printer=self.gateway.printer_serial,
+            ignored=self.gateway.ignored_printers,
+        )
         if not self.gateway.discovered:
-            return PrinterSnapshot(dormant=True)
+            return PrinterSnapshot(dormant=True, tracking=tracking)
         trays = [
             await slot_outcome(self.spools, reading)
             for reading in (await self.gateway.current_trays()).values()
         ]
         return PrinterSnapshot(
             dormant=False,
+            tracking=tracking,
             job=self.gateway.current_job_status(),
             trays=trays,
             observed_print_time=await self.queries.observed_print_time(),

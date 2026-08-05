@@ -19,7 +19,7 @@ from ..error import (
 )
 from ..value.colour import Colour
 from ..value.grams import Grams
-from ..value.identifiers import SlotIndex, SpoolId, TagSource, TagUid, new_spool_id
+from ..value.identifiers import SpoolId, TagSource, TagUid, TrayRef, new_spool_id
 from ..value.location import AmsSlot, ExternalSpool, Location, Storage
 from ..value.material import Material
 from ..value.percentage import Percentage
@@ -161,8 +161,8 @@ class Spool:
         self._guard_in_inventory()
         return replace(self, location=location)
 
-    def mounted_in(self, slot: SlotIndex) -> Spool:
-        return self.moved_to(AmsSlot(slot))
+    def mounted_in(self, tray: TrayRef) -> Spool:
+        return self.moved_to(AmsSlot(tray))
 
     def mounted_externally(self) -> Spool:
         return self.moved_to(ExternalSpool())

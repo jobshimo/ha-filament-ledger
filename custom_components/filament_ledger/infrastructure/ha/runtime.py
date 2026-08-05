@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from ...application.query import LedgerSnapshot
 from ...application.use_cases import UseCases
 from ...const import DOMAIN
+from ...domain.value.identifiers import UNIDENTIFIED_PRINTER, PrinterSerial
 from ..persistence.database import Database
 from .printer_state import ReadPrinterState
 from .tray_sync import TraySync
@@ -41,6 +42,25 @@ class LedgerRuntime:
     # `None` only in test harnesses that install no printer; a printerless install answers
     # through the gateway's own dormant flag instead (docs/14 §14.5).
     printer: ReadPrinterState | None = None
+
+    @property
+    def tray_printer(self) -> PrinterSerial:
+        """The machine every tray reference this ledger writes belongs to.
+
+        The answer for a caller that named no printer — a service call, an automation
+        written before a tray had three parts, the panel before its first printer glance
+        arrives. It is the gateway's own answer, never a blind sentinel, and that
+        distinction is load-bearing: with a printer discovered, the spool rows already
+        carry its serial (`printer_adoption`), and defaulting to the sentinel instead
+        would open a *second* tray space in which every slot looked free. Two spools in
+        tray 1, with the unique index correctly seeing two different trays.
+
+        Without a gateway there is nothing to ask, and the sentinel is exactly what those
+        rows carry — so the two agree there too.
+        """
+        if self.printer is None:
+            return UNIDENTIFIED_PRINTER
+        return self.printer.gateway.tray_printer
 
     async def async_refresh(self) -> None:
         await self.coordinator.async_request_refresh()

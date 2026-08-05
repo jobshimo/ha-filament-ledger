@@ -27,7 +27,6 @@ from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
-    SlotIndex,
     TagUid,
 )
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
@@ -44,7 +43,7 @@ from custom_components.filament_ledger.infrastructure.ha.serialisers import (
     whole_grams,
 )
 
-from ..application.conftest import EPOCH
+from ..application.conftest import EPOCH, a_tray
 from .conftest import Harness, a_spool
 
 
@@ -122,7 +121,13 @@ class TestSpoolSummaryShape:
                 "latest_estimate_at": None,
             },
             "needs_weighing": False,
-            "location": {"kind": "STORAGE", "slot": None, "label": "Storage"},
+            "location": {
+                "kind": "STORAGE",
+                "printer": None,
+                "ams": None,
+                "slot": None,
+                "label": "Storage",
+            },
             "tag_uid": "A1B2C3D4",
             # A tag typed at registration is the user's, so the edit dialog may change it.
             "tag_source": "MANUAL",
@@ -197,7 +202,7 @@ class TestStatisticsRounding:
     async def test_the_total_rounds_the_sum_and_never_the_prints(self, harness: Harness) -> None:
         """Three 0.4 g prints are 1.2 g, which is 1 g. Rounding each first would call it 0."""
         spool_id = await a_spool(harness.ledger)
-        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         for index in range(3):
             await harness.ledger.use_cases.record_print_consumption.execute(
                 PrintJob(
@@ -206,7 +211,7 @@ class TestStatisticsRounding:
                     state=PrintJobState.FINISHED,
                     started_at=EPOCH,
                     ended_at=EPOCH,
-                    reported_usage={SlotIndex(1): Grams.of("0.4")},
+                    reported_usage={a_tray(1): Grams.of("0.4")},
                 )
             )
 

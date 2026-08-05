@@ -42,7 +42,6 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     MovementId,
     PrintJobId,
     ReviewId,
-    SlotIndex,
     SpoolId,
     TagUid,
 )
@@ -53,6 +52,7 @@ from custom_components.filament_ledger.infrastructure.ha.event_bridge import (
     HomeAssistantEventBus,
 )
 
+from ..application.conftest import a_tray
 from .conftest import FakeHass, as_hass
 
 SPOOL = SpoolId("spool-1")
@@ -69,9 +69,9 @@ class TestTranslation:
                 id="a-spool-is-registered",
             ),
             pytest.param(
-                SpoolMounted(spool_id=SPOOL, slot=SlotIndex(2)),
+                SpoolMounted(spool_id=SPOOL, tray=a_tray(2)),
                 "filament_ledger_spool_mounted",
-                {"spool_id": "spool-1", "slot": 2},
+                {"spool_id": "spool-1", "printer": "00000000TESTSER", "ams": 1, "slot": 2},
                 id="a-spool-is-mounted",
             ),
             pytest.param(
@@ -149,26 +149,28 @@ class TestTranslation:
                 id="a-decision-is-made",
             ),
             pytest.param(
-                SpoolDetected(tag_uid=TagUid("A1B2C3D4"), slot=SlotIndex(3)),
+                SpoolDetected(tag_uid=TagUid("A1B2C3D4"), tray=a_tray(3)),
                 "filament_ledger_spool_detected",
-                {"tag_uid": "A1B2C3D4", "slot": 3},
+                {"tag_uid": "A1B2C3D4", "printer": "00000000TESTSER", "ams": 1, "slot": 3},
                 id="a-tag-is-seen-with-auto-mount-off",
             ),
             pytest.param(
-                UnknownSpoolDetected(tag_uid=TagUid("A1B2C3D4"), slot=SlotIndex(1)),
+                UnknownSpoolDetected(tag_uid=TagUid("A1B2C3D4"), tray=a_tray(1)),
                 "filament_ledger_unknown_spool_detected",
-                {"tag_uid": "A1B2C3D4", "slot": 1},
+                {"tag_uid": "A1B2C3D4", "printer": "00000000TESTSER", "ams": 1, "slot": 1},
                 id="an-unrecognised-tag-appears",
             ),
             pytest.param(
                 AmbiguousTagDetected(
                     tag_uid=TagUid("A1B2C3D4"),
-                    slot=SlotIndex(1),
+                    tray=a_tray(1),
                     candidates=(SpoolId("spool-1"), SpoolId("spool-2")),
                 ),
                 "filament_ledger_ambiguous_tag_detected",
                 {
                     "tag_uid": "A1B2C3D4",
+                    "printer": "00000000TESTSER",
+                    "ams": 1,
                     "slot": 1,
                     "candidate_spool_ids": ["spool-1", "spool-2"],
                 },

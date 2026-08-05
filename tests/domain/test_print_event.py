@@ -11,9 +11,10 @@ import pytest
 
 from custom_components.filament_ledger.domain.error import InvalidValueError
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex
 from custom_components.filament_ledger.domain.value.print_event import PrintEnded, PrintStarted
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
+
+from .conftest import a_tray
 
 
 class TestPrintStarted:
@@ -23,7 +24,7 @@ class TestPrintStarted:
 
     def test_a_negative_plan_entry_cannot_exist(self) -> None:
         with pytest.raises(InvalidValueError):
-            PrintStarted(name="bracket.3mf", plan={SlotIndex(1): Grams.of(-5)})
+            PrintStarted(name="bracket.3mf", plan={a_tray(1): Grams.of(-5)})
 
     def test_a_missing_plan_is_not_an_empty_one(self) -> None:
         """`None` is the Q4-open path — the breakdown never materialised. `{}` is the
@@ -62,7 +63,7 @@ class TestPrintEnded:
             PrintEnded(
                 outcome=PrintJobState.FINISHED,
                 name="bracket.3mf",
-                reported_usage={SlotIndex(1): Grams.of(-1)},
+                reported_usage={a_tray(1): Grams.of(-1)},
             )
 
     def test_every_figure_defaults_to_the_honest_unknown(self) -> None:

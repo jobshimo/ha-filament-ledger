@@ -32,6 +32,7 @@ from ...domain.event import (
     SpoolUnmounted,
     UnknownSpoolDetected,
 )
+from ...domain.value.identifiers import TrayRef
 
 
 def event_name(suffix: str) -> str:
@@ -94,8 +95,8 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
                 "spool_id": spool_id,
                 "name": display_name,
             }
-        case SpoolMounted(spool_id, slot):
-            return event_name("spool_mounted"), {"spool_id": spool_id, "slot": slot.value}
+        case SpoolMounted(spool_id, tray):
+            return event_name("spool_mounted"), {"spool_id": spool_id, **_tray_fields(tray)}
         case SpoolUnmounted(spool_id):
             return event_name("spool_unmounted"), {"spool_id": spool_id}
         case MovementRecorded(spool_id, movement_type, amount, new_balance):
@@ -158,21 +159,31 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
                 "job_id": job_id,
                 "state": state.value,
             }
-        case SpoolDetected(tag_uid, slot):
+        case SpoolDetected(tag_uid, tray):
             return event_name("spool_detected"), {
                 "tag_uid": tag_uid.value,
-                "slot": slot.value,
+                **_tray_fields(tray),
             }
-        case UnknownSpoolDetected(tag_uid, slot):
+        case UnknownSpoolDetected(tag_uid, tray):
             return event_name("unknown_spool_detected"), {
                 "tag_uid": tag_uid.value,
-                "slot": slot.value,
+                **_tray_fields(tray),
             }
-        case AmbiguousTagDetected(tag_uid, slot, candidates):
+        case AmbiguousTagDetected(tag_uid, tray, candidates):
             return event_name("ambiguous_tag_detected"), {
                 "tag_uid": tag_uid.value,
-                "slot": slot.value,
+                **_tray_fields(tray),
                 "candidate_spool_ids": list(candidates),
             }
         case _:
             return event_name("event"), {"type": type(event).__name__}
+
+
+def _tray_fields(tray: TrayRef) -> dict[str, Any]:
+    """The tray an event happened in, on the bus.
+
+    `slot` keeps its name and its meaning, so an automation matching on it goes on
+    matching; `printer` and `ams` join it, because a bus payload that named a tray number
+    alone would stop identifying a tray the moment a second machine existed.
+    """
+    return {"printer": tray.printer.value, "ams": tray.ams.value, "slot": tray.slot.value}

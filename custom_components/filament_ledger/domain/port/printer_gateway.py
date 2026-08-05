@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from ..value.identifiers import SlotIndex
+from ..value.identifiers import TrayRef
 from ..value.print_event import PrintEvent
 from ..value.tray_reading import TrayReading
 
@@ -38,8 +38,8 @@ class PrinterGateway(Protocol):
         """Register a callback for job lifecycle events. Registration itself does no I/O."""
         ...
 
-    async def current_trays(self) -> dict[SlotIndex, TrayReading]:
-        """Every tray as last reported, keyed by slot.
+    async def current_trays(self) -> dict[TrayRef, TrayReading]:
+        """Every tray as last reported, keyed by the tray it describes.
 
         Exists so a restart can reconcile the ledger with reality instead of waiting for
         the next change: the printer does not replay what happened while nobody listened.

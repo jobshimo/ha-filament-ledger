@@ -82,12 +82,18 @@ import { translator } from "./i18n.js";
 const iso = (daysAgo, hour = 14) =>
   new Date(Date.UTC(2026, 6, 30 - daysAgo, hour, 12, 0)).toISOString();
 
+// The tray space these fixtures live in. A tray is printer, AMS unit and tray since v2.0.0
+// (`domain/value/identifiers.py`); the serial is anonymised the way every capture here is.
+const PRINTER_SERIAL = "00000000TESTSER";
+const tray = (slot) => ({ printer: PRINTER_SERIAL, ams: 1, slot });
+
 const spool = (over) => ({
   id: "s-1", name: "Bambu PLA Basic", label: null, vendor: "Bambu Lab",
   material: "PLA", material_kind: "PLA", colour: "#1f8a4c", colour_hex8: "#1f8a4cff",
   foreground: "#ffffff", balance_g: 612, balance_exact_g: 612.4, opening_weight_g: 1000,
   core_weight_g: 250, percentage: 61, state: "ACTIVE", confidence: "HIGH",
-  needs_weighing: false, location: { kind: "AMS_SLOT", slot: 1 }, tag_uid: "A1B2C3D4",
+  needs_weighing: false, location: { kind: "AMS_SLOT", ...tray(1), label: "AMS slot 1" },
+  tag_uid: "A1B2C3D4",
   tag_source: "DETECTED", movement_count: 9, last_movement_at: iso(1),
   has_anomaly: false, registered_at: iso(60), ...over,
 });
@@ -98,20 +104,21 @@ const SPOOLS = [
   spool({}),
   spool({ id: "s-2", name: "Prusament PETG", vendor: "Prusa", material: "PETG",
     material_kind: "PETG", colour: "#e07b00", balance_g: 214, percentage: 21,
-    confidence: "MEDIUM", location: { kind: "AMS_SLOT", slot: 2 }, tag_source: "MANUAL" }),
+    confidence: "MEDIUM", tag_source: "MANUAL",
+    location: { kind: "AMS_SLOT", ...tray(2), label: "AMS slot 2" } }),
   spool({ id: "s-3", name: "Generic TPU", vendor: null, material: "TPU", material_kind: "TPU",
     colour: "#111318", foreground: "#ffffff", balance_g: 47, percentage: 5, confidence: "LOW",
-    needs_weighing: true, has_anomaly: true, location: { kind: "STORAGE" }, tag_uid: null,
+    needs_weighing: true, has_anomaly: true, location: { kind: "STORAGE", printer: null, ams: null, slot: null, label: "Storage" }, tag_uid: null,
     tag_source: null }),
   spool({ id: "s-4", name: "Sunlu ABS", vendor: "Sunlu", material: "ABS", material_kind: "ABS",
     colour: "#c62828", balance_g: 1000, percentage: 100, state: "SEALED", movement_count: 1,
-    location: { kind: "STORAGE" } }),
+    location: { kind: "STORAGE", printer: null, ams: null, slot: null, label: "Storage" } }),
   spool({ id: "s-5", name: "Old PLA Silk", vendor: "Eryone", material: "PLA",
     colour: "#8e7cc3", balance_g: 0, percentage: 0, state: "DEPLETED",
-    location: { kind: "STORAGE" }, confidence: "HIGH" }),
+    location: { kind: "STORAGE", printer: null, ams: null, slot: null, label: "Storage" }, confidence: "HIGH" }),
   spool({ id: "s-6", name: "Warped ASA", vendor: null, material: "ASA", material_kind: "ASA",
     colour: "#607d8b", balance_g: 330, percentage: 33, state: "DISCARDED",
-    location: { kind: "STORAGE" } }),
+    location: { kind: "STORAGE", printer: null, ams: null, slot: null, label: "Storage" } }),
 ];
 
 const STOCK = {
@@ -171,13 +178,13 @@ const REVIEWS = [
     layer_reached: 88, total_layers: 209, progress_pct: 42,
     raw_gcode_state: "FAILED", raw_print_error: "216173881625542657",
     estimated_total_g: 47.6,
-    lines: [{ slot: 1, estimated_g: 38.2, spool_id: "s-1" },
-            { slot: 2, estimated_g: 9.4, spool_id: null }] },
+    lines: [{ ...tray(1), estimated_g: 38.2, charges: [{ spool_id: "s-1", amount_g: 38.2 }] },
+            { ...tray(2), estimated_g: 9.4, charges: [] }] },
 ];
 
 const TRASH = {
   spools: [{ ...spool({ id: "s-7", name: "Mis-registered PLA", colour: "#795548",
-    state: "ACTIVE", location: { kind: "STORAGE" } }), deleted_at: iso(6) }],
+    state: "ACTIVE", location: { kind: "STORAGE", printer: null, ams: null, slot: null, label: "Storage" } }), deleted_at: iso(6) }],
   movements: [
     { movement_id: "m-3", spool_id: "s-1", spool_name: "Bambu PLA Basic", spool_colour: "#1f8a4c",
       spool_deleted: false, spool_discarded: false, type: "CONSUMPTION", label: "Print",
@@ -212,14 +219,17 @@ const PRINTER = {
   error: { active: true, code: "216173881625542657" },
   online: true, connection_mode: "LAN", active_tray: 1,
   observed_print_time: { total_minutes: 3164, prints: 25, since: iso(180) },
+  // Which machine the ledger follows, and the one it found and does not — the card only
+  // renders when `ignored` has something in it.
+  tracking: { printer: PRINTER_SERIAL, ams: 1, ignored: ["00000000OTHERSR"] },
   trays: [
-    { slot: 1, status: "matched", tag_uid: "A1B2C3D4", name_hint: "Bambu PLA Basic",
+    { ...tray(1), status: "matched", tag_uid: "A1B2C3D4", name_hint: "Bambu PLA Basic",
       material_hint: "PLA", colour_hint: "#1f8a4c", spool_id: "s-1", spool_name: "Bambu PLA Basic" },
-    { slot: 2, status: "unknown_tag", tag_uid: "FF00FF00", name_hint: "Generic PETG",
+    { ...tray(2), status: "unknown_tag", tag_uid: "FF00FF00", name_hint: "Generic PETG",
       material_hint: "PETG", colour_hint: "#e07b00", spool_id: null, spool_name: null },
-    { slot: 3, status: "empty", tag_uid: null, name_hint: null, material_hint: null,
+    { ...tray(3), status: "empty", tag_uid: null, name_hint: null, material_hint: null,
       colour_hint: null, spool_id: null, spool_name: null },
-    { slot: 4, status: "ambiguous", tag_uid: "1234ABCD", name_hint: null, material_hint: null,
+    { ...tray(4), status: "ambiguous", tag_uid: "1234ABCD", name_hint: null, material_hint: null,
       colour_hint: null, spool_id: null, spool_name: null },
   ],
 };

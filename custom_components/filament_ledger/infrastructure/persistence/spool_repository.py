@@ -12,10 +12,15 @@ from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
     ABSENT_TAG_SENTINEL,
+    MIN_AMS_INDEX,
+    UNIDENTIFIED_PRINTER,
+    AmsIndex,
+    PrinterSerial,
     SlotIndex,
     SpoolId,
     TagSource,
     TagUid,
+    TrayRef,
 )
 from ...domain.value.location import AmsSlot, ExternalSpool, Location, Storage
 from ...domain.value.material import Material, MaterialKind
@@ -23,8 +28,8 @@ from .database import Database
 
 COLUMNS = (
     "id, material, material_other, colour, vendor, label, opening_weight_mg, "
-    "core_weight_mg, location_kind, location_slot, tag_uid, tag_source, registered_at, "
-    "discarded_at, deleted_at"
+    "core_weight_mg, location_kind, location_printer, location_ams, location_slot, "
+    "tag_uid, tag_source, registered_at, discarded_at, deleted_at"
 )
 
 # Both retirements, in one predicate. Every read that means "in inventory" uses this
@@ -42,19 +47,34 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def _location_columns(location: Location) -> tuple[str, int | None]:
+def _location_columns(location: Location) -> tuple[str, str | None, int | None, int | None]:
     match location:
-        case AmsSlot(slot):
-            return "AMS_SLOT", slot.value
+        case AmsSlot(tray):
+            return "AMS_SLOT", tray.printer.value, tray.ams.value, tray.slot.value
         case ExternalSpool():
-            return "EXTERNAL_SPOOL", None
+            return "EXTERNAL_SPOOL", None, None, None
         case Storage():
-            return "STORAGE", None
+            return "STORAGE", None, None, None
 
 
-def _location_from(kind: str, slot: int | None) -> Location:
+def _location_from(kind: str, printer: str | None, ams: int | None, slot: int | None) -> Location:
+    """Rebuild the location, tolerating a tray row that names no printer.
+
+    Migration 0007 backfills every mounted row with a printer and an AMS index, so a row
+    missing either should not exist. Should one turn up anyway — a backup restored from
+    between the ALTER and the UPDATE, a row inserted by hand — it hydrates exactly as the
+    migration would have written it, for the reason `_tag_from` tolerates the sentinel and
+    `_tag_source_from` defaults to MANUAL: one odd row must not fail every list and get,
+    and with them the coordinator and the whole entry.
+    """
     if kind == "AMS_SLOT" and slot is not None:
-        return AmsSlot(SlotIndex(slot))
+        return AmsSlot(
+            TrayRef(
+                printer=PrinterSerial(printer) if printer else UNIDENTIFIED_PRINTER,
+                ams=AmsIndex(ams if ams is not None else MIN_AMS_INDEX),
+                slot=SlotIndex(slot),
+            )
+        )
     if kind == "EXTERNAL_SPOOL":
         return ExternalSpool()
     return Storage()
@@ -102,7 +122,12 @@ def _to_spool(row: sqlite3.Row) -> Spool:
         colour=Colour.parse(row["colour"]),
         opening_weight=Grams(row["opening_weight_mg"]),
         core_weight=Grams(row["core_weight_mg"]),
-        location=_location_from(row["location_kind"], row["location_slot"]),
+        location=_location_from(
+            row["location_kind"],
+            row["location_printer"],
+            row["location_ams"],
+            row["location_slot"],
+        ),
         registered_at=registered,
         vendor=row["vendor"],
         label=row["label"],
@@ -153,15 +178,18 @@ class SqliteSpoolRepository:
         stopped watching deleted rows in migration 0003, and a read that still saw one
         would report an occupant no constraint is defending.
         """
-        kind, slot = _location_columns(location)
+        kind, printer, ams, slot = _location_columns(location)
         if kind == "STORAGE":
             # Storage is not a unique position; "which spool is in storage" has no answer.
             return None
+        # `IS` rather than `=` on all three tray columns: it is SQLite's null-safe
+        # equality, so the one predicate answers both the tray question — where every
+        # column is set — and the external-feed question, where all three are NULL.
         row = await self.database.fetch_one(
             f"SELECT {COLUMNS} FROM spool "
-            f"WHERE location_kind = ? AND (location_slot IS ? OR location_slot = ?) "
-            f"AND {IN_INVENTORY}",
-            (kind, slot, slot),
+            f"WHERE location_kind = ? AND location_printer IS ? AND location_ams IS ? "
+            f"AND location_slot IS ? AND {IN_INVENTORY}",
+            (kind, printer, ams, slot),
         )
         return _to_spool(row) if row else None
 
@@ -190,14 +218,15 @@ class SqliteSpoolRepository:
         return [_to_spool(row) for row in rows]
 
     async def save(self, spool: Spool) -> None:
-        kind, slot = _location_columns(spool.location)
+        kind, printer, ams, slot = _location_columns(spool.location)
         await self.database.execute(
             """
             INSERT INTO spool (
                 id, material, material_other, colour, vendor, label,
-                opening_weight_mg, core_weight_mg, location_kind, location_slot,
+                opening_weight_mg, core_weight_mg, location_kind, location_printer,
+                location_ams, location_slot,
                 tag_uid, tag_source, registered_at, discarded_at, deleted_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 material = excluded.material,
                 material_other = excluded.material_other,
@@ -206,6 +235,8 @@ class SqliteSpoolRepository:
                 label = excluded.label,
                 core_weight_mg = excluded.core_weight_mg,
                 location_kind = excluded.location_kind,
+                location_printer = excluded.location_printer,
+                location_ams = excluded.location_ams,
                 location_slot = excluded.location_slot,
                 tag_uid = excluded.tag_uid,
                 tag_source = excluded.tag_source,
@@ -223,6 +254,8 @@ class SqliteSpoolRepository:
                 spool.opening_weight.milligrams,
                 spool.core_weight.milligrams,
                 kind,
+                printer,
+                ams,
                 slot,
                 spool.tag_uid.value if spool.tag_uid else None,
                 spool.tag_source.value if spool.tag_source else None,
