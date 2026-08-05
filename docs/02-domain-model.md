@@ -163,10 +163,16 @@ the hole open.
 ```
 HIGH    — no estimates since the last reconciliation, and little drawn since
 MEDIUM  — consumption has accumulated, but all of it plan-derived or confirmed
-LOW     — estimated consumption has accumulated without reconciliation
+LOW     — an estimate has been applied, or so much has been drawn since the last
+          weighing that the accumulated drift is worth checking
 ```
 
 Derived, never set by hand. Rules in §2.6.
+
+**`LOW` is reached two ways and the level does not say which.** That is deliberate: the level
+answers *how much should I trust this number*, and both routes answer it identically — weigh
+the spool. Which route was taken is a different question, answered by the basis the
+application layer assembles beside the level (`ConfidenceBasis`, §2.6).
 
 ### `MovementType`
 
@@ -432,20 +438,54 @@ displayed as untrustworthy on the day it is registered.
 ```
 LOW     if `since` contains any ESTIMATED_CONSUMPTION
 
+LOW     else if total consumed in `since` >= 41% of opening weight
+
 MEDIUM  else if total consumed in `since` >= 20% of opening weight
 
 HIGH    otherwise
 ```
 
 An earlier draft added *"or cumulative estimated amount exceeds 10% of opening weight"* to the
-`LOW` branch. That clause can never fire: a movement's amount is non-zero by invariant
-(§2.3), so any estimated amount at all already satisfies the first condition. Dead logic in a
-rule this visible is worse than verbose — it invites an implementer to reconstruct an
-intention that was never there.
+first `LOW` branch. That clause can never fire: a movement's amount is non-zero by invariant
+(§2.3), so any estimated amount at all already satisfies the condition. Dead logic in a rule
+this visible is worse than verbose — it invites an implementer to reconstruct an intention
+that was never there.
 
 **One approved estimate is enough to drop a spool to `LOW`.** That is the intended
 aggressiveness. `LOW` does not mean *"this number is bad"*; it means *"weigh this when you get
 a chance"*, and the cost of being asked is thirty seconds with a kitchen scale.
+
+### Why there is a second consumption rung
+
+With one threshold the ladder had two positions across a whole spool's life. On the reference
+instance a reel 21% drawn and a reel drawn to the core wore the same badge, so the signal
+stopped carrying information after roughly one ordinary print.
+
+The 20% boundary is not what was wrong with that, and it has not moved. What was missing was
+somewhere above it to go, and the figure comes from the only drift this project has actually
+measured — two reconciliations, recorded in [07 §7.5](07-consumption-estimation.md):
+
+- 50.0 g adrift over 220.0 g drawn — 22.7% of what was drawn;
+- 333.1 g adrift over 916.9 g drawn — 36.3% of what was drawn.
+
+Two points are not a curve and are not fitted as one. What they do support is a **bound**:
+take the worse of the two rates, 36.3% of whatever has been drawn. §2.5 already names the
+disagreement this project considers worth telling the user about — a reconciliation delta
+reaching 15% of the opening weight. Under that bound the drift reaches 15% of the reel once
+41.3% of it has been drawn, which is where the second rung sits, rounded **down** to 41% for
+the same reason the anomaly boundary is inclusive: it errs toward telling the user.
+
+Past that point weighing the spool would plausibly *disagree* with the ledger rather than
+confirm it, and *"weigh this when you get a chance"* is exactly what `LOW` has always meant.
+The rung measures from the anchor like every other, so weighing answers it — a heavily used
+reel is not condemned to `LOW` for the rest of its life.
+
+Both figures are configurable and both are **explicitly provisional**. The 20% boundary is an
+informed guess; the 41% one is a bound drawn from a sample of two, which is more than nothing
+and much less than a characterisation. Neither is to be defended, and both should be revisited
+the moment there are enough reconciliations to say more.
+
+### The level, and the reason for it
 
 **Evaluated top-down, first match wins.** The function is total: every spool lands on exactly
 one level, including a spool registered thirty seconds ago with a single `OPENING_BALANCE`
@@ -455,9 +495,20 @@ That totality is not pedantry. Confidence appears next to every balance in the p
 ([05 §5.3](05-ha-integration.md), [06 §6.2](06-ui-spec.md)), so a spool the rules do not cover
 is a spool whose dot colour depends on which branch an implementer wrote first.
 
-A spool at `LOW` triggers a prompt to weigh it. The thresholds are configurable and their
-defaults are **explicitly provisional** — they are informed guesses, and they should be tuned
-against real usage rather than defended.
+A spool at `LOW` triggers a prompt to weigh it, whichever branch put it there.
+
+`ConfidenceEvaluator` returns the level and nothing else, and stays a pure function of
+movements and an opening weight. The question a user actually asks — *why did it change?* —
+is answered beside it by **`ConfidenceBasis`**, assembled in the application layer
+(`application/query.py`): the anchor's type and date, what has left the spool since, and how
+many approved estimates landed in that window. Naming the anchor is what lets a surface say
+*since you weighed it* rather than *since you registered it*, which are different claims.
+
+The basis is read from the evaluator's own window, over the same movements the level was
+evaluated on, so the sentence on screen cannot describe a spool the badge does not. Assembly
+belongs to the application layer for the reason [adr/0007](adr/0007-corrections-are-more-history.md)
+already settled for void filtering: the domain service stays pure, and the application
+prepares both what it is fed and what is shown beside its answer.
 
 ---
 

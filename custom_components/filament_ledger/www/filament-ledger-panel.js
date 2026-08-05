@@ -1863,6 +1863,57 @@ class FilamentLedgerPanel extends HTMLElement {
     return `<span class="conf ${CONFIDENCE_CLASS[level] ?? ""}"><i></i>${text}</span>`;
   }
 
+  /**
+   * The badge and the two lines that explain it, as docs/06 §6.5 draws them: the reason
+   * beside the chip, the anchor under it.
+   *
+   * A level on its own is a colour that changes for reasons the reader cannot see — and
+   * LOW is reached two ways, so the badge alone cannot even say which rule fired. The
+   * reason names it; the anchor says *since when*, and whether that anchor is a weighing
+   * or a registration, because the two are different promises.
+   *
+   * Every fact here was measured server-side (`ConfidenceBasis`, `application/query.py`)
+   * over the same window the level was evaluated on, so the sentence cannot describe a
+   * spool the badge does not. What is left in the panel is choosing strings — the only
+   * part of the explanation that belongs in the layer with no test harness (docs/14 §14.8).
+   *
+   * `when()` returns an already-safe fragment, so it goes in through `fill`; the two
+   * figures are wire numbers and go in as parameters, where `t` escapes them.
+   */
+  confidenceBlock(spool) {
+    const t = this._t;
+    const chip = this.confidenceChip(spool.confidence, true);
+    const basis = spool.confidence_basis;
+    if (!basis) return `<div class="foot">${chip}</div>`;
+
+    let reason;
+    if (basis.estimates_since) {
+      reason = fill(t("conf.why.estimate"), "when", this.when(basis.latest_estimate_at));
+    } else if (basis.consumed_since_g > 0) {
+      reason = t("conf.why.drawn", {
+        grams: basis.consumed_since_g,
+        pct: basis.consumed_since_pct,
+      });
+    } else {
+      reason = t("conf.why.nothing");
+    }
+
+    // A history with no anchor at all names none rather than inventing one — the same
+    // honesty the rest of the panel shows a figure the printer did not report. An anchor
+    // type the table does not know renders escaped rather than as its own key, exactly as
+    // `movementLabel` does: a key is a code constant, and an anchor type is wire data.
+    const key = `conf.anchor.${basis.anchor ?? "NONE"}`;
+    const template = t(key);
+    const anchor =
+      template === key
+        ? esc(basis.anchor)
+        : fill(template, "when", this.when(basis.anchored_at));
+
+    return `
+      <div class="foot">${chip}<span class="muted">· ${reason}</span></div>
+      <div class="conf-anchor">${anchor}</div>`;
+  }
+
   // -- AMS ---------------------------------------------------------------------------
 
   amsView() {
@@ -3030,7 +3081,7 @@ class FilamentLedgerPanel extends HTMLElement {
             <div class="facts">${this.locationLabel(spool.location)} · ${this.stateLabel(spool.state)}${
               spool.tag_uid ? ` · ${t("dlg.tag")} ${esc(spool.tag_uid)}` : ""
             }</div>
-            <div class="foot">${this.confidenceChip(spool.confidence, true)}</div>
+            ${this.confidenceBlock(spool)}
           </div>
         </div>
 
@@ -4297,6 +4348,9 @@ button.link:hover { color: var(--fl-accent-bright); }
 .conf.high { color: var(--fl-ok); background: var(--fl-ok-soft); } .conf.high i { background: var(--fl-ok); }
 .conf.med  { color: var(--fl-warn); background: var(--fl-warn-soft); } .conf.med i  { background: var(--fl-warn); }
 .conf.low  { color: var(--fl-bad); background: var(--fl-bad-soft); }   .conf.low i  { background: var(--fl-bad); }
+/* The anchor line, under the badge it dates (06 §6.5). Quieter than the reason beside the
+   chip: it answers "since when", which is context rather than the finding. */
+.conf-anchor { margin-top: 5px; font-size: 12px; color: var(--fl-ink-faint); }
 
 .note { background: var(--fl-surface); border: 1px solid var(--fl-line);
   border-left: 3px solid var(--fl-accent); padding: 12px 16px;

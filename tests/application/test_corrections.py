@@ -1067,6 +1067,10 @@ class TestConfidenceIgnoresOpenChapters:
         summary = (await ledger.use_cases.queries.detail(spool_id)).summary
         assert summary.confidence is Confidence.HIGH
         assert summary.balance == Grams.of(1000)
+        # The reason travels with the level through the same filter. A basis still counting
+        # the voided estimate would explain a badge the spool no longer wears.
+        assert summary.confidence_basis.estimates_since == 0
+        assert summary.confidence_basis.consumed_since == Grams.zero()
 
     async def test_restoring_the_estimate_brings_the_doubt_back(self, ledger: Ledger) -> None:
         """The other direction, because a filter that only ever hides is a filter nobody

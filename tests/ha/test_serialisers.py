@@ -108,6 +108,17 @@ class TestSpoolSummaryShape:
             "percentage": 100,
             "state": "SEALED",
             "confidence": "HIGH",
+            # Why the badge reads HIGH, in the units the panel renders. A spool registered
+            # and not yet printed from is anchored on its own opening balance, with nothing
+            # drawn since — which is the sentence the detail view builds from this.
+            "confidence_basis": {
+                "anchor": "OPENING_BALANCE",
+                "anchored_at": EPOCH.isoformat(),
+                "consumed_since_g": 0,
+                "consumed_since_pct": 0,
+                "estimates_since": 0,
+                "latest_estimate_at": None,
+            },
             "needs_weighing": False,
             "location": {"kind": "STORAGE", "slot": None, "label": "Storage"},
             "tag_uid": "A1B2C3D4",

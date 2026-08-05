@@ -153,6 +153,11 @@ The default landing view. Answers "what do I have?" without a click.
 - **Progress bar** tinted with the filament colour, with a neutral track.
 - **Confidence dot** — 🟢 high, 🟡 medium, 🔴 low. When low, the card shows the call to
   action *"Weigh this spool"* directly. A warning with no adjacent remedy is just noise.
+  Low is reached two ways ([02 §2.6](02-domain-model.md)) — an approved estimate, or enough
+  drawn since the last weighing that the drift is worth checking — and the card shows the
+  same prompt for both, because both are answered by the same thirty seconds with a scale.
+  **The card does not say which.** It is the smallest surface the badge appears on, the
+  reason takes a line of prose, and the detail view is one tap away and says it there (§6.5).
 - **Location** — `AMS · Slot n`, `Storage`, or `External spool`.
 - **Actions** — one ⋮ beside the name, opening the spool's action rail (§6.5). It sits
   *in* the header row rather than over the card's corner: a glyph floating outside the
@@ -500,7 +505,7 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 │  │  AMS Slot 1 · active · tag A1B2C3D4                            │  │
 │  │                                                                │  │
 │  │  🔴 Low confidence · an estimate was approved today             │  │
-│  │     Last weighed 3 days ago                                    │  │
+│  │     Counting since you weighed it, 3 days ago                  │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
 │  [ ⚖ Weigh ] [ ✎ Adjust ] [ 🗑 Discard ] [ ✎ Edit details ]          │
@@ -559,6 +564,32 @@ an estimate was applied on top.
 Worth stating because an earlier draft of this document showed exactly that spool as `🟢 High`
 while displaying the estimate that makes it `LOW`, three views apart. A specification whose
 examples contradict its own rules teaches the rules are negotiable.
+
+### The badge explains itself, in two lines
+
+A level on its own is a colour that changes for reasons the reader cannot see — and since
+`LOW` is reached two ways, the badge alone cannot even say which rule fired. **This is the one
+surface that says why**, and it says it in two self-contained lines:
+
+- **beside the chip, what has happened** — *an estimate was approved today*, or
+  *301 g drawn, 30% of this spool*, or *nothing drawn yet*;
+- **under it, the window that was measured** — *Counting since you weighed it, 3 days ago*,
+  or *Counting since you registered it, 8 days ago · never weighed*.
+
+The second line is not decoration. *Since you weighed it* and *since you registered it* are
+different claims about how much is actually known, and a reader shown the first figure without
+the second cannot tell which promise is being made. A spool that has never been on a scale
+says so.
+
+Every figure here is measured server-side — `ConfidenceBasis` in `application/query.py`, read
+off the same window the level was evaluated on ([02 §2.6](02-domain-model.md)) — so the
+sentence cannot describe a spool the badge does not. What is left in the panel is choosing
+which string to render, which is the only part of an explanation that belongs in the layer
+with no test harness ([14 §14.8](14-corrections-and-trash.md)).
+
+Two lines rather than one sentence with a hole in it, because a translation must be free to
+order each half as its language wants without depending on the other's grammar
+([14 §14.6.1](14-corrections-and-trash.md)).
 
 The list reads bottom-up as a derivation: opening balance, then every gram that left, arriving
 at the number in the header. A user who doubts the balance can follow it to its origin. That

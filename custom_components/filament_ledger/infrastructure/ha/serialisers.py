@@ -93,6 +93,7 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
         "percentage": summary.percentage,
         "state": summary.state.value,
         "confidence": summary.confidence.value,
+        "confidence_basis": _confidence_basis(summary),
         "needs_weighing": summary.confidence.needs_weighing,
         "location": describe_location(spool.location),
         "tag_uid": spool.tag_uid.value if spool.tag_uid else None,
@@ -106,6 +107,33 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
         "has_anomaly": summary.has_anomaly,
         "registered_at": spool.registered_at.isoformat(),
     }
+
+
+def _confidence_basis(summary: SpoolSummary) -> dict[str, Any]:
+    """What the badge was derived from, in the units the panel renders (docs/06 §6.5).
+
+    Whole grams and whole percent, for the reason §6.8 gives balances: this is a figure
+    somebody reads at a glance beside a balance already rounded the same way, and a tenth
+    would claim a precision the drift it describes does not have.
+
+    `anchor` is the movement type the window opens after — the panel already renders those
+    in the reader's language — or **null** for a history carrying no anchor at all. The two
+    timestamps are ISO or null, and null is never rendered as a zero or a dash-shaped date:
+    the panel drops the clause instead.
+    """
+    basis = summary.confidence_basis
+    return {
+        "anchor": basis.anchor.value if basis.anchor is not None else None,
+        "anchored_at": _iso_or_none(basis.anchored_at),
+        "consumed_since_g": whole_grams(basis.consumed_since),
+        "consumed_since_pct": _whole_percent(summary.drawn_since_anchor * 100),
+        "estimates_since": basis.estimates_since,
+        "latest_estimate_at": _iso_or_none(basis.latest_estimate_at),
+    }
+
+
+def _whole_percent(value: Decimal) -> int:
+    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 def entry_direction(movement: Movement) -> str:
