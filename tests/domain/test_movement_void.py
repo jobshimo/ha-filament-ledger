@@ -79,6 +79,35 @@ class TestAVoidWithoutRestitution:
             )
 
 
+class TestTheUnDiscardIsRecordedRatherThanRederived:
+    def test_a_plain_chapter_claims_no_un_discard(self) -> None:
+        """The default, and the honest one: most voids touch no spool state at all."""
+        assert not a_chapter().undiscarded_spool
+
+    def test_a_chapter_can_say_it_brought_its_spool_back(self) -> None:
+        """The fact `RestoreMovement` reads. It cannot be derived a second time — the
+        void's own reversal lands after the discard it undid — so it is stored."""
+        assert a_chapter(undiscarded_spool=True).undiscarded_spool
+
+    def test_a_void_without_restitution_can_never_have_un_discarded_anything(self) -> None:
+        """The new invariant, and it describes something that cannot have happened: the
+        un-discard exists only because the restitution returned the whole balance, and a
+        void that returned nothing stranded nothing outside inventory."""
+        with pytest.raises(InvalidValueError, match="never have un-discarded"):
+            a_chapter(
+                reversal_movement_id=None,
+                reason="the spool was never here",
+                undiscarded_spool=True,
+            )
+
+    def test_closing_the_chapter_carries_it_through(self) -> None:
+        """The reinstatement is what *acts* on this fact, so it must still be there to
+        read on the row the restore has just closed."""
+        closed = a_chapter(undiscarded_spool=True).reinstated(REINSTATEMENT, at(days=1))
+
+        assert closed.undiscarded_spool
+
+
 class TestTheReinstatementPairIsAllOrNothing:
     def test_a_timestamp_with_no_movement_is_refused(self) -> None:
         with pytest.raises(InvalidValueError, match="both reinstatement facts"):

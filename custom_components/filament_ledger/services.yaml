@@ -111,6 +111,10 @@ approve_review:
       required: false
       example: '{"3": "spool-id"}'
       selector: { object: }
+    charges:
+      required: false
+      example: '{"1": [{"spool_id": "spool-a", "amount_g": 10}, {"spool_id": "spool-b", "amount_g": 290}]}'
+      selector: { object: }
     note:
       required: false
       selector: { text: }

@@ -141,10 +141,17 @@ The review UI ([06 §6.3](06-ui-spec.md)) puts a weighing field beside every est
 exactly this reason. Weighing the failed part and the purge is the ground truth, and the
 system's job is to make entering that number faster than trusting the estimate.
 
-**[ Distribute ]** takes a single measured total and splits it across the involved spools in
+**[ Distribute ]** takes a single measured total and splits it across the involved trays in
 the same ratio the estimator produced. The proportion is usually right even when the magnitude
 is not — so the user supplies the magnitude and the estimator supplies the shape. Each does
 what it is good at.
+
+**[ Load the rest ]** is its sibling, one level down: it splits a *tray's* amount across the
+spools that fed it, by subtraction, when a spool emptied mid-print and another finished the
+job ([06 §6.3](06-ui-spec.md)). The estimator has nothing to say there — it never knew the
+tray was shared — so there is no ratio to supply and the user names the first figure while
+the button computes the second. Both are the same idea from the panel's side: the arithmetic
+belongs to the machine, and the measurement belongs to the person holding the scale.
 
 ---
 

@@ -823,21 +823,28 @@ class TestReviewsList:
             # A decimal string, never a JSON number: HMS codes are 64-bit and a number
             # would land in the browser as a corrupted double past 2^53.
             "raw_print_error": "50348044",
-            # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool.
+            # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool as one
+            # charge for the whole tray.
             "estimated_total_g": 71.0,
-            "lines": [{"slot": 1, "estimated_g": 71.0, "spool_id": spool_id}],
+            "lines": [
+                {
+                    "slot": 1,
+                    "estimated_g": 71.0,
+                    "charges": [{"spool_id": spool_id, "amount_g": 71.0}],
+                }
+            ],
         }
 
-    async def test_an_unattributed_slot_travels_with_a_null_spool(
+    async def test_an_unattributed_slot_travels_with_no_charges_at_all(
         self, ws: WsClient, harness: Harness
     ) -> None:
         """The row most worth showing: nothing was mounted when the review froze, and the
-        panel renders the spool picker off exactly this null."""
+        panel renders the spool picker off exactly this empty list."""
         await an_open_review(harness)
 
         (payload,) = await ws.result_list(REVIEWS_LIST)
 
-        assert payload["lines"] == [{"slot": 1, "estimated_g": 71.0, "spool_id": None}]
+        assert payload["lines"] == [{"slot": 1, "estimated_g": 71.0, "charges": []}]
 
     async def test_a_64_bit_hms_code_crosses_the_wire_as_the_exact_decimal_string(
         self, ws: WsClient, harness: Harness
@@ -880,7 +887,9 @@ class TestReviewsList:
         assert payload["job_state"] == "FINISHED"
         assert payload["raw_print_error"] is None
         assert payload["estimated_total_g"] == 0.0
-        assert payload["lines"] == [{"slot": 1, "estimated_g": 0.0, "spool_id": spool_id}]
+        assert payload["lines"] == [
+            {"slot": 1, "estimated_g": 0.0, "charges": [{"spool_id": spool_id, "amount_g": 0.0}]}
+        ]
 
     async def test_the_vocabularies_the_panel_branches_on_are_pinned(self) -> None:
         """The panel's estimator-label map covers exactly these kinds, and its card header
@@ -935,6 +944,35 @@ class TestReviewsApprove:
         assert history[0]["type"] == "ESTIMATED_CONSUMPTION"
         assert history[0]["amount_g"] == -12.5
 
+    async def test_a_tray_may_be_split_across_two_spools_in_one_approval(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """A spool emptied mid-print and was replaced in the same tray. The printer
+        reported one figure for that tray; it belongs to two spools (docs/06 §6.3)."""
+        emptied = await a_created_spool(ws)
+        replacement = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=emptied, slot=1)
+        review_id = await an_open_review(harness)
+
+        await ws.result_dict(
+            REVIEWS_APPROVE,
+            review_id=review_id,
+            charges={
+                "1": [
+                    {"spool_id": emptied, "amount_g": 11},
+                    {"spool_id": replacement, "amount_g": 60},
+                ]
+            },
+        )
+
+        history = cast(
+            "list[dict[str, object]]",
+            (await ws.result_dict(GET, spool_id=replacement))["history"],
+        )
+        assert history[0]["type"] == "ESTIMATED_CONSUMPTION"
+        assert history[0]["amount_g"] == -60.0
+        assert await ws.result_list(REVIEWS_LIST) == []
+
     async def test_an_unresolved_slot_is_an_error_reply_not_a_crash(
         self, ws: WsClient, harness: Harness
     ) -> None:
@@ -943,7 +981,26 @@ class TestReviewsApprove:
         code, message = await ws.error(REVIEWS_APPROVE, review_id=review_id)
 
         assert code == "UnresolvedSlotError"
-        assert "no spool" in message
+        assert "must add up" in message
+        assert (await ws.result_list(REVIEWS_LIST)) != []  # still pending, nothing written
+
+    async def test_a_split_that_does_not_add_up_is_an_error_reply_too(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The same refusal, reached from the other side: 11 g of a 71 g tray attributed
+        leaves 60 g that came off something, and accepting it would lose them."""
+        emptied = await a_created_spool(ws)
+        await ws.result_dict(MOUNT, spool_id=emptied, slot=1)
+        review_id = await an_open_review(harness)
+
+        code, message = await ws.error(
+            REVIEWS_APPROVE,
+            review_id=review_id,
+            charges={"1": [{"spool_id": emptied, "amount_g": 11}]},
+        )
+
+        assert code == "UnresolvedSlotError"
+        assert "confirms 71.0 g and charges 11.0 g" in message
         assert (await ws.result_list(REVIEWS_LIST)) != []  # still pending, nothing written
 
     async def test_a_double_approval_is_refused_with_the_domains_words(

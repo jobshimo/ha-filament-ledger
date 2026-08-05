@@ -173,9 +173,10 @@ and — when called from UC-04 — the slot amounts already computed.
    `raw_gcode_state` and `raw_print_error` are stored verbatim regardless, so a
    reclassification stays possible if upstream turns out to be wrong.
 2. Ask the `ConsumptionEstimator` for per-slot grams. *(Skipped when UC-04 supplied amounts.)*
-3. Resolve each involved slot to its currently mounted spool, and **freeze that resolution on
-   the review.** A slot with no mounted spool is frozen as unresolved — that is a fact worth
-   recording, not an error.
+3. Resolve each involved slot to its currently mounted spool, and **freeze that attribution
+   on the review** as a single charge for the whole of that slot's amount. A slot with no
+   mounted spool is frozen with no charge at all — that is a fact worth recording, not an
+   error.
 4. Create `PendingReview` in `PENDING`, recording which estimator ran.
 5. Raise `ReviewOpened`.
 
@@ -184,11 +185,14 @@ and — when called from UC-04 — the slot amounts already computed.
 **Failures** — estimation unavailable: the review is still created, with a zero estimate and
 an explicit flag. The user is asked; nothing is guessed.
 
-> Freezing the resolution in step 3 matters more than it looks. A review may sit in the queue
-> for days while spools are swapped in and out of the machine. Resolving at approval time
-> would deduct a cancelled Tuesday print from whatever happens to be in slot 2 on Friday.
+> Freezing the attribution in step 3 matters more than it looks. A review may sit in the
+> queue for days while spools are swapped in and out of the machine. Resolving at approval
+> time would deduct a cancelled Tuesday print from whatever happens to be in slot 2 on Friday.
 >
 > The system's job here is to *notice* and *ask*. Not to decide.
+>
+> One charge per tray is a *proposal*, not a claim: the printer reports one figure per tray
+> and nobody has yet said the tray was shared. UC-06 is where the user may say so.
 
 ---
 
@@ -199,26 +203,35 @@ Converts a review into ledger entries.
 **Trigger** — user approves in the panel, or service call.
 
 **Input** — `ReviewId`, optional per-slot corrected amounts, optional per-slot spool
-assignments (to resolve slots the review froze as unresolved), optional note.
+assignments, optional per-slot charge lists, optional note.
+
+`assignments` names one spool and gives it a tray whole — the answer to the queue's commonest
+question, *which spool was in this tray*, which needs no arithmetic from the caller. `charges`
+states the split for a tray that fed from more than one spool. A tray may appear in one of the
+two, never in both: they are two answers to one question, and letting one win silently is how
+a user's second thought gets discarded.
 
 **Preconditions**
 - Review is `PENDING`. **Idempotency is enforced here.** A review already resolved cannot be
   resolved again — otherwise a double-click deducts twice, and a duplicate ledger entry is
   indistinguishable from a real one after the fact.
-- **Every slot with a non-zero final amount resolves to a spool** — either from the frozen
-  resolution or from an assignment supplied now.
+- **Every tray's charges add up to that tray's final amount** — from the frozen attribution,
+  from an assignment, or from a charge list supplied now.
 - **No spool about to be charged has been weighed since the review opened.** A reconciliation
   sets the balance to what the scale read, and the scale had already weighed whatever this
   print consumed.
 
 **Flow**
 1. Load the review; reject if not `PENDING`.
-2. Determine final amounts per slot: user-supplied values override estimates.
-3. Determine final resolutions per slot: supplied assignments override the frozen ones.
-4. **Reject if any slot has a non-zero amount and no spool.** Nothing is written.
-5. For each non-zero amount, append `ESTIMATED_CONSUMPTION` with source `USER_CONFIRMED`,
-   carrying both `job_id` and `review_id`.
-6. Mark the review `APPROVED` with a timestamp, the note, and the resolutions actually used.
+2. Determine final amounts per tray: user-supplied values override estimates.
+3. Determine final charges per tray: a supplied charge list wins; else an assignment gives the
+   tray whole to the spool it names; else the frozen charges stand — with the one exception
+   that a tray carrying exactly one frozen charge lets that charge follow the final amount,
+   because with one charge the invariant admits exactly one split and nothing is decided.
+4. **Reject if any tray's charges do not add up to its amount.** Nothing is written.
+5. For each non-zero charge, append `ESTIMATED_CONSUMPTION` with source `USER_CONFIRMED`,
+   carrying both `job_id` and `review_id`. A tray split across two spools produces two.
+6. Mark the review `APPROVED` with a timestamp, the note, and the attribution actually used.
 7. Re-evaluate confidence — approving an estimate degrades the affected spools toward `LOW`.
 8. Run anomaly detection.
 9. Raise `ReviewResolved` and `MovementRecorded`.
@@ -226,12 +239,16 @@ assignments (to resolve slots the review froze as unresolved), optional note.
 **Postconditions** — balances reduced by *confirmed* amounts; review terminal; every movement
 traceable back to the decision that created it.
 
-**Failures** — review not found; already resolved; negative amount supplied; an unresolved
-slot carrying a non-zero amount; a charged spool weighed since the review opened.
+**Failures** — review not found; already resolved; negative amount supplied; a tray whose
+charges do not add up to its amount; a tray carrying both an assignment and a charge list; a
+charged spool weighed since the review opened.
 
-> Step 4 refuses rather than rounds. The alternatives are inventing a spool or dropping a
-> real consumption on the floor, and the second is worse because it leaves no trace. The user
-> is one dropdown away from the answer; the system is not.
+> Step 4 refuses rather than rounds. Its two failing shapes have the same remedy and the same
+> reason. A tray with an amount and no spool: the alternatives are inventing a spool or
+> dropping a real consumption on the floor, and the second is worse because it leaves no
+> trace. A tray with 10 g attributed out of 300: the other 290 g came off *something*, and a
+> ledger that accepted the shortfall would lose them just as silently. The user is one field
+> away from both answers; the system is not.
 
 > A spool weighed since the review opened is the same double count a discard would cause,
 > reached by measurement instead of by write-off: approving would deduct grams the scale had

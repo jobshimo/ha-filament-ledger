@@ -24,6 +24,7 @@ from custom_components.filament_ledger.domain.event import (
     ReviewOpened,
     SpoolDepleted,
 )
+from custom_components.filament_ledger.domain.model.pending_review import ReviewCharge
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.service.anomaly_detector import AnomalyKind
 from custom_components.filament_ledger.domain.value.colour import Colour
@@ -270,7 +271,8 @@ class TestTheMissingFigureBranch:
         assert review.reason is ReviewReason.UNMAPPED_USAGE
         assert review.estimator_used is EstimatorKind.NONE
         assert review.estimated_usage == {SLOT_1: Grams.zero()}
-        assert review.slot_resolution == {SLOT_1: spool_id}
+        # The spool is a fact, the amount is not: a zero charge is what says so.
+        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.zero()))]
 
 
 class TestUnresolvedSlots:
@@ -287,7 +289,7 @@ class TestUnresolvedSlots:
         [review] = await SqliteReviewRepository(ledger.database).list_pending()
         assert review.reason is ReviewReason.UNMAPPED_USAGE
         assert review.estimated_usage == {SLOT_2: Grams.of(20)}
-        assert review.slot_resolution == {SLOT_2: None}
+        assert review.charges == []
         assert review.estimator_used is EstimatorKind.NONE
 
     async def test_resolved_slots_still_deduct_when_others_cannot(self, ledger: Ledger) -> None:
@@ -306,7 +308,7 @@ class TestUnresolvedSlots:
         [review] = await SqliteReviewRepository(ledger.database).list_pending()
         assert review.job_id == job.id
         assert review.estimated_usage == {SLOT_2: Grams.of(20)}
-        assert review.slot_resolution == {SLOT_2: None}
+        assert review.charges == []
         [opened] = ledger.events.of(ReviewOpened)
         assert isinstance(opened, ReviewOpened)
         assert opened.reason is ReviewReason.UNMAPPED_USAGE

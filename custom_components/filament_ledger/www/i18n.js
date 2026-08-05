@@ -327,12 +327,21 @@ const EN = {
   "review.distribute": "Distribute",
   "review.approve": "✓ Approve",
   "review.unknownSpool": "Unknown spool",
-  "review.noSpoolRecorded": "no spool recorded",
-  "review.whichSpool": "which spool was in this slot?",
+  "review.whichSpool": "which spool was in this tray?",
   "review.chooseSpool": "Choose spool…",
   "review.slotWord": "slot [[slot]]",
   "review.blockedHint": "Approve is disabled until [[slots]] has a spool, or its amount is 0.",
   "review.invalidAmounts": "Amounts must be zero or positive numbers.",
+
+  // -- review: a tray that fed from more than one spool (docs/06 §6.3) ----------------
+  "review.addSpool": "+ Add spool",
+  "review.loadRest": "Load the rest",
+  "review.loadRestTitle": "Charge this spool everything the tray has left",
+  "review.dropChargeTitle": "Take this spool off the tray",
+  "review.remaining": "[[grams]] g left to charge",
+  "review.overCharged": "[[grams]] g more than this tray used",
+  "review.remainderHint":
+    "Approve is disabled until every gram in [[slots]] is charged to a spool.",
 
   // -- spool detail ------------------------------------------------------------------
   "detail.back": "← All spools",
@@ -493,6 +502,10 @@ const EN = {
     "Return <b>[[grams]] g</b> to <b>[[spool]]</b>, and charge <b>[[grams]] g</b> to the " +
     "spool you choose. The original entry stays in history, marked as reassigned.",
   "dlg.reassignTo": "Charge it to",
+  "dlg.reassignAmount": "How much to move",
+  "dlg.reassignAmountHelp":
+    "Up to [[grams]] g, the whole charge. Move less when the spool ran out part-way " +
+    "through and another finished the print.",
   "dlg.reassignFoot":
     "No reason is required: the pair names both spools and links back to the entry it " +
     "corrects, so it explains itself.",
@@ -875,9 +888,16 @@ const ES = {
   "review.distribute": "Repartir",
   "review.approve": "✓ Aprobar",
   "review.unknownSpool": "Bobina desconocida",
-  "review.noSpoolRecorded": "no se registró ninguna bobina",
   "review.whichSpool": "¿qué bobina había en esta bandeja?",
   "review.chooseSpool": "Elegir bobina…",
+  "review.addSpool": "+ Añadir bobina",
+  "review.loadRest": "Cargar el resto",
+  "review.loadRestTitle": "Cargar a esta bobina todo lo que le queda a la bandeja",
+  "review.dropChargeTitle": "Quitar esta bobina de la bandeja",
+  "review.remaining": "quedan [[grams]] g por cargar",
+  "review.overCharged": "[[grams]] g más de lo que usó esta bandeja",
+  "review.remainderHint":
+    "Aprobar está desactivado hasta que cada gramo de [[slots]] esté cargado a una bobina.",
   "review.slotWord": "la bandeja [[slot]]",
   "review.blockedHint":
     "Aprobar está desactivado hasta que [[slots]] tenga una bobina, o su cantidad sea 0.",
@@ -1043,6 +1063,10 @@ const ES = {
     "bobina que elija. La entrada original permanece en el historial, marcada como " +
     "reasignada.",
   "dlg.reassignTo": "Cargarlo a",
+  "dlg.reassignAmount": "Cuánto mover",
+  "dlg.reassignAmountHelp":
+    "Hasta [[grams]] g, el cargo completo. Mueva menos si la bobina se acabó a mitad de " +
+    "camino y otra terminó la impresión.",
   "dlg.reassignFoot":
     "No hace falta motivo: el par nombra ambas bobinas y enlaza con la entrada que " +
     "corrige, así que se explica solo.",

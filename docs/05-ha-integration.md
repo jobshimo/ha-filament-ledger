@@ -106,8 +106,9 @@ filament_ledger.unmount_spool:
 filament_ledger.approve_review:
   fields:
     review_id: {required: true}
-    amounts:   {required: false, selector: {object: {}}}   # {slot: grams}    — overrides estimate
-    assign:    {required: false, selector: {object: {}}}   # {slot: spool_id} — resolves unresolved slots
+    amounts:   {required: false, selector: {object: {}}}   # {slot: grams}     — overrides estimate
+    assign:    {required: false, selector: {object: {}}}   # {slot: spool_id}  — one spool takes the tray whole
+    charges:   {required: false, selector: {object: {}}}   # {slot: [{spool_id, amount_g}]} — a tray split across spools
     note:      {required: false}
 
 filament_ledger.dismiss_review:
@@ -145,9 +146,12 @@ happens in exactly one place, and the SQLite column carries no default of its ow
 ([08 §8.1](08-data-model.md)) so a bug in that path fails loudly instead of quietly writing a
 zero into the arithmetic behind every future reconciliation.
 
-`approve_review` keys both `amounts` and `assign` by **slot index**, matching
-[02 §2.3](02-domain-model.md). `assign` is how a caller resolves a slot the review recorded as
-having consumed filament with no spool mounted in it.
+`approve_review` keys `amounts`, `assign` and `charges` by **slot index**, matching
+[02 §2.3](02-domain-model.md). `assign` gives a tray whole to the spool it names, which is how
+a caller resolves a slot the review recorded as having consumed filament with no spool mounted
+in it. `charges` states the split for a tray that fed from more than one spool — a spool that
+emptied mid-print and was replaced in the same tray — and each tray's charges must add up to
+what that tray confirms. A tray may appear in one of the two, never in both.
 
 ## 5.5 Events
 

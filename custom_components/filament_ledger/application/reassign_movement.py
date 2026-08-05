@@ -9,6 +9,12 @@ correct (docs/adr/0007, docs/14 §14.3).
 The original entry is untouched, and both legs inherit its `job_id` and `review_id`, so
 per-print accounting follows the material. That inheritance is what makes cost-per-print
 come out right later with no special case.
+
+**Part of a charge may move.** A spool that emptied mid-print and was replaced in the same
+tray leaves one charge that belongs to two spools, and the pair for a named magnitude
+corrects exactly that — the source keeps the grams it really gave. It is the review
+queue's split, reached after the charge has landed rather than before, and the ledger
+cannot tell the two apart afterwards because both are the same compensating pair.
 """
 
 from __future__ import annotations
@@ -51,10 +57,17 @@ class ReassignMovementCommand:
     """The note is **optional**, unlike UC-10's mandatory reason, and the difference is
     principled: an adjustment without a reason is inexplicable, but a reassignment explains
     itself structurally — the link names the entry it corrects and the pair names both
-    spools (docs/14 §14.3)."""
+    spools (docs/14 §14.3).
+
+    `amount` is optional for a different reason: absent means the whole charge, which is
+    what a reassignment has always moved. Naming a part of it is the same situation the
+    review queue's split answers — a tray that fed from two spools — reached after the
+    charge has already landed. Both are wanted, because the discovery comes at both times.
+    """
 
     movement_id: MovementId
     to_spool_id: SpoolId
+    amount: Grams | None = None
     note: str | None = None
 
 
@@ -97,7 +110,7 @@ class ReassignMovement:
             self._guard_source(source)
             self._guard_target(source, target)
 
-            moved = abs(movement.amount)
+            moved = self._moved(abs(movement.amount), command.amount)
             now = self.clock.now()
             # One type for both legs, distinguished by sign: the pair is one correction,
             # and splitting it into a credit type and a debit type would make every query
@@ -163,6 +176,34 @@ class ReassignMovement:
         for event in to_publish:
             await self.events.publish(event)
         return moved
+
+    @staticmethod
+    def _moved(whole: Grams, requested: Grams | None) -> Grams:
+        """How much of the charge moves — all of it unless the user named a part of it.
+
+        The two bounds are the two ways a partial reassignment stops being a correction.
+        A magnitude of nothing writes a pair that cancels out and explains nothing, which
+        is the same emptiness `_guard_target` refuses for a reassignment to itself. A
+        magnitude larger than the charge moves grams the charge never held: the target is
+        debited for material it never received and the source credited for material it
+        never lost, which is the ledger inventing filament — the one failure this design
+        exists to make impossible.
+        """
+        if requested is None:
+            return whole
+        if not requested.is_positive:
+            msg = (
+                f"a reassignment of {requested} moves nothing; name a positive amount, or "
+                f"leave it out to move the whole charge"
+            )
+            raise InvalidValueError(msg)
+        if requested > whole:
+            msg = (
+                f"this charge is {whole} and cannot give up {requested}; a reassignment "
+                f"moves grams that were charged, never grams that were not"
+            )
+            raise InvalidValueError(msg)
+        return requested
 
     @staticmethod
     def _guard_is_a_charge(movement_type: MovementType, amount: Grams) -> None:
