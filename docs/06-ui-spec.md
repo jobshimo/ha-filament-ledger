@@ -50,6 +50,60 @@ after *every* paint because the nodes are new every time:
 Labels are never traded for icons. Density is worth less than knowing what a tab is before
 tapping it; the padding tightens on narrow screens instead.
 
+### The shell: what is fixed, and what scrolls
+
+Every tab is built from one layout shell, and the shell is what decides that **the content
+scrolls under the chrome rather than the whole panel scrolling as one document.** Four
+regions, top to bottom:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Filament Ledger                                        Martín  ADMIN│  1  fixed
+│  │ Inventory │ History │ Stats │ Review ⑵ │ AMS │ Printer   …        │  2  fixed
+├──────────────────────────────────────────────────────────────────────┤
+│  [ + New spool ]  [ Sync with printer ]                              │  3  fixed
+├──────────────────────────────────────────────────────────────────────┤
+│  ┌────────────────┐  ┌────────────────┐                            ▲ │
+│  │  PLA Basic     │  │  PLA Matte     │                            │ │  4  scrolls
+│  └────────────────┘  └────────────────┘                            ▼ │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+1. **The panel header** — the product and the account line.
+2. **The tab strip**, which scrolls *horizontally* within itself on a narrow screen exactly
+   as above, while staying vertically pinned.
+3. **The view's actions** — the row of controls that acts on the tab as a whole. Inventory
+   has *+ New spool* and *Sync with printer*; Stats has its period selector; Printer has
+   *Refresh*; the spool detail has *Back*. Several tabs have none.
+4. **The content** — the spool cards, the ledger rows, the review stack. **This is the only
+   region in the panel that scrolls vertically.**
+
+Three rules make it worth having.
+
+**A tab with no actions renders no region 3 at all**, rather than an empty one. Fixed chrome
+is paid for in the dimension a phone has least of, so a region nothing occupies must not cost
+its margin on the tabs that leave it empty.
+
+**Only whole-view controls are pinned.** A control that acts on one row belongs beside that
+row and scrolls with it: a review card keeps its own Approve, a trash row keeps its own
+Restore, and the spool detail keeps *Weigh* and *Adjust* under the spool they weigh and
+adjust (§6.5) rather than hoisting them above it. Region 3 is for what acts on everything
+below it, which is also the test for what belongs in it later. The History filter row (§6.6)
+is the case that proved the test: it narrows every row beneath it, so it pins.
+
+**A table's own column headings pin within region 4.** They are not a fifth region — they
+travel with the table, they release when it scrolls past, and they exist because a heading is
+only useful over the rows it names. The mechanism and the structural change it needed are in
+§6.6; the rule here is that region 4 is a real scrollport, so things inside it may stick to it.
+
+**The content region keeps its scroll position across a repaint.** The panel repaints by
+replacing its markup wholesale ([ADR-0006](adr/0006-vanilla-panel.md)), so the scroller is a
+new element after every paint and starts at the top unless it is put back. A push from the
+backend — a print finishing while somebody is reading row forty — must not throw them to the
+top; a live panel that does that is worse than one that never updates. Arriving somewhere is
+the exception and not an exception to the rule: a change of view opens at its top, which is
+the same distinction that decides whether the entry animation runs (§6.8).
+
 ---
 
 ## 6.2 View 1 — Inventory
@@ -67,7 +121,7 @@ The default landing view. Answers "what do I have?" without a click.
 │  [ All ▾ ]  [ Any material ▾ ]  [ Search…            ]  [ ⊞ | ☰ ]   │
 │                                                                      │
 │  ┌──────────────────────┐  ┌──────────────────────┐                 │
-│  │ ███  PLA Basic       │  │ ███  PLA Matte       │                 │
+│  │ ███  PLA Basic    ⋮  │  │ ███  PLA Matte    ⋮  │                 │
 │  │ ███  Black           │  │ ███  Ivory White     │                 │
 │  │      Bambu Lab       │  │      Bambu Lab       │                 │
 │  │                      │  │                      │                 │
@@ -100,14 +154,22 @@ The default landing view. Answers "what do I have?" without a click.
 - **Confidence dot** — 🟢 high, 🟡 medium, 🔴 low. When low, the card shows the call to
   action *"Weigh this spool"* directly. A warning with no adjacent remedy is just noise.
 - **Location** — `AMS · Slot n`, `Storage`, or `External spool`.
+- **Actions** — one ⋮ beside the name, opening the spool's action rail (§6.5). It sits
+  *in* the header row rather than over the card's corner: a glyph floating outside the
+  layout has no box a thumb can find, and at a narrow width it lands on the name it is
+  meant to sit beside.
 
 ### States
 
 - **Sealed** — a "Sealed" chip, no progress bar. A spool never opened has nothing to show a
   bar for.
 - **Anomaly** — amber left border and a ⚠ chip. Tapping goes straight to the explanation.
-- **Depleted** — greyed, moved to the end of the list, kept visible. It is still a real object
-  until discarded.
+- **Depleted** — the coil dims and the percentage is replaced by a *depleted* chip, exactly
+  as a sealed spool's is replaced by *Sealed*: 0% is a figure with nothing in it either
+  way. The card sinks to the end of the list and stays there — it is still a real object
+  until it is thrown away. In the AMS view it does not move at all (§6.4): the reel is
+  physically in the tray, and a slot that emptied itself on screen would be a lie about
+  the machine.
 - **Discarded** — hidden unless the *All* filter includes it.
 
 ### Filters
@@ -118,9 +180,13 @@ confidence.
 
 ### Sync with printer
 
-A **⟳ Sync with printer** button sits beside *+ New spool*. It runs the same reconciliation
-pass startup runs — every tray the printer currently reports, through the same detection
-rules — and renders a transient per-slot outcome strip: mounted spools by name, unknown tags
+A **⟳ Sync with printer** button sits beside *+ New spool*. The pair is this tab's fixed
+action row (§6.1) and leads the view: the summary card below them is a figure to read, not a
+control to reach, so it scrolls away with the spools while the two buttons do not.
+
+It runs the same reconciliation pass startup runs — every tray the printer currently reports,
+through the same detection rules — and renders a transient per-slot outcome strip: mounted
+spools by name, unknown tags
 with a **Register…** action that opens the new-spool form pre-filled from the tray's hints
 (§6.4), ambiguous tags left for the user because the system does not pick, unreadable tags
 named as such. With no printer connected the strip says so honestly — *"No printer connected —
@@ -277,7 +343,7 @@ A physical mirror of the machine. Answers "what is loaded right now?" at a glanc
 │  AMS Lite                                    ● Connected             │
 │                                                                      │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐        │
-│  │  SLOT 1    │ │  SLOT 2    │ │  SLOT 3    │ │  SLOT 4    │        │
+│  │  SLOT 1  ⋮ │ │  SLOT 2  ⋮ │ │  SLOT 3  ⋮ │ │  SLOT 4    │        │
 │  │            │ │            │ │            │ │            │        │
 │  │  ████████  │ │  ████████  │ │  ████████  │ │            │        │
 │  │  ████████  │ │  ████████  │ │  ████████  │ │   empty    │        │
@@ -371,7 +437,7 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  ←  PLA Basic Black                                        [ ⋮ ]     │
+│  ←  PLA Basic Black                                                  │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │  ████████                                                      │  │
@@ -385,7 +451,8 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 │  │     Last weighed 3 days ago                                    │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
-│  [ ⚖ Weigh ]  [ ✎ Adjust ]  [ 🗑 Discard ]  [ ✎ Edit details ]      │
+│  [ ⚖ Weigh ] [ ✎ Adjust ] [ 🗑 Discard ] [ ✎ Edit details ]          │
+│                              [ Mark as finished ]  [ Remove… ]      │
 │                                                                      │
 │  History ───────────────────────────────────────────────────────     │
 │                                                                      │
@@ -446,6 +513,35 @@ at the number in the header. A user who doubts the balance can follow it to its 
 is the entire justification for an append-only ledger; without this view, immutability is cost
 with no benefit.
 
+### Where a spool's actions live
+
+A spool has two kinds of action, and they are not interchangeable.
+
+**Corrective actions change a number** — *Weigh*, *Adjust*, *Discard*, *Edit details*.
+Each of them is a claim the movement history below has to justify, so each of them lives
+here, under that history. This is §6.1's rule about pinned controls applied one level
+down: a control belongs beside the thing it acts on.
+
+**Lifecycle actions state a fact about the object** — *Mark as finished* and *Remove…*.
+Neither needs the history, the core weight, or any arithmetic; each needs only the spool.
+So both are available wherever a spool is drawn: on an inventory card, on an AMS tray, and
+here.
+
+Both sets are **one list, declared once and rendered at two densities** — the spool action
+rail ([16 §16.10](16-visual-system.md)):
+
+- **Expanded**, here, as the row above the history: four corrective actions, then the two
+  lifecycle ones set apart at the end of the row.
+- **Collapsed**, on a card or a tray, into the ⋮ beside the spool's name. It opens the
+  lifecycle pair as a sheet, each with the line that says what it will do — the shape the
+  retirement modal already uses, so neither is picked by reflex.
+
+**There is deliberately no third home, and one of the two that existed has gone.** The
+panel used to float a ✕ over a spool card's corner, and the same glyph on a history row
+means *delete this entry*. Two glyphs, two meanings, one shape: the collision was half the
+reason a spool card read as untidy. Retirement is now a labelled row in the rail, and the ✕
+means exactly one thing everywhere — on the history row where it always belonged.
+
 ### Actions
 
 **⚖ Weigh** — the reconciliation dialog:
@@ -481,6 +577,59 @@ the specific operations should cover almost every case.
 
 **✎ Edit details** — label, vendor, colour, material, core weight. **Never the balance.** The
 form contains no balance field at all; that is not an omission but the point.
+
+**Mark as finished** — the reel came off the printer empty, and there is no number to type:
+
+```
+┌────────────────────────────────────────────┐
+│  Mark PLA Basic Black as finished?         │
+│                                            │
+│  The ledger still says 612.4 g remain.     │
+│  Recording an empty reel writes a          │
+│  reconciliation of − 612.4 g — the drift   │
+│  every estimate has accumulated since this │
+│  spool was last weighed.                   │
+│                                            │
+│  Nothing is counted as waste and nothing   │
+│  is charged to a print.                    │
+│                                            │
+│      [ Cancel ]  [ Record an empty spool ] │
+└────────────────────────────────────────────┘
+```
+
+This is the reconciliation above with a measured value of **zero**, and it is deliberately
+nothing else — no new movement type, no new use case.
+
+- **A whole-spool discard would be wrong.** It books the remainder as *waste*, and
+  filament that was printed is not waste. Every waste figure in §6.7 would inflate by the
+  drift of every spool ever finished.
+- **A consumption would be wrong.** It attaches a print's charge to no print.
+- **A reconciliation is exactly right.** The user is asserting a measured truth, and the
+  `delta` that falls out is the accumulated drift of every estimate since the last
+  weighing. When that drift is large the anomaly detector ([02 §2.5](02-domain-model.md))
+  raises `LARGE_RECONCILIATION_DELTA` — information the user wants, not noise.
+
+**The drift is stated in grams before the user commits.** It is the largest single
+correction this product can produce, routinely several hundred grams, and writing one from
+a button that says only *finished* is precisely what this ledger exists not to do. The
+figure is shown to one decimal, because it is a movement and not a balance (§6.8).
+
+**Zero net is not zero gross.** The value sent is the *filament*, not a scale reading, so
+it travels with `includes_core: false` — the same distinction the edit dialog's absolute
+restatement makes. Sent the other way, the empty reel would be subtracted from zero and
+the spool would reconcile to minus its own core: a quarter of a kilogram of error, written
+as a correction, with nothing on screen to say so.
+
+**A finished spool stays.** The balance reaches zero, `DEPLETED` derives itself
+([02 §2.2](02-domain-model.md)), and the card dims and sinks to the end of the inventory
+(§6.2) — but it does not leave, and in the AMS view it does not move at all, because the
+reel is still in the tray. Taking it out of the inventory is *Remove…*, and that is a
+separate decision about a different fact.
+
+**Remove…** — asks what actually happened, because *thrown away* and *registered by
+mistake* are two different facts about the world and only one of them is waste.
+[14 §14.4.3](14-corrections-and-trash.md) owns the two branches; what changed here is
+where the question is asked from, not what it asks.
 
 ---
 
@@ -525,6 +674,87 @@ links to its spool, where §6.5 does the deriving.
 
 The view serves the newest hundred entries. It is a window, not an export.
 
+### The column headings stay put
+
+Forty rows down, a column of numbers with no heading over it is a column nobody can name — so
+the headings pin to the top of the content region while the rows scroll under them. This is the
+shell of §6.1 doing its job one level further in, and it took a change of structure rather than
+one declaration.
+
+`position: sticky` resolves against the nearest ancestor that scrolls, and the wrapper this
+table sat in was one: it carried `overflow-x: auto` for the phone, and CSS computes an
+`overflow` of `visible` to `auto` the moment the other axis is not `visible`. The wrapper
+therefore scrolled in **both** axes, and a sticky heading stuck faithfully to a scrollport
+whose vertical extent never moved. No error, no warning, and a declaration that reads as though
+it should work ([16 §16.9](16-visual-system.md)).
+
+So the wrapper is gone from this one table and the shell's own scroller does both jobs, which
+it was already equipped for. The table is panned sideways on a phone exactly as it was before,
+and **the reader's horizontal position now survives a repaint** for the same reason the vertical
+one does — a push that restored only one of the two would leave somebody looking at the columns
+they had scrolled away from.
+
+The other two ledger tables keep the wrapper. The spool detail's (§6.5) is one card in a stack,
+so panning the region would drag the hero card sideways with it; the Stats table (§6.7) is
+bounded and short. Neither ever puts a reader out of sight of its headings, which is the test.
+
+### Filters
+
+Six controls in the view's action row (§6.1), pinned, because a control that narrows the rows
+below it must not scroll away with the rows it narrows:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  NOTE OR PRINT      FROM        TO       GRAMS MOVED    COLOUR       │
+│  [ Search…      ]  [5/8/26 ]  [       ]  [ 50 ][    ]   ███ ███ ███  │
+│                                                        [ Clear ]     │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+- **Date** — an arbitrary *from* and *to*, both optional and independent of each other. Not the
+  three fixed windows §6.7 offers: Stats compares like with like and needs coarse periods, while
+  the history answers *what happened on the day the part came out wrong?* and needs the day.
+  Both bounds are inclusive, so a *to* of the 5th includes everything that happened on the 5th —
+  sent as that day's last millisecond in the reader's own timezone, because the ledger stores
+  instants and a bare date names a wall clock.
+- **Colour** — a **set**, not one value: *the blacks and the greys* is one question a user asks
+  rather than two. One swatch per colour in the inventory, painted with the colour the user
+  recognises from the card and from the row, and filtered on the value the ledger actually
+  stored. The list is the inventory rather than the colours present in the rows on screen, which
+  narrow as the filter bites — a control that removes its own options as they are used cannot be
+  undone.
+- **Weight** — *at least* and *at most*, as **magnitudes**. A print consumption is stored as
+  −84.1 g, and a user asking for entries over 50 g means that one: they are thinking about how
+  much filament moved, not about which way it went. The labels never imply a sign, because the
+  comparison does not.
+- **Free text** — matches the **note** written on an entry and the **name of the print** it came
+  from. It does not match the entry's own label, which the panel generates and translates, so
+  searching it server-side would match English words against a Spanish screen; and it does not
+  match the spool's name, which has a column of its own and the colour swatches to narrow it.
+  The label on the box says exactly this, because a control that promises more than it does
+  reads as broken.
+- **Clear filters** — one control, and it is the *empty* filter set rather than a command: every
+  field goes absent, the payload is empty, and an empty payload is the unfiltered read the
+  history has always run. It is a special case in neither the panel nor the backend.
+
+**Filtering happens in SQL, never in the panel.** A ledger grows without bound, and shipping the
+whole table to the browser to sieve it there is the kind of decision that works for a year and
+then does not ([05 §5.6](05-ha-integration.md)). The limit applies to what matched, so widening
+a filter can bring older entries back into view, and the sentence under the table says so.
+
+**The filters are state, and they survive a tab change.** The panel repaints by replacing its
+markup wholesale ([ADR-0006](adr/0006-vanilla-panel.md)), so a selection held in the DOM would
+last until the next update arrived; they live on the element exactly as the Stats period does.
+They outlive a tab change for the same reason that one does — walking to the AMS tab to check a
+slot is not withdrawing the question — and only *Clear filters* clears them. They do not outlive
+a reload: the panel persists a language, which is a preference, and not a filter, which is a
+question about right now.
+
+**A search box is a field like any other.** An update arriving mid-word is *held* by the rule in
+§6.8 rather than dropped, and the read the box itself asks for is debounced so that a keystroke
+is not a round trip. Whichever control in the row had focus gets it back after the paint, caret
+and all — the row is pinned, not exempt from being rebuilt.
+
 ### Empty state
 
 ```
@@ -534,6 +764,26 @@ The view serves the newest hundred entries. It is a window, not an export.
        newest first. Register a spool and its opening balance
        becomes the first row.
 ```
+
+No filter row with it: there is nothing to narrow, and offering the controls anyway would teach
+that the ledger is being hidden rather than that it is empty.
+
+### Nothing matched
+
+A ledger with nothing in it and a filter that matched nothing are different questions, and
+conflating them is how a filter comes to read as data loss:
+
+```
+       Nothing matches these filters.
+
+       The ledger still holds every entry it held a moment ago;
+       this slice of it is empty. Widen a date, drop a colour,
+       or clear the filters to see all of it again.
+
+                    [ Clear filters ]
+```
+
+The filter row stays here, because widening it is the only way out.
 
 ---
 
@@ -691,7 +941,15 @@ smaller wrong than a number that ate what somebody was typing into it.
 
 **Arriving at a view is animated; being updated in one is not.** The entry transition runs on a
 change of view and nowhere else — replaying it on every update is what a live panel looks like
-when it flickers.
+when it flickers. The same distinction governs the scroll position: arriving opens at the top,
+being updated keeps the reader's place (§6.1).
+
+**One shell, and one scroller.** Every tab is the same four regions, and only the last of them
+moves (§6.1). A tab that wants a row of controls declares it and the shell pins it; a tab that
+does not, does not pay for one. The rule earned itself on the first surface that tested it: the
+History filter row (§6.6) is a line in the existing shell rather than a second mechanism beside
+it, and the ledger's own column headings pin inside the one scroller rather than inventing a
+second one.
 
 **Confidence is never hidden.** Any surface showing a balance shows its confidence alongside.
 A number presented without its reliability invites false trust.

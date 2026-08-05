@@ -220,6 +220,35 @@ History view asks: the newest entries across **every** spool, each joined to its
 name and colour and — when `job_id` is set — its print job's name. It carries no running
 balances, because no balance is derivable from a cross-spool slice.
 
+`movements` also takes the History view's filters. Every one is optional and independent of
+the others:
+
+```
+since     ISO-8601, with an offset   entries at or after this instant
+until     ISO-8601, with an offset   entries at or before this instant
+colours   ["RRGGBB", …]              entries of spools wearing any of these
+min_g     number ≥ 0                 entries weighing at least this
+max_g     number ≥ 0                 entries weighing at most this
+search    string                     free text over the entry's note and job name
+```
+
+**They are applied server-side, in SQL** — the rule `statistics` follows, for a stronger
+reason: a period's totals are bounded and a history is not. `limit` caps what matched, never
+what would have matched had the filters run afterwards.
+
+The offset is required rather than assumed. A bound without one names a wall clock and the
+ledger stores instants, so guessing the host's timezone would make one saved filter mean two
+different windows on two installations restored from the same backup — and the browser knows
+its own offset, so there is nothing to guess. `min_g` and `max_g` are **magnitudes**, because
+amounts are signed and a print consumption of −84.1 g is exactly what somebody asking for
+entries over 50 g means. `search` covers the note and the print job's name and nothing else:
+the movement label is generated and translated in the panel, and the spool's name is a column
+of its own with `colours` to narrow it ([04 UC-12](04-use-cases.md)).
+
+Sending none of these keys is the whole history, which is what *clear all* does — the control
+removes the payload rather than adding a command. Nothing is written, so like `statistics` the
+command does not refresh the coordinator.
+
 `statistics` takes an optional `period` — `30d`, `90d` or `all`, defaulting to `30d` — and
 answers with one period's finished figures: grams printed and wasted, print and review
 outcomes, consumption grouped by colour and by material, the biggest prints, and measured

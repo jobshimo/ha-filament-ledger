@@ -287,6 +287,22 @@ class TestSchemasRejectMalformedMessages:
             pytest.param(REVIEWS_DISMISS, {}, id="dismiss-without-a-review-id"),
             pytest.param(MOVEMENTS, {"limit": "many"}, id="movements-with-a-textual-limit"),
             pytest.param(MOVEMENTS, {"limit": 0}, id="movements-with-a-zero-limit"),
+            pytest.param(
+                MOVEMENTS, {"since": "yesterday"}, id="movements-since-an-unparseable-date"
+            ),
+            pytest.param(
+                MOVEMENTS,
+                {"until": "2026-08-02T12:00:00"},
+                id="movements-until-a-date-with-no-offset",
+            ),
+            pytest.param(MOVEMENTS, {"min_g": -5}, id="movements-with-a-negative-minimum"),
+            pytest.param(MOVEMENTS, {"max_g": "heavy"}, id="movements-with-a-textual-maximum"),
+            pytest.param(MOVEMENTS, {"colours": "000000"}, id="movements-with-one-bare-colour"),
+            pytest.param(
+                MOVEMENTS,
+                {"colours": ["000000"] * 65},
+                id="movements-with-more-colours-than-a-palette",
+            ),
             pytest.param(TRAYS_SYNC, {"surprise": 1}, id="trays-sync-accepts-no-fields-at-all"),
             pytest.param(STATISTICS, {"period": "forever"}, id="statistics-with-an-unknown-period"),
             pytest.param(STATISTICS, {"period": 30}, id="statistics-with-a-numeric-period"),
@@ -1070,6 +1086,84 @@ class TestMovements:
         (only,) = await ws.result_list(MOVEMENTS, limit=1)
 
         assert only["note"] == "newest"
+
+
+class TestMovementFilters:
+    """The filter payload, over the wire (docs/05 §5.6, FEATURE-REQUESTS §5).
+
+    The narrowing itself is pinned in `tests/application/test_movement_history.py`, against
+    the SQL. What is verified here is the translation: what the panel sends, what reaches
+    `MovementFilter`, and what a bad value comes back as.
+    """
+
+    async def test_free_text_narrows_the_history_server_side(self, ws: WsClient) -> None:
+        spool_id = await a_created_spool(ws, label="PLA Basic Black")
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-100, reason="lamp shade")
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-2, reason="purge tower")
+
+        rows = await ws.result_list(MOVEMENTS, search="lamp")
+
+        assert [row["note"] for row in rows] == ["lamp shade"]
+
+    async def test_a_weight_bound_is_read_as_a_magnitude(self, ws: WsClient) -> None:
+        """`min_g` is a size, so the 100 g the lamp shade *took away* is over 50 and the
+        2 g purge is not. The schema refuses a negative bound outright: there is no such
+        thing as an entry smaller than nothing."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-100, reason="lamp shade")
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-2, reason="purge tower")
+
+        rows = await ws.result_list(MOVEMENTS, min_g=50)
+
+        assert [row["amount_g"] for row in rows] == [-100.0, 1000.0]
+
+    async def test_a_colour_filter_names_the_colour_of_a_spool(self, ws: WsClient) -> None:
+        """The panel sends the swatch the user clicked; the join is the server's problem."""
+        await a_created_spool(ws, label="Black", colour="000000")
+        await a_created_spool(ws, label="Ivory", colour="FFFFF0")
+
+        rows = await ws.result_list(MOVEMENTS, colours=["FFFFF0"])
+
+        assert [row["spool_name"] for row in rows] == ["Ivory"]
+
+    async def test_a_date_bound_crosses_the_wire_as_an_offset_timestamp(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The one filter that is not a plain scalar. It arrives as ISO-8601 **with an
+        offset** — the schema refuses it without one, because a wall clock names no
+        instant — and it bounds the ledger inclusively."""
+        spool_id = await a_created_spool(ws)
+        harness.ledger.clock.advance(days=1)
+        boundary = harness.ledger.clock.now()
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-100, reason="lamp shade")
+
+        rows = await ws.result_list(MOVEMENTS, since=boundary.isoformat())
+
+        assert [row["note"] for row in rows] == ["lamp shade"]
+
+    async def test_a_message_carrying_no_filters_is_the_whole_history(self, ws: WsClient) -> None:
+        """*Clear every filter*, as the wire expresses it: the panel stops sending the
+        keys and the command answers with the ledger it always answered with. An emptied
+        search box sends `""`, which is the same absence and is read as one."""
+        spool_id = await a_created_spool(ws)
+        await ws.result_dict(ADJUST, spool_id=spool_id, amount_g=-100, reason="lamp shade")
+
+        whole = await ws.result_list(MOVEMENTS)
+
+        assert [row["note"] for row in whole] == ["lamp shade", "Registered"]
+        assert await ws.result_list(MOVEMENTS, search="") == whole
+        assert await ws.result_list(MOVEMENTS, colours=[]) == whole
+
+    async def test_a_malformed_colour_is_a_message_rather_than_a_stack_trace(
+        self, ws: WsClient
+    ) -> None:
+        """The schema bounds what it can — types, ranges, timestamps — and hands the rest
+        to the value object, whose `InvalidValueError` is a `DomainError` and so reaches
+        the panel as a sentence through `guarded`."""
+        code, message = await ws.error(MOVEMENTS, colours=["chartreuse"])
+
+        assert code == "InvalidValueError"
+        assert "chartreuse" in message
 
 
 class TestStatistics:

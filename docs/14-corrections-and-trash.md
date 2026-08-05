@@ -593,9 +593,13 @@ and the link fields needed for the chips.
   *"This returns **X g** to **[spool]**."* — or the §14.4.1 branch when the spool is
   retired. Optional reason field (mandatory in the without-restitution branch, and the
   modal says why).
-- Spool cards and the detail view gain the X → intent modal of §14.4.3, with the two
-  outcomes explained in one line each: discard *"counts as waste in your statistics"*,
-  delete *"treats it as never registered — restorable from the Trash"*.
+- Spool cards and the detail view gain a route to the intent modal of §14.4.3, with the
+  two outcomes explained in one line each: discard *"counts as waste in your statistics"*,
+  delete *"treats it as never registered — restorable from the Trash"*. **The route was an
+  X on the card and is now a labelled row in the spool action rail**
+  ([16 §16.10](16-visual-system.md)) — the modal, its two branches and everything they
+  write are unchanged; what moved is where the question is asked from. The X kept only its
+  history-row meaning, which is the one it had first.
 - Trash tab per §14.4.4. Restore modals state the symmetric question with the real
   number: *"Deduct **X g** from **[spool]** again?"*
 

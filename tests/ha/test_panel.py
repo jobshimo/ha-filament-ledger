@@ -25,6 +25,8 @@ from custom_components.filament_ledger.infrastructure.ha.panel import (
 
 from .conftest import FakeHass, as_hass
 
+PANEL_SOURCE = Path("custom_components/filament_ledger/www") / PANEL_FILE
+
 
 def manifest_version() -> str:
     """Read independently of the panel module, so the test asserts the *manifest's* version
@@ -126,6 +128,51 @@ class TestRegister:
 
         assert list(panels(hass)) == ["filament-ledger"]
         assert len(hass.http.static_paths) == 1
+
+
+class TestPanelSource:
+    """Two rules about the panel's own source that a reader would otherwise have to hold.
+
+    [ADR-0006](docs/adr/0006-vanilla-panel.md) accepted having no JavaScript harness, and
+    [CONTRIBUTING](CONTRIBUTING.md) answers that with a hand-verification checklist. These
+    two are the part of it a machine can hold: both defend a failure that is *silent* on
+    screen, which is exactly the kind a checklist executed by a tired person misses.
+    """
+
+    def source(self) -> str:
+        return PANEL_SOURCE.read_text(encoding="utf-8")
+
+    def test_finishing_a_spool_reconciles_to_a_net_zero_not_a_gross_one(self) -> None:
+        """Zero net is not zero gross, and the difference is a whole reel.
+
+        Marking a spool finished sends a measured **0 g** to `spools/reconcile`. With
+        `includes_core` true the use case would read that as a scale reading and subtract
+        the empty reel from it (`Spool.net_from_gross`), reconciling the spool to minus its
+        own core — a 250 g error, written as a correction, on the one operation whose
+        entire purpose is to make the ledger honest. Nothing on screen would say so.
+        """
+        block = re.search(r'case "finish":(.*?)\bbreak;', self.source(), re.DOTALL)
+        assert block is not None, "the finish dispatch has moved or been renamed"
+
+        body = block.group(1)
+        assert '"spools/reconcile"' in body, "finishing must go through the reconcile path"
+        assert "measured_g: 0," in body
+        assert "includes_core: false," in body
+
+    def test_every_action_the_panel_renders_is_one_its_dispatcher_handles(self) -> None:
+        """A button wired to nothing looks exactly like a button that works.
+
+        The panel has one click listener and dispatches on `data-action`, so a renderer
+        that emits a name the switch does not carry produces a control that swallows every
+        tap in silence — no error, no console line, nothing to notice until somebody
+        presses it twice and gives up. The set is small and closed; keeping it closed is a
+        regex away.
+        """
+        source = self.source()
+        rendered = set(re.findall(r'data-action="([\w-]+)"', source))
+        handled = set(re.findall(r'^\s+case "([\w-]+)":', source, re.MULTILINE))
+
+        assert rendered - handled == set(), "rendered by the panel, handled by nothing"
 
 
 class TestRemove:

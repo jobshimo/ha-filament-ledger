@@ -68,6 +68,34 @@ const NOT_VOIDABLE = new Set(["OPENING_BALANCE", "VOID_REVERSAL"]);
 const DASH = "—";
 
 /**
+ * The empty filter set, and therefore the whole history (docs/06 §6.6).
+ *
+ * Mirrors `NO_FILTERS` (`domain/port/repositories.py`) deliberately: *clear every filter* is
+ * this value rather than a flag, so it is a special case in neither half of the system. The
+ * panel builds a payload from it, every field comes out absent, and the backend reads an
+ * absent field as that filter cleared — which is the unfiltered read it has always run.
+ *
+ * A factory rather than a shared constant: the colours are a list, and one object handed to
+ * every reset would carry one afternoon's choices into the next.
+ */
+const noHistoryFilters = () => ({
+  since: "",
+  until: "",
+  colours: [],
+  minG: "",
+  maxG: "",
+  search: "",
+});
+
+/**
+ * How long the filter row waits after the last keystroke before it reads.
+ *
+ * A keystroke is not a round trip. Long enough that typing a word is one query rather than
+ * five, short enough that a reader who has stopped typing does not notice waiting.
+ */
+const FILTER_DEBOUNCE_MS = 300;
+
+/**
  * The three windows the Stats tab offers, in the order it offers them. The values are the
  * backend's own `StatisticsPeriod` (`application/query.py`), so the panel never invents a
  * period the read model does not know — and the labels come from `stats.period<value>`.
@@ -161,6 +189,32 @@ function installFonts() {
 
 const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
 const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
+
+/**
+ * One end of the history's date filter, as the instant the reader means.
+ *
+ * Two traps, both silent, and this is the only place either is paid for.
+ *
+ * A date input yields a bare `YYYY-MM-DD`, and `new Date()` reads a date-only string as
+ * **UTC** midnight — so a reader in Madrid asking for the 5th would lose its first two
+ * hours to the 4th. The parts are read by hand into a *local* Date instead, and
+ * `toISOString` then carries the offset the backend insists on (`_moment`,
+ * `infrastructure/ha/websocket_api.py`): a bound without one names a wall clock, and the
+ * ledger stores instants.
+ *
+ * Both bounds are inclusive, so a start is the day's first millisecond and an end is its
+ * last. An `until` of midnight would silently drop everything that happened on the day the
+ * user named, which is precisely the day they were asking about.
+ */
+function dayBound(value, end = false) {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? "");
+  if (!parts) return null;
+  const [year, month, day] = parts.slice(1).map(Number);
+  const moment = end
+    ? new Date(year, month - 1, day, 23, 59, 59, 999)
+    : new Date(year, month - 1, day);
+  return Number.isNaN(moment.getTime()) ? null : moment.toISOString();
+}
 
 /**
  * Put an **already-safe** fragment into a `[[token]]` slot of a translated string.
@@ -321,6 +375,18 @@ class FilamentLedgerPanel extends HTMLElement {
     this._stats = null;
     this._statsLoading = false;
     this._statsPeriod = DEFAULT_STATS_PERIOD;
+    // The History tab's filter row, and a field for exactly the reason the period above is
+    // one: the innerHTML re-render throws every control away on every paint, so a selection
+    // held in the DOM would last until the next update arrived. It outlives a tab change
+    // too — a filter is a question the user asked, and walking to the AMS tab to check a
+    // slot is not withdrawing it. Only *Clear filters* clears them (docs/06 §6.6).
+    this._filters = noHistoryFilters();
+    this._filterTimer = null;
+    // Whether the row is unfolded, which only a narrow panel ever asks: six controls at a
+    // 44px tap target is more fixed chrome than a phone can spare, and the stylesheet keeps
+    // the row open unconditionally above that tier. A field rather than the DOM's own
+    // state, for the reason everything else here is one — the paint replaces it.
+    this._filtersOpen = false;
     // One window listener for the whole lifetime of the element, bound once here so
     // `disconnectedCallback` can remove the very function `connectedCallback` added.
     // The tab strip is recreated on every render; `window` is not, and a listener added
@@ -457,6 +523,8 @@ class FilamentLedgerPanel extends HTMLElement {
 
   disconnectedCallback() {
     window.removeEventListener("resize", this._onViewportResize);
+    // A pending filter read would fire into a panel that no longer has a root to paint.
+    clearTimeout(this._filterTimer);
     // Home Assistant keeps one websocket for the whole frontend. A subscription this panel
     // opened and did not close outlives the panel and keeps a read model being computed for
     // a view nobody is looking at, once more per navigation away and back.
@@ -502,7 +570,9 @@ class FilamentLedgerPanel extends HTMLElement {
    * Held, never dropped, while the user is mid-task: the panel repaints by replacing markup
    * wholesale (ADR-0006), so applying an update over an open dialog or a focused field
    * would discard what was typed and move the caret. A stale number is a smaller wrong than
-   * a number that ate what somebody was typing into it.
+   * a number that ate what somebody was typing into it. **The History tab's search box is a
+   * field like any other**, so a print finishing mid-word is held by the same rule and
+   * needs no mechanism of its own.
    */
   _pushed(payload) {
     if (!payload) return;
@@ -511,6 +581,9 @@ class FilamentLedgerPanel extends HTMLElement {
       this._spools = payload.spools;
       this._stock = payload.stock;
       this._reviews = payload.reviews;
+      // The unfiltered history: the payload is computed once on the server for everyone
+      // listening, so it cannot know this panel's filter row. `_repaint` narrows it again
+      // before it is painted.
       this._movements = payload.movements;
       this._trash = payload.trash;
     }
@@ -530,6 +603,11 @@ class FilamentLedgerPanel extends HTMLElement {
    * The detail view is the one surface a push cannot fill: it is one spool's whole history,
    * asked for by opening it. Its summary moved in the payload, so it is re-read here — the
    * only fetch left on the live path, and only while that view is open.
+   *
+   * A narrowed history is the second: the payload carries the whole one, and applying it
+   * over an active filter row would quietly widen a view the reader had narrowed. Re-read
+   * here for the same reason and on the same terms — only when there is something to
+   * narrow, so an unfiltered panel still costs the live path nothing.
    */
   async _repaint() {
     if (this._detail) {
@@ -540,6 +618,7 @@ class FilamentLedgerPanel extends HTMLElement {
         this._detail = null;
       }
     }
+    if (this._filtering()) await this._readHistory();
     this.render();
   }
 
@@ -615,7 +694,9 @@ class FilamentLedgerPanel extends HTMLElement {
         this.call("spools/list"),
         this.call("stock"),
         this.call("reviews/list"),
-        this.call("movements"),
+        // Narrowed by whatever the filter row holds, which for an untouched one is nothing
+        // at all: the payload is empty and the backend runs the read it always ran.
+        this.call("movements", this._filterPayload()),
         this.call("trash"),
       ]);
       this._spools = spools;
@@ -688,6 +769,31 @@ class FilamentLedgerPanel extends HTMLElement {
         this.render();
         this._loadStats();
         break;
+      case "filters-toggle":
+        this._filtersOpen = !this._filtersOpen;
+        this.render();
+        break;
+      case "filters-colour": {
+        // Toggled by replacement rather than in place: `_filters` is read on every paint,
+        // and a list mutated behind the object it hangs from is a list the next render has
+        // no reason to notice.
+        const colours = this._filters.colours.includes(id)
+          ? this._filters.colours.filter((colour) => colour !== id)
+          : [...this._filters.colours, id];
+        this._filters = { ...this._filters, colours };
+        // Paint the swatch's new state now and the rows when they arrive, exactly as the
+        // period buttons do: the control answers immediately, the table catches up.
+        this.render();
+        this._applyFilters();
+        break;
+      }
+      case "filters-clear":
+        // The empty value object, which builds the empty payload, which is the unfiltered
+        // read. Clearing is not a command here because it is not one on the wire either.
+        this._filters = noHistoryFilters();
+        this.render();
+        this._applyFilters();
+        break;
       case "set-language":
         // A device preference, not ledger state: no backend call, and the panel repaints
         // in the new language immediately (docs/14 §14.6.1).
@@ -744,9 +850,22 @@ class FilamentLedgerPanel extends HTMLElement {
         this._dialog = { kind: "restore-movement", movement_id: id };
         this.render();
         break;
+      case "spool-actions":
+        // The collapsed rail (docs/16 §16.10). It carries the spool's id because the
+        // surfaces that offer it — an inventory card, an AMS tray — have no loaded detail
+        // to fall back on, and every body it opens resolves its subject from that id.
+        this._dialog = { kind: "spool-actions", spool_id: id };
+        this.render();
+        break;
+      case "spool-finish":
+        // One action for both densities, so the rail's expanded and collapsed renderings
+        // cannot drift into two ways of asking the same thing.
+        this._dialog = { kind: "finish", spool_id: id };
+        this.render();
+        break;
       case "spool-intent":
-        // The X on a spool asks what actually happened, and the two answers are
-        // different facts about the world (docs/14 §14.4.3).
+        // Retirement asks what actually happened, and the two answers are different facts
+        // about the world (docs/14 §14.4.3).
         this._dialog = { kind: "spool-intent", spool_id: id };
         this.render();
         break;
@@ -971,6 +1090,16 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   _onInput(event) {
+    // The History filter row. The value moves to the instance — the DOM it was typed into
+    // is replaced on the next paint — and the read is debounced, because a keystroke is not
+    // a round trip. `input` rather than `change` covers all four typed controls with one
+    // branch: a date picker, a number spinner and a search box all raise it.
+    const filter = event.target.closest("[data-filter]");
+    if (filter) {
+      this._filters = { ...this._filters, [filter.dataset.filter]: filter.value };
+      this._debounceFilters();
+      return;
+    }
     const card = event.target.closest(".rv-card");
     if (card) {
       this._syncReviewCard(card);
@@ -1053,6 +1182,28 @@ class FilamentLedgerPanel extends HTMLElement {
             measured_g: Number(data.measured_g),
             includes_core: data.includes_core === "on",
             note: data.note || null,
+          }),
+        );
+        break;
+      // Finishing a spool is a reconciliation to zero, and deliberately nothing else
+      // (docs/06 §6.5). A whole-spool discard would book the remainder as waste, which
+      // filament that was printed is not; a consumption would charge a print that never
+      // ran. What the user is asserting is a measurement — the reel is empty — so it goes
+      // through the measurement path, and the delta that falls out is the accumulated
+      // drift of every estimate since the last weighing, recorded where it can be read.
+      //
+      // `includes_core: false` for the same reason the edit dialog's absolute restatement
+      // sends it: zero net is not zero gross. Zero as a *scale reading* would have the
+      // reel subtracted from it and reconcile the spool to minus its own core.
+      case "finish":
+        this.guarded(() =>
+          this.call("spools/reconcile", {
+            spool_id: spoolId,
+            measured_g: 0,
+            includes_core: false,
+            // Written into the ledger, so it keeps the language of the panel that wrote
+            // it — the same rule the edit dialog's correction note follows.
+            note: this._t("dlg.finishNote"),
           }),
         );
         break;
@@ -1257,6 +1408,69 @@ class FilamentLedgerPanel extends HTMLElement {
 
   // -- rendering ---------------------------------------------------------------------
 
+  /**
+   * The one region of the panel that scrolls, or null before the first paint.
+   *
+   * Queried rather than held, because the element it names is destroyed and rebuilt on
+   * every paint (ADR-0006). A field would go stale exactly once per render, which is the
+   * hardest kind of stale to notice.
+   *
+   * It scrolls in both axes and always has: an `overflow-y` of `auto` computes the
+   * unspecified `overflow-x` to `auto` as well. The History tab is the first surface to
+   * rely on that rather than merely survive it — see the stylesheet.
+   */
+  get _scroller() {
+    return this._root?.querySelector(".view-scroll") ?? null;
+  }
+
+  /**
+   * Which control in the filter row has focus, and where the caret sits inside it.
+   *
+   * The row is pinned, not exempt: it is rebuilt with everything else on every paint
+   * (ADR-0006), so a paint landing mid-entry destroys the control being used. A push cannot
+   * cause one — `_busy()` holds those back while any field has focus — but the filtered
+   * read the row itself asks for can, and by construction it always lands mid-entry. So it
+   * is put back after the paint, like every other thing this panel measures (docs/16
+   * §16.9). It is the only region of the panel that needs this: every other control either
+   * lives in a dialog, or patches itself in place precisely so no render can reach it.
+   *
+   * `data-focus` names a control across paints; `data-filter` names the field it writes.
+   * They are separate because the swatches and *Clear filters* have the first and not the
+   * second — pressing a button that then vanishes from under the keyboard is the same
+   * defect as a stolen caret, arriving through a different door.
+   *
+   * The selection is read behind a guard rather than a feature test: a number or date input
+   * *throws* on `selectionStart` in some engines and answers null in others, and an
+   * exception here would take the whole paint down from inside `render()` — the same reason
+   * `_syncTabStrip` catches around `scrollIntoView`.
+   */
+  _focused() {
+    const control = this.shadowRoot.activeElement;
+    const key = control?.dataset?.focus;
+    if (!key) return null;
+    try {
+      return { key, start: control.selectionStart, end: control.selectionEnd };
+    } catch {
+      return { key, start: null, end: null };
+    }
+  }
+
+  _restoreFocus(focused) {
+    if (!focused) return;
+    const control = this._root.querySelector(`[data-focus="${focused.key}"]`);
+    if (!control) return;
+    // Without `preventScroll` the browser would scroll the new control into view and undo
+    // the position restored a line earlier — the fix would break the thing beside it.
+    control.focus({ preventScroll: true });
+    if (focused.start === null) return;
+    try {
+      control.setSelectionRange(focused.start, focused.end);
+    } catch {
+      // A control with no selection to restore. It has its focus back, which is the half
+      // that decides whether the next keystroke lands anywhere.
+    }
+  }
+
   render() {
     if (!this._root) return;
     const t = this._t;
@@ -1267,16 +1481,61 @@ class FilamentLedgerPanel extends HTMLElement {
     const view = this._detail ? `detail:${this._detail.id}` : this._tab;
     const entering = view !== this._painted;
     this._painted = view;
+    // Where the reader had got to, read while the scroller that knows it still exists.
+    //
+    // One flag governs both halves, because they are the same distinction: arriving
+    // somewhere is animated and opens at the top, being repainted where you already are is
+    // neither. Without this a push from the backend — a print finishing while somebody is
+    // reading row forty — throws them back to the top, and a live panel that does that is
+    // worse than one that never updates at all (docs/06 §6.1).
+    //
+    // Sideways too, and for the same reason: on a phone the ledger is wider than the panel
+    // and is panned to reach its last column, so a repaint that reset only the vertical
+    // half would leave the reader looking at the columns they had scrolled away from.
+    const offset = entering ? 0 : (this._scroller?.scrollTop ?? 0);
+    const sideways = entering ? 0 : (this._scroller?.scrollLeft ?? 0);
+    const focused = this._focused();
     this._root.innerHTML = `
       ${this.header()}
       <main class="${entering ? "entering" : ""}">
         ${this._error ? this.errorBar() : ""}
-        ${this._loading ? `<div class="empty">${t("app.loading")}</div>` : this.body()}
+        ${this._loading ? this.shell("", `<div class="empty">${t("app.loading")}</div>`) : this.body()}
       </main>
       ${this._dialog ? this.dialog() : ""}
     `;
-    // After the paint, never before: the strip being measured has to exist first.
+    // Both of these after the paint and never before: the nodes they measure and move are
+    // the ones the line above has just built. The browser clamps the offset to the new
+    // maximum on its own, so a repaint that shortened the list lands at its end rather
+    // than out of range.
+    const scroller = this._scroller;
+    if (scroller) {
+      scroller.scrollTop = offset;
+      scroller.scrollLeft = sideways;
+    }
+    this._restoreFocus(focused);
     this._syncTabStrip();
+  }
+
+  /**
+   * The layout shell every view is built from (docs/06 §6.1).
+   *
+   * Two regions under the header, and only the second one moves: the actions a view offers
+   * stay put while its content scrolls beneath them. The panel is used standing at a
+   * printer, where reaching a control means scrolling back up one-handed with a failed part
+   * in the other hand — so the controls do not go anywhere.
+   *
+   * **A view with no actions renders no row at all**, rather than an empty one. An action
+   * region that is present-but-empty costs its margin on every tab that has nothing to put
+   * in it, and vertical space is scarcest on the device this panel exists for.
+   *
+   * Both arguments are already-safe markup — a view's own template, not wire data — so
+   * neither is escaped here. The escaping happens where the data is interpolated, as it
+   * does everywhere else in this file.
+   */
+  shell(actions, content) {
+    return `
+      ${actions ? `<div class="view-bar">${actions}</div>` : ""}
+      <div class="view-scroll">${content}</div>`;
   }
 
   /**
@@ -1361,9 +1620,12 @@ class FilamentLedgerPanel extends HTMLElement {
 
   inventoryView() {
     const t = this._t;
+    // No actions while there are no spools: the one thing to do is the empty state's own
+    // call to action, and offering it twice would teach that they differ.
     if (!this._spools.length) {
-      return `
-        <section class="stack">
+      return this.shell(
+        "",
+        `<section class="stack">
           ${this.syncStrip()}
           <div class="empty teach">
             <h2>${t("inv.emptyTitle")}</h2>
@@ -1373,26 +1635,31 @@ class FilamentLedgerPanel extends HTMLElement {
               <button class="link" data-action="sync-trays">${t("inv.sync")}</button>
               ${t("inv.emptyLoadedTail")}</p>
           </div>
-        </section>`;
+        </section>`,
+      );
     }
 
     const stat = (key, value, alert) =>
       `<div class="stat"><div class="k">${key}</div><div class="v ${alert ? "alert" : ""}">${value}</div></div>`;
 
-    return `
-      <section class="stack">
+    // The two buttons lead the view rather than following the summary card, which is where
+    // docs/06 §6.2 has always drawn them and where a pinned row has to be anyway. The
+    // summary is a figure to read, not a control to reach: it scrolls with the spools.
+    return this.shell(
+      `<div class="bar">
+        <button class="primary" data-action="dialog" data-id="new-spool">${t("inv.newSpool")}</button>
+        <button data-action="sync-trays">${t("inv.sync")}</button>
+      </div>`,
+      `<section class="stack">
         <div class="card summary">
           ${stat(t("inv.totalStock"), esc(grams(this._stock?.total_g ?? 0)))}
           ${stat(t("inv.spools"), esc(this._stock?.spool_count ?? 0))}
           ${stat(t("inv.needsWeighing"), esc(this._stock?.needs_weighing ?? 0), this._stock?.needs_weighing)}
         </div>
-        <div class="bar">
-          <button class="primary" data-action="dialog" data-id="new-spool">${t("inv.newSpool")}</button>
-          <button data-action="sync-trays">${t("inv.sync")}</button>
-        </div>
         ${this.syncStrip()}
         <div class="grid">${this._spools.map((s) => this.spoolCard(s)).join("")}</div>
-      </section>`;
+      </section>`,
+    );
   }
 
   /** The last sync's outcome, one line per slot the printer reported. Transient. */
@@ -1468,13 +1735,18 @@ class FilamentLedgerPanel extends HTMLElement {
   spoolCard(spool) {
     const t = this._t;
     const sealed = spool.state === "SEALED";
-    // A sealed spool is full by construction, so its ring is a closed circle and the word
-    // carries the fact instead of a percentage nobody needs to read.
+    const depleted = spool.state === "DEPLETED";
+    // A sealed spool is full by construction and a depleted one is empty by construction,
+    // so each gets the word instead of a percentage nobody needs to read. The middle case
+    // is the only one where the figure carries information.
     const gauge = sealed
       ? `<span class="chip">${t("inv.sealed")}</span>`
-      : `<span class="pct">${spool.percentage}%</span>`;
+      : depleted
+        ? `<span class="chip">${this.stateLabel(spool.state)}</span>`
+        : `<span class="pct">${spool.percentage}%</span>`;
     return `
-      <article class="card spool ${spool.has_anomaly ? "anomaly" : ""}" data-action="open" data-id="${esc(spool.id)}">
+      <article class="card spool ${spool.has_anomaly ? "anomaly" : ""} ${depleted ? "depleted" : ""}"
+        data-action="open" data-id="${esc(spool.id)}">
         <span class="shim" aria-hidden="true"></span>
         <div class="swatch" style="background:${esc(spool.colour)}"></div>
         <div class="spool-art">
@@ -1485,10 +1757,13 @@ class FilamentLedgerPanel extends HTMLElement {
           </div>
         </div>
         <div class="spool-body">
-          <button class="card-x" data-action="spool-intent" data-id="${esc(spool.id)}"
-            title="${t("inv.removeSpool")}">×</button>
-          <div class="name">${esc(spool.name)}</div>
-          <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
+          <div class="spool-head">
+            <div class="spool-id">
+              <div class="name">${esc(spool.name)}</div>
+              <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
+            </div>
+            ${this.spoolMenu(spool)}
+          </div>
           <div class="big">${spool.balance_g}<small> g</small></div>
           <div class="foot">
             ${gauge}
@@ -1498,6 +1773,37 @@ class FilamentLedgerPanel extends HTMLElement {
           ${spool.needs_weighing ? `<div class="cta">${t("inv.weighThis")}</div>` : ""}
         </div>
       </article>`;
+  }
+
+  /**
+   * The spool action rail, collapsed (docs/06 §6.5, docs/16 §16.10).
+   *
+   * One control, at the two sizes a spool is drawn small — the inventory card and an AMS
+   * tray. Neither has room for a labelled row and neither should be made to grow one, so
+   * the rail folds into the glyph docs/06 §6.5 has drawn since its first draft, and opens
+   * as a sheet listing exactly what the detail view lays out in full.
+   *
+   * It sits *in* the card's header row rather than over its corner. The floating glyph it
+   * replaces belonged to no grid, overlapped the name at narrow widths, and could not be
+   * given a tap target without covering the text it sat on.
+   */
+  spoolMenu(spool) {
+    const label = this._t("act.spoolActions");
+    return `<button class="spool-menu" data-action="spool-actions" data-id="${esc(spool.id)}"
+      title="${label}" aria-label="${label}" aria-haspopup="dialog">⋮</button>`;
+  }
+
+  /**
+   * Whether *mark as finished* is offered at all.
+   *
+   * It reconciles the spool to zero, so it needs something to reconcile away: a spool
+   * already at zero would be refused by the use case for recording nothing, and a retired
+   * one would be refused for being retired. The panel does not ask a question whose answer
+   * it already knows — the same rule `rowActions` follows.
+   */
+  _finishable(spool) {
+    if (!spool || spool.state === "DISCARDED" || spool.state === "DELETED") return false;
+    return Number(spool.balance_exact_g ?? 0) > 0;
   }
 
   /**
@@ -1528,8 +1834,13 @@ class FilamentLedgerPanel extends HTMLElement {
           <button data-action="mount-slot" data-slot="${slot}">${t("act.mount")}</button>
         </div>`;
       }
-      return `<div class="card tray">
-        <div class="n">${t("ams.slot", { slot })}</div>
+      // A tray keeps showing an empty spool: the reel is still physically loaded, and a
+      // slot that emptied itself on screen would be a lie about the machine (docs/06 §6.4).
+      return `<div class="card tray ${spool.state === "DEPLETED" ? "depleted" : ""}">
+        <div class="tray-head">
+          <div class="n">${t("ams.slot", { slot })}</div>
+          ${this.spoolMenu(spool)}
+        </div>
         <div class="tray-art">
           ${spoolRing("slot", spool.percentage, spool.colour)}
           <div class="ring-mid">
@@ -1550,44 +1861,262 @@ class FilamentLedgerPanel extends HTMLElement {
       </div>`;
     });
 
-    return `
-      <section class="stack">
+    // No action row: mounting and unmounting belong to the slot they act on, and a tray
+    // card already carries its own buttons.
+    return this.shell(
+      "",
+      `<section class="stack">
         <div class="note">${t("ams.note")}</div>
         <div class="trays">${slots.join("")}</div>
-      </section>`;
+      </section>`,
+    );
   }
 
   // -- history -----------------------------------------------------------------------
 
+  /**
+   * The filter row, as the backend's own filter payload (docs/06 §6.6).
+   *
+   * Every field is omitted when it is empty, because an absent key is that filter cleared
+   * (`_movement_filter`, `infrastructure/ha/websocket_api.py`). An untouched row therefore
+   * builds `{}`, which is `NO_FILTERS`, which is the read the history has always run — so
+   * *clear every filter* needs no command, no flag and no branch on either side of the
+   * wire.
+   *
+   * The dates leave as instants with an offset and the grams as magnitudes, both of which
+   * are the wire's terms rather than the control's: a date input holds a wall-clock day and
+   * the schema refuses one, and the backend compares `abs(amount_mg)` so a −84 g print
+   * matches *more than 50 g*.
+   */
+  _filterPayload() {
+    const filters = this._filters;
+    const payload = {};
+    const since = dayBound(filters.since);
+    const until = dayBound(filters.until, true);
+    if (since) payload.since = since;
+    if (until) payload.until = until;
+    if (filters.colours.length) payload.colours = filters.colours;
+    if (filters.minG !== "") payload.min_g = Number(filters.minG);
+    if (filters.maxG !== "") payload.max_g = Number(filters.maxG);
+    if (filters.search.trim()) payload.search = filters.search.trim();
+    return payload;
+  }
+
+  /**
+   * Whether the row is narrowing anything — asked of the payload rather than of the fields.
+   *
+   * One definition, so the sentence under the table, the state of the Clear control and the
+   * decision to re-read after a push can never disagree about what counts as filtered. A
+   * half-typed date is not a filter until it is a date, and this is why.
+   */
+  _filtering() {
+    return Object.keys(this._filterPayload()).length > 0;
+  }
+
+  /**
+   * Read the narrowed history. Assigns; it does not paint.
+   *
+   * `_movements` is always what the History tab shows, filtered or not, so the corrections
+   * a row offers resolve against the rows on screen (`_movementSubject`) rather than
+   * against a second list kept beside them.
+   *
+   * The token is monotonic rather than a copy of the filters, for the reason `_loadStats`
+   * gives: in a black → grey → black tap sequence the first reply is indistinguishable from
+   * the current one by value, so a reordered stale payload could land. Only the latest
+   * request may write.
+   */
+  async _readHistory() {
+    const token = (this._filterRequest = (this._filterRequest || 0) + 1);
+    try {
+      const movements = await this.call("movements", this._filterPayload());
+      if (token !== this._filterRequest) return;
+      this._movements = movements;
+      this._error = null;
+    } catch (error) {
+      if (token !== this._filterRequest) return;
+      this._error = error.message || String(error);
+    }
+  }
+
+  /** Read the narrowed history and paint it. Every filter change ends up here. */
+  async _applyFilters() {
+    clearTimeout(this._filterTimer);
+    await this._readHistory();
+    this.render();
+  }
+
+  /**
+   * One read per pause, not one per keystroke.
+   *
+   * Only the typed controls come through here. A colour swatch and *Clear filters* are
+   * single deliberate acts with nothing half-finished to protect, so they read at once.
+   */
+  _debounceFilters() {
+    clearTimeout(this._filterTimer);
+    this._filterTimer = setTimeout(() => this._applyFilters(), FILTER_DEBOUNCE_MS);
+  }
+
+  /**
+   * The whole ledger, newest first, narrowed by the row above it (docs/06 §6.6).
+   *
+   * The longest surface in the panel and the one the shell exists for: the header, the tab
+   * strip and the filters stay above it however far down the entries the reader gets, and
+   * the table's own column headings stay with them — see the stylesheet for why that took
+   * a change of structure rather than one declaration.
+   */
   historyView() {
     const t = this._t;
+    const filtering = this._filtering();
+
     if (!this._movements.length) {
-      return `
-      <div class="empty teach">
-        <h2>${t("history.emptyTitle")}</h2>
-        <p>${t("history.emptyBody")}</p>
-        <p class="muted">${t("history.emptyFoot")}</p>
-      </div>`;
+      // Two empty histories, and conflating them is how a filter comes to read as data
+      // loss. A ledger with nothing in it teaches what will land there and offers no
+      // filters, because there is nothing to narrow; a filter that matched nothing keeps
+      // its own row, because widening it is the only way out.
+      if (!filtering) {
+        return this.shell(
+          "",
+          `<div class="empty teach">
+            <h2>${t("history.emptyTitle")}</h2>
+            <p>${t("history.emptyBody")}</p>
+            <p class="muted">${t("history.emptyFoot")}</p>
+          </div>`,
+        );
+      }
+      return this.shell(
+        this.historyFilters(),
+        `<div class="empty teach">
+          <h2>${t("history.noMatchTitle")}</h2>
+          <p>${t("history.noMatchBody")}</p>
+          <button data-action="filters-clear">${t("history.filterClear")}</button>
+        </div>`,
+      );
     }
 
     const rows = this._movements.map((m) => this.historyRow(m)).join("");
+    return this.shell(
+      this.historyFilters(),
+      `<div class="card ledger-wrap pinned">
+        <h3>${t("history.heading")}</h3>
+        <table class="ledger">
+          <thead><tr>
+            <th>${t("history.colWhen")}</th><th>${t("history.colSpool")}</th>
+            <th>${t("history.colEntry")}</th><th class="r">${t("history.colAmount")}</th>
+            <th>${t("history.colSource")}</th><th class="r">${t("history.colCorrect")}</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <p class="muted small">${
+          filtering
+            ? t("history.footFiltered", { count: this._movements.length })
+            : t("history.foot", { count: this._movements.length })
+        }</p>
+      </div>`,
+    );
+  }
+
+  /**
+   * The six controls, in the shell's pinned action row (docs/06 §6.1, §6.6).
+   *
+   * They belong there and nowhere else: a control that narrows the rows below it must not
+   * scroll away with the rows it narrows, which is the same rule that put the ledger's
+   * column headings on the pinned list.
+   *
+   * Every value is read from `this._filters` rather than from the DOM, and the search box's
+   * own text is user data on its way back into markup — so it goes through `esc()` exactly
+   * as a spool name does. The panel does not get to assume it wrote it.
+   *
+   * **The row folds on a phone, and the count is what stops that lying.** Six controls at a
+   * 44px tap target is 336px of fixed chrome on a 380px-wide panel — measured, and 56% of
+   * it, leaving three rows of the ledger the row exists to filter. So a narrow panel gets
+   * one control that opens the rest, carrying how many of them are set: a narrowed history
+   * behind a folded row would otherwise look like a ledger that had lost its entries. Above
+   * that tier the row is a single line and always open, and the stylesheet renders the
+   * toggle away rather than the panel deciding a width it cannot measure.
+   */
+  historyFilters() {
+    const t = this._t;
+    const filters = this._filters;
+    const active = Object.keys(this._filterPayload()).length;
+    const bound = (key, label, value) => `
+      <input class="hf-g" type="number" min="0" step="0.1" inputmode="decimal"
+        data-filter="${key}" data-focus="${key}" value="${esc(value)}"
+        aria-label="${label}" placeholder="${label}">`;
     return `
-      <section class="stack">
-        <div class="card ledger-wrap">
-          <h3>${t("history.heading")}</h3>
-          <div class="scroll">
-            <table class="ledger">
-              <thead><tr>
-                <th>${t("history.colWhen")}</th><th>${t("history.colSpool")}</th>
-                <th>${t("history.colEntry")}</th><th class="r">${t("history.colAmount")}</th>
-                <th>${t("history.colSource")}</th><th class="r">${t("history.colCorrect")}</th>
-              </tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
+      <button class="hf-toggle" data-action="filters-toggle" data-focus="filters-toggle"
+        aria-expanded="${this._filtersOpen}">${t("history.filterToggle")}${
+          active
+            ? `<span class="hf-count" title="${t("history.filterActive", { count: active })}">${esc(active)}</span>`
+            : ""
+        }</button>
+      <div class="bar hf ${this._filtersOpen ? "" : "shut"}">
+        <label class="hf-field hf-wide">
+          <span class="hf-k">${t("history.filterSearch")}</span>
+          <input class="hf-search" type="search" data-filter="search" data-focus="search"
+            value="${esc(filters.search)}" placeholder="${t("history.filterSearchPlaceholder")}"
+            title="${t("history.filterSearchHelp")}">
+        </label>
+        <label class="hf-field">
+          <span class="hf-k">${t("history.filterFrom")}</span>
+          <input type="date" data-filter="since" data-focus="since" value="${esc(filters.since)}">
+        </label>
+        <label class="hf-field">
+          <span class="hf-k">${t("history.filterTo")}</span>
+          <input type="date" data-filter="until" data-focus="until" value="${esc(filters.until)}">
+        </label>
+        <!-- Not a label: one label names one control, and the two bounds are one question
+             with two answers. Each input carries its own accessible name instead. -->
+        <div class="hf-field">
+          <span class="hf-k" title="${t("history.filterAmountHelp")}">${t("history.filterAmount")}</span>
+          <div class="hf-pair">
+            ${bound("minG", t("history.filterAtLeast"), filters.minG)}
+            ${bound("maxG", t("history.filterAtMost"), filters.maxG)}
           </div>
-          <p class="muted small">${t("history.foot", { count: this._movements.length })}</p>
         </div>
-      </section>`;
+        ${this.historyColours()}
+        <button class="hf-clear" data-action="filters-clear" data-focus="clear"
+          ${active ? "" : "disabled"}>${t("history.filterClear")}</button>
+      </div>`;
+  }
+
+  /**
+   * One swatch per colour in the inventory, toggled on and off.
+   *
+   * **Painted with `colour`, filtered on `colour_hex8`** — the display form and the stored
+   * form, and the difference matters twice. The swatch has to be the colour the user
+   * recognises on the card and in the row, which is what every other swatch in this panel
+   * paints (`spoolCard`, `historyRow`, `syncRow`); the filter has to carry the value the
+   * ledger actually stored, alpha and all, because that is what the SQL compares.
+   *
+   * Deduplicated on the stored value, so two spools of the same black offer one swatch. The
+   * list is the inventory rather than the colours present in the rows on screen: those
+   * narrow as the filter bites, and a control that removes its own options as they are used
+   * cannot be undone without clearing everything.
+   */
+  historyColours() {
+    const t = this._t;
+    const seen = new Map();
+    for (const spool of this._spools) {
+      if (spool.colour_hex8 && !seen.has(spool.colour_hex8)) {
+        seen.set(spool.colour_hex8, spool.colour);
+      }
+    }
+    if (!seen.size) return "";
+    const swatches = [...seen.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([stored, paint]) => {
+        const on = this._filters.colours.includes(stored);
+        return `<button class="hf-dot ${on ? "on" : ""}" data-action="filters-colour"
+          data-id="${esc(stored)}" data-focus="colour-${esc(stored)}"
+          style="background:${esc(paint)}" aria-pressed="${on}" title="${esc(paint)}"
+          aria-label="${t("history.filterColourOne", { colour: paint })}"></button>`;
+      })
+      .join("");
+    return `
+      <div class="hf-field">
+        <span class="hf-k" title="${t("history.filterColourHelp")}">${t("history.filterColour")}</span>
+        <div class="hf-dots">${swatches}</div>
+      </div>`;
   }
 
   historyRow(m) {
@@ -1662,31 +2191,33 @@ class FilamentLedgerPanel extends HTMLElement {
   statsView() {
     const t = this._t;
     const stats = this._stats;
+    // The period selector is this tab's action row, in all three states: choosing a window
+    // is the only thing the view does, and a selector that scrolls away below a page of
+    // charts is a selector the reader has to hunt for to change their mind.
     if (!stats) {
       // Nothing yet, for one of two reasons. While the first read is in flight, say so;
       // if it failed, the error bar above has already said what happened, and the period
       // buttons stay live so trying again is one tap rather than a tab round-trip.
-      return `<section class="stack">
-        ${this.statsPeriods()}
-        ${this._statsLoading ? `<div class="empty">${t("app.loading")}</div>` : ""}
-      </section>`;
+      return this.shell(
+        this.statsPeriods(),
+        this._statsLoading ? `<div class="empty">${t("app.loading")}</div>` : "",
+      );
     }
 
     if (stats.empty) {
-      return `
-        <section class="stack">
-          ${this.statsPeriods()}
-          <div class="empty teach">
-            <h2>${t("stats.emptyTitle")}</h2>
-            <p>${t("stats.emptyBody")}</p>
-            <p class="muted small">${t("stats.emptyFoot")}</p>
-          </div>
-        </section>`;
+      return this.shell(
+        this.statsPeriods(),
+        `<div class="empty teach">
+          <h2>${t("stats.emptyTitle")}</h2>
+          <p>${t("stats.emptyBody")}</p>
+          <p class="muted small">${t("stats.emptyFoot")}</p>
+        </div>`,
+      );
     }
 
-    return `
-      <section class="stack">
-        ${this.statsPeriods()}
+    return this.shell(
+      this.statsPeriods(),
+      `<section class="stack">
         ${this.statsTotals(stats)}
         ${this.statsPrintTime(stats.print_time)}
         ${this.statsChart(t("stats.byColour"), this.statsColourRows(stats.by_colour))}
@@ -1694,7 +2225,8 @@ class FilamentLedgerPanel extends HTMLElement {
         ${this.statsOutcomes(stats)}
         ${this.statsTopPrints(stats.top_prints)}
         <p class="muted small">${t("stats.foot")}</p>
-      </section>`;
+      </section>`,
+    );
   }
 
   /** The three windows, as buttons rather than a select: nothing to lose focus on. */
@@ -1918,12 +2450,14 @@ class FilamentLedgerPanel extends HTMLElement {
   reviewView() {
     const t = this._t;
     if (!this._reviews.length) {
-      return `
-      <div class="empty teach">
-        <h2>${t("review.emptyTitle")}</h2>
-        <p>${t("review.emptyBody")}</p>
-        <p class="muted">${t("review.emptyFoot")}</p>
-      </div>`;
+      return this.shell(
+        "",
+        `<div class="empty teach">
+          <h2>${t("review.emptyTitle")}</h2>
+          <p>${t("review.emptyBody")}</p>
+          <p class="muted">${t("review.emptyFoot")}</p>
+        </div>`,
+      );
     }
 
     // Newest first (docs/06 §6.3): the backend serves oldest first, the card stack leads
@@ -1933,11 +2467,15 @@ class FilamentLedgerPanel extends HTMLElement {
       .sort((a, b) => String(b.opened_at).localeCompare(String(a.opened_at)))
       .map((review) => this.reviewCard(review))
       .join("");
-    return `
-      <section class="stack">
+    // The count is a caption, not a control, so it scrolls with the cards it counts. Each
+    // card carries its own Approve and Dismiss, beside the figures they commit.
+    return this.shell(
+      "",
+      `<section class="stack">
         <div class="muted">${t("review.pending", { count: this._reviews.length })}</div>
         ${cards}
-      </section>`;
+      </section>`,
+    );
   }
 
   reviewCard(review) {
@@ -2222,9 +2760,14 @@ class FilamentLedgerPanel extends HTMLElement {
       .join(" ")
       .replace(/^\+ /, "");
 
-    return `
-      <section class="stack">
-        <button class="link" data-action="back">${t("detail.back")}</button>
+    // Back is the whole action row, and deliberately only Back. The weigh/adjust/discard
+    // bar belongs under the hero card, where docs/06 §6.5 draws it and where it reads as
+    // acting on the spool above it; pinning it would move it above the spool it acts on.
+    // Back is already the topmost element, so pinning it reorders nothing and keeps the
+    // way out of a fifty-row history one tap away.
+    return this.shell(
+      `<button class="link" data-action="back">${t("detail.back")}</button>`,
+      `<section class="stack">
         <div class="card detail">
           <!-- Seen face-on: the winding, the core hole, and the figure in the middle. The
                card shows the same spool small; this is the same object, larger, not a
@@ -2255,6 +2798,12 @@ class FilamentLedgerPanel extends HTMLElement {
           </div>
         </div>
 
+        <!-- The spool action rail, expanded (docs/16 §16.10). Four corrective actions
+             first, then the two that end the spool's life, set apart at the end of the
+             row: correcting a number is a claim the history below has to justify, and
+             ending a spool is a statement about the object in the user's hand. The same
+             two are what an inventory card's collapsed rail offers, because they are the
+             two that need nothing but the spool. -->
         ${
           deleted
             ? `<div class="note">
@@ -2263,12 +2812,19 @@ class FilamentLedgerPanel extends HTMLElement {
                    <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">${t("detail.restoreSpool")}</button>
                  </div>
                </div>`
-            : `<div class="bar">
+            : `<div class="bar sp-rail">
                  <button class="primary" data-action="dialog" data-id="weigh">${t("detail.weigh")}</button>
                  <button data-action="dialog" data-id="adjust">${t("detail.adjust")}</button>
                  <button data-action="dialog" data-id="discard">${t("act.discard")}</button>
                  <button data-action="dialog" data-id="edit-spool">${t("detail.edit")}</button>
-                 <button data-action="spool-intent" data-id="${esc(spool.id)}">${t("detail.remove")}</button>
+                 <span class="sp-life">
+                   ${
+                     this._finishable(spool)
+                       ? `<button data-action="spool-finish" data-id="${esc(spool.id)}">${t("detail.finish")}</button>`
+                       : ""
+                   }
+                   <button class="danger" data-action="spool-intent" data-id="${esc(spool.id)}">${t("detail.remove")}</button>
+                 </span>
                </div>`
         }
 
@@ -2288,7 +2844,8 @@ class FilamentLedgerPanel extends HTMLElement {
           <div class="checksum">${esc(sum)} = <b>${spool.balance_exact_g.toFixed(1)} g</b></div>
           <p class="muted small">${t("detail.foot")}</p>
         </div>
-      </section>`;
+      </section>`,
+    );
   }
 
   // -- trash -------------------------------------------------------------------------
@@ -2299,18 +2856,24 @@ class FilamentLedgerPanel extends HTMLElement {
     const spools = trash?.spools ?? [];
     const movements = trash?.movements ?? [];
     if (!spools.length && !movements.length) {
-      return `
-      <div class="empty teach">
-        <h2>${t("trash.emptyTitle")}</h2>
-        <p>${t("trash.emptyBody")}</p>
-      </div>`;
+      return this.shell(
+        "",
+        `<div class="empty teach">
+          <h2>${t("trash.emptyTitle")}</h2>
+          <p>${t("trash.emptyBody")}</p>
+        </div>`,
+      );
     }
 
-    return `
-      <section class="stack">
+    // No action row: restoring is per row, and there is deliberately no empty-the-trash
+    // button to offer (docs/adr/0007 — nothing here is awaiting destruction).
+    return this.shell(
+      "",
+      `<section class="stack">
         ${spools.length ? this.trashSpools(spools) : ""}
         ${movements.length ? this.trashMovements(movements) : ""}
-      </section>`;
+      </section>`,
+    );
   }
 
   trashSpools(spools) {
@@ -2406,30 +2969,36 @@ class FilamentLedgerPanel extends HTMLElement {
   printerView() {
     const t = this._t;
     if (this._printerLoading && !this._printer) {
-      return `<div class="empty">${t("app.loading")}</div>`;
+      return this.shell("", `<div class="empty">${t("app.loading")}</div>`);
     }
     const state = this._printer;
     if (!state || state.dormant) {
-      // The honest no-printer answer, in the voice the sync strip already speaks.
-      return `
-        <div class="empty teach">
+      // The honest no-printer answer, in the voice the sync strip already speaks. No
+      // action row with it: refreshing a printer that is not there is not an offer.
+      return this.shell(
+        "",
+        `<div class="empty teach">
           <h2>${t("printer.dormantTitle")}</h2>
           <p>${t("printer.dormantBody")}</p>
           <p class="muted small">${t("printer.dormantFoot")}</p>
-        </div>`;
+        </div>`,
+      );
     }
 
-    return `
-      <section class="stack">
-        <div class="bar">
-          <button data-action="refresh-printer" ${this._printerLoading ? "disabled" : ""}>${t("printer.refresh")}</button>
-        </div>
+    // A glance has a moment, and the moment is the user's (docs/14 §14.5) — so the one
+    // control that takes a fresh one stays where they left it.
+    return this.shell(
+      `<div class="bar">
+        <button data-action="refresh-printer" ${this._printerLoading ? "disabled" : ""}>${t("printer.refresh")}</button>
+      </div>`,
+      `<section class="stack">
         ${this.printerFacts(state)}
         ${this.printerError(state.error)}
         ${this.printerTrays(state.trays ?? [])}
         <p class="muted small">${t("printer.readOnly")}</p>
         <p class="muted small">${t("printer.pendingSensors")}</p>
-      </section>`;
+      </section>`,
+    );
   }
 
   printerFacts(state) {
@@ -2557,14 +3126,17 @@ class FilamentLedgerPanel extends HTMLElement {
   settingsView() {
     const t = this._t;
     if (this._settingsLoading && !this._settings) {
-      return `<div class="empty">${t("app.loading")}</div>`;
+      return this.shell("", `<div class="empty">${t("app.loading")}</div>`);
     }
     const admin = Boolean(this._hass?.user?.is_admin);
-    return `
-      <section class="stack">
+    // No action row: Save belongs to the form it submits, beside the fields it commits.
+    return this.shell(
+      "",
+      `<section class="stack">
         ${this._settings ? this.settingsForm(this._settings, admin) : ""}
         ${this.languageCard()}
-      </section>`;
+      </section>`,
+    );
   }
 
   settingsForm(settings, admin) {
@@ -2646,6 +3218,7 @@ class FilamentLedgerPanel extends HTMLElement {
       "new-spool": () => this.newSpoolForm(),
       weigh: () => this.weighForm(),
       adjust: () => this.adjustForm(),
+      finish: () => this.finishForm(),
       discard: () => this.discardForm(),
       mount: () => this.mountForm(),
       "dismiss-review": () => this.dismissReviewForm(),
@@ -2653,6 +3226,7 @@ class FilamentLedgerPanel extends HTMLElement {
       reassign: () => this.reassignForm(),
       "void-movement": () => this.voidMovementForm(),
       "restore-movement": () => this.restoreMovementForm(),
+      "spool-actions": () => this.spoolActionsBody(),
       "spool-intent": () => this.spoolIntentBody(),
     };
     const body = bodies[this._dialog.kind];
@@ -2935,24 +3509,113 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * The X on a spool asks what actually happened (docs/14 §14.4.3). Two answers, two
+   * The spool a dialog is about, from whichever surface opened it.
+   *
+   * Resolved on every render rather than captured when the dialog opened, for the same
+   * reason `_movementSubject` is: a refresh landing underneath must change what the modal
+   * says, and a modal whose subject went away has to admit it rather than quote a figure
+   * that is no longer true. The overview is asked first because it is what an inventory
+   * card and an AMS tray were drawn from; the loaded detail answers for the one spool the
+   * overview omits — a deleted one, reached from the Trash.
+   */
+  _dialogSpool() {
+    const id = this._dialog?.spool_id;
+    if (id === undefined) return null;
+    return this._spools.find((s) => s.id === id) ?? (this._detail?.id === id ? this._detail : null);
+  }
+
+  /**
+   * The spool action rail as a sheet — the collapsed rendering's body (docs/16 §16.10).
+   *
+   * It carries the two actions that need nothing but the spool, which is why they are the
+   * two an inventory card and an AMS tray can offer at all: *this reel is empty* and *this
+   * spool is gone*. Weigh, Adjust and Edit are absent on purpose — each of them changes a
+   * number the movement history has to justify, so each belongs under that history in the
+   * detail view (docs/06 §6.1's rule, applied to a spool rather than to a view).
+   *
+   * Every row states its consequence in a line, exactly as the retirement modal does, so
+   * neither is picked by accident.
+   */
+  spoolActionsBody() {
+    const t = this._t;
+    const spool = this._dialogSpool();
+    if (!spool) return this.staleSubject();
+    const id = esc(spool.id);
+    // The state word is already a table result, so it is spliced through `fill` rather
+    // than passed as a parameter — the rule every other composed sentence here follows.
+    const summary = fill(
+      t("dlg.actionsBalance", { grams: spool.balance_g }),
+      "state",
+      this.stateLabel(spool.state),
+    );
+    // The heading is the spool itself, escaped as the data it is: the sheet's subject is
+    // the object in the user's hand, and the rows below already say what can be done to
+    // it. A key whose whole content is a placeholder would translate nothing.
+    return `
+      <h3>${esc(spool.name)}</h3>
+      <p class="muted">${summary}</p>
+      ${
+        this._finishable(spool)
+          ? `<div class="sp-act">
+               <button data-action="spool-finish" data-id="${id}">${t("detail.finish")}</button>
+               <small>${t("detail.finishHelp")}</small>
+             </div>`
+          : ""
+      }
+      <div class="sp-act">
+        <button class="danger" data-action="spool-intent" data-id="${id}">${t("detail.remove")}</button>
+        <small>${t("detail.removeHelp")}</small>
+      </div>
+      ${this.formActions(null)}`;
+  }
+
+  /**
+   * Mark a spool as finished — a reconciliation to zero, and it says so (docs/06 §6.5).
+   *
+   * **The drift is stated in grams before anything is sent.** The ledger still believes a
+   * balance the reel does not have, and the difference is exactly what this writes: a
+   * number that can be hundreds of grams, produced by every estimate since the last
+   * weighing. Recording a figure that large without showing it first is the one thing this
+   * ledger exists not to do — and it is the same promise the reassign and void modals make.
+   *
+   * The figures are the exact balance rather than the rounded one, to the decimal a single
+   * movement is known to (docs/06 §6.8): the whole-gram display belongs to a balance, and
+   * this sentence is about the movement.
+   */
+  finishForm() {
+    const t = this._t;
+    const spool = this._dialogSpool();
+    if (!spool) return this.staleSubject();
+    const remaining = Number(spool.balance_exact_g ?? 0);
+    return `
+      <form data-form="finish">
+        <h3>${t("dlg.finishTitle", { name: spool.name })}</h3>
+        <p class="cx-says">${t("dlg.finishSays", {
+          grams: remaining.toFixed(1),
+          delta: signed(-remaining),
+        })}</p>
+        <p class="muted small">${t("dlg.finishFoot")}</p>
+        ${this.formActions(t("dlg.finishConfirm"))}
+      </form>`;
+  }
+
+  /**
+   * Retiring a spool asks what actually happened (docs/14 §14.4.3). Two answers, two
    * different facts about the world, and one line each so neither is picked by accident.
    */
   spoolIntentBody() {
     const t = this._t;
-    const spool =
-      this._spools.find((s) => s.id === this._dialog.spool_id) ??
-      (this._detail?.id === this._dialog.spool_id ? this._detail : null);
+    const spool = this._dialogSpool();
     if (!spool) return this.staleSubject();
     const id = esc(spool.id);
     return `
       <h3>${t("dlg.intentTitle", { name: spool.name })}</h3>
       <p class="muted">${t("dlg.intentAsk")}</p>
-      <div class="intent">
+      <div class="sp-act">
         <button data-action="intent-discard" data-id="${id}">${t("dlg.intentThrewAway")}</button>
         <small>${t("dlg.intentThrewAwayHelp", { grams: spool.balance_g })}</small>
       </div>
-      <div class="intent">
+      <div class="sp-act">
         <button data-action="intent-delete" data-id="${id}">${t("dlg.intentMistake")}</button>
         <small>${t("dlg.intentMistakeHelp")}</small>
       </div>
@@ -3088,6 +3751,12 @@ export const STYLES = `
   --fl-radius-l: 16px;
   --fl-radius-xl: 18px;
 
+  /* The floor for anything tappable (16 §16.6). A labelled button reaches it through its
+     padding and never has to say so; an icon-only control has no label to grow its box, so
+     the size has to be declared — and declaring it once is what stops the next one from
+     picking a number of its own. */
+  --fl-tap: 44px;
+
   --fl-shadow-1: 0 8px 24px rgba(0, 0, 0, .35);
   --fl-shadow-2: 0 14px 40px rgba(0, 0, 0, .4);
 
@@ -3100,7 +3769,26 @@ export const STYLES = `
   color: var(--fl-ink);
 }
 * { box-sizing: border-box; }
-#root { min-height: 100%; color: var(--fl-ink); font-family: var(--fl-font-sans);
+
+/* ---- The layout shell (06 §6.1) -----------------------------------------------------
+   A flex column filling the host. The header, the tab strip and a view's action row are
+   rows of it and therefore cannot move; .view-scroll is the only thing in the panel that
+   scrolls vertically. (No backticks anywhere in these comments: STYLES is a template
+   literal and one would end the stylesheet — 16 §16.9.)
+
+   A definite height, not a minimum: the scroller's flex basis only resolves to a real box
+   if the column it sits in has one, and min-height leaves the column content-sized — the
+   whole panel would grow past the host again and the document would scroll as one, which
+   is what this replaces.
+
+   Home Assistant does supply one, measured rather than assumed: ha-panel-custom and
+   partial-panel-resolver carry no styles at all and are therefore display:inline, so they
+   are not block containers, and the host's own height:100% resolves past both of them
+   against ha-drawer — the viewport's height (16 §16.2). A host that ever stopped supplying
+   one degrades to the single-document scroll this replaced rather than to a broken panel,
+   which is the whole reason the header keeps a sticky rule it no longer needs here. */
+#root { height: 100%; display: flex; flex-direction: column;
+  color: var(--fl-ink); font-family: var(--fl-font-sans);
   background:
     radial-gradient(1100px 520px at 82% -8%, rgba(0, 224, 198, .07), transparent 60%),
     radial-gradient(900px 460px at -6% 4%, rgba(131, 35, 255, .06), transparent 58%),
@@ -3108,10 +3796,16 @@ export const STYLES = `
   background-attachment: fixed; }
 
 /* A hairline and a wash, not a coloured slab. The header used to be HA's app bar wearing
-   the theme's primary colour; it is now part of the same surface as everything under it. */
+   the theme's primary colour; it is now part of the same surface as everything under it.
+
+   The flex rule is what pins it; sticky is the fallback for a host that gives no definite
+   height, where the shell collapses back to one scrolling document — see #root. z-index
+   applies to a flex item whether or not it is positioned, and it is what keeps the strand
+   overhanging the header's bottom edge above the content beneath. */
 header { background: linear-gradient(180deg, rgba(11, 16, 22, .92), rgba(5, 7, 10, .72));
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  color: var(--fl-ink); padding: 16px 22px 0; position: sticky; top: 0; z-index: 5;
+  color: var(--fl-ink); padding: 16px 22px 0; flex: none;
+  position: sticky; top: 0; z-index: 5;
   border-bottom: 1px solid var(--fl-line-soft); }
 header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
 .head-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -3152,15 +3846,48 @@ nav .count { display: inline-grid; place-items: center; min-width: 18px; height:
   font-family: var(--fl-font-mono); font-size: 11px; font-weight: 700;
   box-shadow: 0 0 14px rgba(255, 84, 112, .35); }
 
-/* The safe-area insets ride on the base rule rather than a later override, so a container
+/* The centred column, and the only place its geometry is written down: the pinned action
+   row and the scrolling content are both inside it, so the two cannot drift out of
+   alignment when a tier changes the padding.
+
+   The safe-area insets ride on the base rule rather than a later override, so a container
    query can restate the padding without a trailing rule quietly winning back three sides.
-   The phone's notch is the panel's problem: its venue is somebody standing at a printer. */
-main { padding: 22px max(22px, env(safe-area-inset-right))
-    max(22px, env(safe-area-inset-bottom)) max(22px, env(safe-area-inset-left));
-  max-width: 1320px; margin: 0 auto; }
+   The phone's notch is the panel's problem: its venue is somebody standing at a printer.
+   The bottom inset is the exception and lives on .view-scroll — see there.
+
+   The width is stated explicitly, because as a flex item an auto cross-size with auto
+   margins resolves to fit-content and would shrink the column to its widest card. */
+main { padding: 22px max(22px, env(safe-area-inset-right)) 0 max(22px, env(safe-area-inset-left));
+  width: 100%; max-width: 1320px; margin: 0 auto;
+  flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* Only on arriving at a view. An update that lands while you are reading one must not
    replay it — see render(). */
 main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
+
+/* The gap is the one .stack already uses, so the pinned row sits the same distance from the
+   content as the content's own first two rows sit from each other and the seam does not
+   announce itself. A view with no actions emits no such row at all — see shell(). */
+.view-bar { flex: none; margin-bottom: 16px; }
+
+/* The zero minimum height is the declaration that makes this scroll: a flex item's
+   automatic minimum size is its content, so without it the item grows to fit the list and
+   overflows the column instead of scrolling inside it.
+
+   Containing the overscroll stops the end of the list chaining into Home Assistant's own
+   scrolling and pull-to-refresh, which on a phone reads as the panel being dragged away
+   mid-read.
+
+   A stable scrollbar gutter keeps the reserved width constant whether or not a list is long
+   enough to scroll, so registering one more spool cannot shift every card sideways. On a
+   phone, where scrollbars are overlays, it reserves nothing.
+
+   The bottom inset rides here rather than on main: inside the scroller it is scrolled *to*
+   rather than held beneath, so the last card clears the home indicator at the end of the
+   list and costs no height before it. */
+.view-scroll { flex: 1; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain; scrollbar-gutter: stable;
+  padding-bottom: max(22px, env(safe-area-inset-bottom)); }
+
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .card { background: linear-gradient(165deg, var(--fl-surface-raised), #0a0f14);
   border-radius: var(--fl-radius-l); box-shadow: var(--fl-shadow-1);
@@ -3275,6 +4002,10 @@ button.link:hover { color: var(--fl-accent-bright); }
   box-shadow: 0 0 20px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
   border: 2px solid var(--fl-surface); }
 .spool-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+/* The name and the rail's collapsed control share one row, so the control is part of the
+   card's grid rather than floating over its corner — see the rail's own block below. */
+.spool-head { display: flex; align-items: center; gap: 8px; }
+.spool-id { flex: 1; min-width: 0; }
 .name { font-weight: 600; letter-spacing: -.01em; }
 .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
 .big { font-family: var(--fl-font-mono); font-size: 30px; font-weight: 600;
@@ -3309,6 +4040,8 @@ button.link:hover { color: var(--fl-accent-bright); }
 
 .trays { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
 .tray { padding: 16px; display: flex; flex-direction: column; gap: 5px; }
+.tray-head { display: flex; align-items: center; gap: 8px; }
+.tray-head .n { flex: 1; min-width: 0; }
 .tray .n { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
   color: var(--fl-ink-faint); font-weight: 700; }
 .tray .reel { height: 48px; border-radius: var(--fl-radius-s); margin: 6px 0;
@@ -3342,6 +4075,45 @@ table.ledger td.amt { font-weight: 600; }
 table.ledger td.amt.minus { color: var(--fl-bad); }
 table.ledger td.amt.plus { color: var(--fl-ok); }
 table.ledger td.bal { color: var(--fl-ink-dim); }
+
+/* ---- The ledger's column headings, pinned (06 §6.6) ---------------------------------
+   Forty rows down, a column of numbers with no heading over it is a column nobody can
+   name. Sticky is the whole mechanism; the structure around it is what took the work.
+
+   position: sticky resolves against the nearest ancestor that scrolls, and the wrapper
+   this table used to sit in was one. It carried overflow-x: auto for the phone, and CSS
+   computes an overflow of visible to auto the moment the other axis is not visible — so
+   the wrapper scrolled in BOTH axes, and a sticky heading dutifully stuck to a scrollport
+   whose vertical extent never moved. No error, no warning, and a declaration that reads
+   as if it should work (16 §16.9).
+
+   So the wrapper is gone from this one table and the shell's own .view-scroll does both
+   jobs, which it was already equipped for: its overflow-y: auto has always computed
+   overflow-x to auto beside it. The table overflows it and is panned exactly as it was
+   panned before, the reader's horizontal position survives a repaint like the vertical
+   one, and the headings now pin to a box that actually scrolls under them.
+
+   The card has to grow with the table or the rows would be painted over bare background
+   once panned: fit-content wraps the widest of them, and the 100% minimum keeps a card
+   full width on a screen where nothing overflows.
+
+   Separated borders, not collapsed: a collapsed border belongs to the table rather than
+   to the cell, so it stays behind with the rows while the heading travels — the line under
+   the headings simply detaches and scrolls away. With zero spacing and bottom-only borders
+   the two render identically, so this costs nothing but a declaration.
+
+   The background is what the rows pass under. It reads as nothing at all at the top of the
+   card, where the gradient is this colour, and separates itself as the card darkens beneath
+   — which is honest, because by then it is a pinned bar rather than a heading in flow.
+
+   The other ledger tables keep their wrapper. The spool detail's is one card in a stack, so
+   panning the region would drag the hero card sideways with it; the Stats table is bounded
+   and short. Neither ever puts a reader out of sight of its headings. */
+.ledger-wrap.pinned { width: fit-content; min-width: 100%; }
+.ledger-wrap.pinned table.ledger { border-collapse: separate; border-spacing: 0; }
+.ledger-wrap.pinned table.ledger th { position: sticky; top: 0; z-index: 1;
+  background: var(--fl-surface-raised); padding-top: 6px; }
+
 .checksum { margin-top: 12px; padding: 10px 13px; border-radius: 8px; background: var(--fl-surface-sunken);
   font-family: var(--fl-font-mono); font-size: 12.5px; overflow-x: auto;
   white-space: nowrap; color: var(--fl-ink-dim); }
@@ -3362,6 +4134,47 @@ table.ledger td.bal { color: var(--fl-ink-dim); }
 
 .hist-dot { display: inline-block; width: 13px; height: 13px; border-radius: 4px;
   border: 1px solid var(--fl-line); margin-right: 7px; vertical-align: -2px; }
+
+/* ---- The History filter row (06 §6.6) -----------------------------------------------
+   The shell's pinned action region, styled as one line of controls that wraps. It wraps
+   rather than scrolls on purpose: a row that scrolled sideways would hide half its own
+   controls behind a gesture nobody would think to make, and unlike the tab strip there is
+   no active item to scroll back into view. Two or three lines on a phone is a cost paid
+   once, against a table it saves the reader from scrolling.
+
+   The search field is the one that grows, because it is the one holding a sentence. */
+.hf { align-items: flex-end; gap: 10px 14px; }
+/* Rendered away on anything but a phone, where the row is one line and folding it would
+   cost a tap to save nothing. The narrow tier below turns it on. */
+.hf-toggle { display: none; align-items: center; gap: 8px; }
+/* Accent rather than the tab strip's red: a narrowed list is a state the reader chose, not
+   a queue demanding attention, and the two must not look alike. */
+.hf-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px;
+  padding: 0 5px; border-radius: 9px; background: var(--fl-accent-soft);
+  border: 1px solid var(--fl-accent-line); color: var(--fl-accent-bright);
+  font-family: var(--fl-font-mono); font-size: 11px; font-weight: 700; }
+.hf-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.hf-k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--fl-ink-dim); font-weight: 700; }
+.hf input { font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
+  color: var(--fl-ink); min-width: 0; }
+.hf-wide { flex: 1 1 210px; max-width: 380px; }
+.hf-search { width: 100%; }
+.hf-pair { display: flex; gap: 6px; }
+.hf-g { width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
+.hf-dots { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 0; }
+/* A swatch and nothing else: the colour is the label, which is why the accessible name is
+   the stored value rather than a word we would have had to invent for it. The ring is the
+   selected state, drawn outside the swatch so it never covers the colour it is about. */
+.hf-dot { width: 28px; height: 28px; padding: 0; flex: none; border-radius: 9px;
+  border: 1px solid var(--fl-line-strong); }
+.hf-dot.on { border-color: var(--fl-accent);
+  box-shadow: 0 0 0 2px var(--fl-accent-soft), 0 0 16px var(--fl-accent-glow); }
+/* Disabled because there is nothing to clear, which is a statement rather than a refusal:
+   the control stays in place so the row does not reflow the moment a filter is set. */
+.hf-clear:disabled { opacity: .45; cursor: default; }
+.hf-clear:disabled:hover { color: var(--fl-ink-dim); border-color: var(--fl-line-strong); }
 table.ledger td.who { font-size: 13.5px; white-space: nowrap; padding-right: 14px; }
 table.ledger td.src { padding-left: 14px; }
 .badge { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700;
@@ -3443,14 +4256,57 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
   border-top: 1px solid var(--fl-line); }
 .ed-corr p { margin: 0; }
 
-/* Corrections — docs/14 §14.3, §14.4. */
-.spool-body { position: relative; }
-.card-x { position: absolute; top: -4px; right: -6px; border: 0; background: none;
-  color: var(--fl-ink-dim); font-size: 18px; line-height: 1; padding: 4px 7px;
-  border-radius: 8px; opacity: .55; }
-.card-x:hover { opacity: 1; color: var(--fl-bad);
+/* ---- The spool action rail (16 §16.10) ---------------------------------------------
+   One list of what a spool offers, at two densities. Expanded under the hero card in the
+   detail view; collapsed to a single control on an inventory card and an AMS tray, where
+   there is no room for a labelled row and none should be made.
+
+   It replaces a floating X that sat over a card's corner, outside the layout, and that
+   said "retire this spool" one view away from where the same glyph says "delete this
+   entry". Nothing here is positioned absolutely: the control is a flex item in the header
+   row it belongs to, and every value below is a token.
+
+   The glyph is the one docs/06 §6.5 has drawn since its first draft. It is optically much
+   smaller than its tap box, so the box stays transparent until it is wanted rather than
+   drawing a permanent button outline into a dense card.
+
+   The negative margins are how the target reaches --fl-tap without costing the height:
+   the box overlaps the card's own padding and its neighbours' leading, because a tap
+   target is a region of the screen rather than a block that has to reserve room. A tray
+   card is four-across on a desktop and would otherwise pay 30px of header for a glyph. */
+.spool-menu { flex: none; min-width: var(--fl-tap); min-height: var(--fl-tap); padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: -10px -9px -10px 0; border-color: transparent; background: transparent;
+  color: var(--fl-ink-faint); font-size: 19px; line-height: 1; }
+.spool-menu:hover { color: var(--fl-ink); border-color: var(--fl-line-strong);
   background: var(--fl-surface-sunken); }
 
+/* The two that end a spool's life sit at the far end of the expanded rail, apart from the
+   four that only correct a number. Auto margin rather than a rule or a gap: it needs no
+   element of its own, and it collapses to nothing when the row wraps. */
+.sp-life { display: flex; gap: 8px; margin-left: auto; }
+
+/* Destructive, and scoped to the two surfaces that offer it: a bare .danger would also
+   catch the history row's X, which is deliberately quiet until it is hovered. */
+.sp-rail .danger, .sp-act .danger { color: var(--fl-bad); border-color: var(--fl-bad-soft); }
+.sp-rail .danger:hover, .sp-act .danger:hover { border-color: var(--fl-bad);
+  background: var(--fl-bad-soft); }
+
+/* One action, with the sentence that says what it does. The rule above each is what makes
+   a sheet of these read as a list of decisions rather than as a row of buttons, and it is
+   why neither the retirement modal nor the collapsed rail can be answered by reflex. */
+.sp-act { display: flex; flex-direction: column; gap: 5px; padding: 11px 0;
+  border-top: 1px solid var(--fl-line); }
+.sp-act button { align-self: flex-start; }
+
+/* A spool at zero is still a real object (06 §6.2): it sinks to the end of the inventory
+   and dims, but it does not leave — and in the AMS view it must not, because the reel is
+   still physically in the tray. The swatch keeps full strength: colour is the identifier,
+   and an empty spool is the one most worth recognising before reaching for it. */
+.spool.depleted .spool-art, .tray.depleted .tray-art { opacity: .45; }
+.spool.depleted .big, .tray.depleted .big { color: var(--fl-ink-dim); }
+
+/* Corrections — docs/14 §14.3, §14.4. */
 table.ledger td.acts { text-align: right; white-space: nowrap; padding-left: 10px; }
 .rowact { padding: 3px 9px; font-size: 13px; line-height: 1.3; margin-left: 4px;
   color: var(--fl-ink-dim); }
@@ -3481,9 +4337,6 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 /* The sentence a correction modal commits to before anything is sent. */
 .cx-says { margin: 0; line-height: 1.6; padding: 11px 13px; border-radius: 8px;
   background: var(--fl-surface-sunken); font-size: 14px; }
-.intent { display: flex; flex-direction: column; gap: 5px; padding: 11px 0;
-  border-top: 1px solid var(--fl-line); }
-.intent button { align-self: flex-start; }
 
 /* Printer tab — docs/14 §14.5. A glance, not a printer UI. */
 .pr-h { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
@@ -3631,8 +4484,11 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
    pinning and collapsing the sidebar reflow the panel with no reload and no JavaScript.
    =================================================================================== */
 @container panel (max-width: 600px) {
-  main { padding: 14px max(14px, env(safe-area-inset-right))
-    max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  main { padding: 14px max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left)); }
+  .view-scroll { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  /* Fixed chrome is paid for in the dimension a phone has least of, so the pinned row
+     keeps the tighter gap the rest of this tier uses. */
+  .view-bar { margin-bottom: 12px; }
   .detail { gap: 12px; }
   /* Tighter tabs, never fewer words. Icons in place of labels would buy a few pixels and
      cost the discoverability the whole strip exists for (docs/06 §6.1). */
@@ -3646,13 +4502,27 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
   .stat { flex-basis: calc(50% - 1px); padding: 15px 16px; }
   .stat .v { font-size: 24px; }
   .big { font-size: 26px; }
-  .tray-actions button, .trash-acts button, .rowact { min-height: 44px; }
+  .tray-actions button, .trash-acts button, .rowact { min-height: var(--fl-tap); }
+  /* The rail wraps at this width anyway, so the two that end a spool's life take a line of
+     their own rather than trailing whichever corrective button happened to end a row. */
+  .sp-life { flex-basis: 100%; margin-left: 0; }
+  /* The tap floor reaches the filter row too, and the search box takes the width it can:
+     this row is used one-handed, at a printer, by somebody typing the name of the part that
+     failed. Which is also why the row folds here and nowhere else — six controls at that
+     size is 336px of chrome against a 373px scroller, and the ledger would be what gave
+     way. */
+  .hf input, .hf-clear, .hf-toggle { min-height: var(--fl-tap); }
+  .hf-toggle { display: inline-flex; }
+  .hf.shut { display: none; }
+  .hf { margin-top: 10px; }
+  .hf-dot { width: var(--fl-tap); height: var(--fl-tap); }
+  .hf-wide { flex-basis: 100%; max-width: none; }
   .modal { padding: 18px; }
 }
 
 @container panel (min-width: 1000px) {
-  main { padding: 28px max(32px, env(safe-area-inset-right))
-    max(80px, env(safe-area-inset-bottom)) max(32px, env(safe-area-inset-left)); }
+  main { padding: 28px max(32px, env(safe-area-inset-right)) 0 max(32px, env(safe-area-inset-left)); }
+  .view-scroll { padding-bottom: max(80px, env(safe-area-inset-bottom)); }
 }
 `;
 
