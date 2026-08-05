@@ -3230,6 +3230,7 @@ class FilamentLedgerPanel extends HTMLElement {
       `<section class="stack">
         ${this.printerFacts(state)}
         ${this.printerError(state.error)}
+        ${this.printerHours(state.observed_print_time)}
         ${this.printerTrays(state.trays ?? [])}
         <p class="muted small">${t("printer.readOnly")}</p>
         <p class="muted small">${t("printer.pendingSensors")}</p>
@@ -3254,11 +3255,16 @@ class FilamentLedgerPanel extends HTMLElement {
             total: state.total_layers ?? DASH,
           });
     const online = state.online == null ? DASH : t(state.online ? "printer.yes" : "printer.no");
+    // Null covers both "the sensor said nothing" and "nothing is printing" — the gateway
+    // decides which, so there is no idle case to guess at here (docs/14 §14.5).
+    const remaining =
+      state.remaining_minutes == null ? DASH : this.duration(state.remaining_minutes);
     return `
       <div class="card pr-facts">
         ${this.printerFact(t("printer.status"), state.status == null ? DASH : esc(state.status))}
         ${this.printerFact(t("printer.job"), state.job_name == null ? DASH : esc(state.job_name))}
         ${this.printerFact(t("printer.progress"), progress)}
+        ${this.printerFact(t("printer.remaining"), remaining)}
         ${this.printerFact(t("printer.layer"), layer)}
         ${this.printerFact(t("printer.online"), online)}
         ${this.printerFact(
@@ -3274,6 +3280,42 @@ class FilamentLedgerPanel extends HTMLElement {
 
   printerFact(key, value) {
     return `<div class="pr-fact"><div class="k">${key}</div><div class="v">${value}</div></div>`;
+  }
+
+  /**
+   * How long this ledger has watched the machine print — never the machine's own hours.
+   *
+   * The printer reports no lifetime counter, so this total is a sum over the job rows the
+   * ledger holds, and the sentence under it says exactly that: how many prints it covers
+   * and which day it starts from. A big number with no such line would read as an
+   * odometer, which is the fabricated authority this project argues against.
+   *
+   * Absent rather than zeroed when the ledger has timed nothing, for the reason the Stats
+   * card gives: a figure the data cannot support is not improved by drawing a box around it.
+   */
+  printerHours(observed) {
+    if (!observed) return "";
+    const t = this._t;
+    return `
+      <div class="card pr-hours">
+        <h3 class="pr-h">${t("printer.hoursHeading")}</h3>
+        <div class="v">${this.duration(observed.total_minutes)}</div>
+        <p class="muted small">${t("printer.hoursObserved", {
+          count: observed.prints,
+          since: this.day(observed.since),
+        })}</p>
+      </div>`;
+  }
+
+  /**
+   * One date, in the reader's locale. Absolute on purpose, unlike `when()`: this one ends
+   * a sentence that begins "since", and "since 12 days ago" is not a date.
+   *
+   * Returned unescaped because every caller passes it to `t()`, which escapes what it
+   * substitutes — escaping here as well would print the entities.
+   */
+  day(iso) {
+    return new Date(iso).toLocaleDateString();
   }
 
   /**
@@ -4634,6 +4676,12 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 .pr-bar .track i { display: block; height: 100%; background: var(--fl-accent); }
 .pr-error { padding: 11px 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   border-left: 3px solid var(--fl-bad); }
+/* The accumulated total, with the sentence that keeps it from reading as an odometer.
+   The caveat is not fine print here — it is the difference between a fact and a claim, so
+   it sits in the same card as the figure and never below the fold. */
+.pr-hours { padding: 15px 18px 16px; }
+.pr-hours .v { font-size: 26px; font-variant-numeric: tabular-nums; }
+.pr-hours p { margin: 8px 0 0; }
 .pr-trays { display: flex; flex-direction: column; }
 .tray .empty-reel { border: 1px dashed var(--fl-line); background: none; }
 

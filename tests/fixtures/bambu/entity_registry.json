@@ -77,6 +77,27 @@
     "device_id": "00000000000000000000000000testprn"
   },
   {
+    "entity_id": "sensor.a1_00000000testser_tiempo_restante",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_remaining_time",
+    "translation_key": "remaining_time",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_hora_de_inicio",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_start_time",
+    "translation_key": "start_time",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_hora_de_finalizacion",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_end_time",
+    "translation_key": "end_time",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
     "entity_id": "sensor.a1_00000000testser_bandeja_activa",
     "platform": "bambu_lab",
     "unique_id": "00000000TESTSER_active_tray",

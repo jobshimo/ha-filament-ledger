@@ -12,7 +12,8 @@ the four rules a statistics page gets wrong by default, and each one has a test 
 
 from __future__ import annotations
 
-from datetime import timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta
 
 from custom_components.filament_ledger.application.adjust_spool import (
     DiscardFilamentCommand,
@@ -41,6 +42,9 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
+from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
+    SqlitePrintJobRepository,
+)
 
 from .conftest import Ledger
 
@@ -457,6 +461,114 @@ class TestPrintTime:
         await a_spool(ledger)
 
         assert (await ledger.use_cases.queries.statistics(ALL_TIME)).print_time is None
+
+    async def test_the_printers_own_duration_is_what_the_card_measures(
+        self, ledger: Ledger
+    ) -> None:
+        """The ledger's pair says 60 minutes because that is how far its clock advanced;
+        the machine says 55, and the machine is the one that printed. The card takes the
+        measurement, not the observation (docs/06 §6.7)."""
+        spool = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        started = ledger.clock.now()
+        job_id = await a_finished_print(ledger, name="one.3mf", minutes=60)
+        await _restamp_with_the_machines_clock(ledger, job_id, started, minutes=55)
+
+        measured = (await ledger.use_cases.queries.statistics(ALL_TIME)).print_time
+
+        assert measured is not None
+        assert measured.total == timedelta(minutes=55)
+
+    async def test_a_job_that_lost_its_start_counts_once_the_machine_supplies_one(
+        self, ledger: Ledger
+    ) -> None:
+        """The row a restart leaves behind has a zero-length ledger pair and has always
+        been excluded. It stops being excluded when the printer reported its own two
+        moments — the restart cost the ledger a start, not the machine."""
+        spool = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        moment = ledger.clock.now()
+        await ledger.use_cases.record_print_consumption.execute(
+            PrintJob(
+                id=PrintJobId("job-restart"),
+                name="recovered.3mf",
+                state=PrintJobState.FINISHED,
+                started_at=moment,
+                ended_at=moment,
+                printer_started_at=moment - timedelta(minutes=75),
+                printer_ended_at=moment,
+                reported_usage={SlotIndex(1): Grams.of(10)},
+            )
+        )
+
+        measured = (await ledger.use_cases.queries.statistics(ALL_TIME)).print_time
+
+        assert measured is not None
+        assert measured.prints == 1
+        assert measured.total == timedelta(minutes=75)
+
+
+class TestObservedPrintTime:
+    """The Printer tab's accumulated total (docs/14 §14.5) — the same sum, no period."""
+
+    async def test_a_ledger_that_has_timed_nothing_has_no_total(self, ledger: Ledger) -> None:
+        await a_spool(ledger)
+
+        assert await ledger.use_cases.queries.observed_print_time() is None
+
+    async def test_it_sums_every_print_the_ledger_holds_and_dates_the_total(
+        self, ledger: Ledger
+    ) -> None:
+        """No cut-off, unlike `statistics`: this figure answers *how long has this ledger
+        watched*, and `since` is what stops the answer reading as the machine's odometer."""
+        spool = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        first = ledger.clock.now()
+        await a_finished_print(ledger, name="old.3mf", minutes=60)
+        ledger.clock.advance(days=200)
+        await a_finished_print(ledger, name="recent.3mf", minutes=30)
+
+        observed = await ledger.use_cases.queries.observed_print_time()
+
+        assert observed is not None
+        assert observed.measured.total == timedelta(minutes=90)
+        assert observed.measured.prints == 2
+        assert observed.since == first
+
+    async def test_it_reaches_past_every_statistics_window(self, ledger: Ledger) -> None:
+        """A print from last year is outside all three periods and inside this total. The
+        two readings disagree on purpose — one is a period, this one is everything."""
+        spool = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await a_finished_print(ledger, name="ancient.3mf", minutes=120)
+        ledger.clock.advance(days=200)
+
+        assert (
+            await ledger.use_cases.queries.statistics(StatisticsPeriod.LAST_30_DAYS)
+        ).print_time is None
+        observed = await ledger.use_cases.queries.observed_print_time()
+        assert observed is not None
+        assert observed.measured.total == timedelta(minutes=120)
+
+
+async def _restamp_with_the_machines_clock(
+    ledger: Ledger, job_id: PrintJobId, started: datetime, *, minutes: int
+) -> None:
+    """Add the printer's own pair to a job already written, leaving the ledger's alone.
+
+    The gateway is what supplies these in production; this is the same row, reached
+    through the repository so the mapping is the real one.
+    """
+    jobs = SqlitePrintJobRepository(ledger.database)
+    job = await jobs.get(job_id)
+    assert job is not None
+    await jobs.save(
+        replace(
+            job,
+            printer_started_at=started,
+            printer_ended_at=started + timedelta(minutes=minutes),
+        )
+    )
 
 
 class TestEmptiness:

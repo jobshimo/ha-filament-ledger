@@ -20,6 +20,8 @@ from ..error import InvalidValueError
 from .print_job_state import PrintJobState
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from .grams import Grams
     from .identifiers import SlotIndex
     from .percentage import Percentage
@@ -33,10 +35,16 @@ class PrintStarted:
     already hold them — the same figures `PrintJob.reported_usage` preserves, captured at
     the moment they are known to describe *this* job. `None` records that the breakdown
     never materialised, which is the open Q4 question, not a claim of zero.
+
+    `printer_started_at` is the machine's own answer to *when did this print begin*, and
+    the name says whose clock it is. The ledger stamps its own moment when it hears the
+    event; these two are different facts and the field exists so neither has to pretend to
+    be the other (docs/04-use-cases.md UC-04, docs/08-data-model.md §8.1).
     """
 
     name: str
     plan: dict[SlotIndex, Grams] | None = None
+    printer_started_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -57,6 +65,17 @@ class PrintEnded:
     The progress figures are the moment's readings, captured because an interrupted job
     will be estimated from them; `reported_usage` is whatever per-slot figures the weight
     sensor held when the job ended.
+
+    `printer_started_at` and `printer_ended_at` are the machine's own pair, read at the
+    ending because that is the last moment they describe *this* job. Both are recorded
+    whatever the outcome — they are the printer's claims and the record keeps claims
+    verbatim — but only a `FINISHED` job's pair is a *measurement*, because upstream's end
+    is computed from the time remaining and stops being a prediction only once the job has
+    actually ended. `PrintJob.measured_duration` is where that distinction is made.
+
+    **Their order is not checked here** either. A boundary that refused an incoherent pair
+    would turn one glitch in somebody else's clock into a lost job row and a lost review,
+    so the sense-making happens where it costs nothing.
     """
 
     outcome: PrintJobState
@@ -67,6 +86,8 @@ class PrintEnded:
     reported_usage: dict[SlotIndex, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
+    printer_started_at: datetime | None = None
+    printer_ended_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.outcome.is_terminal:

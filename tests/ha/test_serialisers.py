@@ -18,6 +18,7 @@ from custom_components.filament_ledger.application.adjust_spool import (
     DiscardMode,
 )
 from custom_components.filament_ledger.application.query import (
+    ObservedPrintTime,
     PrintTime,
     Queries,
     StatisticsPeriod,
@@ -31,6 +32,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 )
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.infrastructure.ha.serialisers import (
+    _observed_print_time,
     _print_time,
     grams,
     history_line,
@@ -228,3 +230,20 @@ class TestStatisticsRounding:
     def test_no_measurable_duration_serialises_as_null_never_as_zeros(self) -> None:
         """A card of zeros would be a claim about the printer rather than about the data."""
         assert _print_time(None) is None
+
+    def test_the_accumulated_total_never_travels_without_what_bounds_it(self) -> None:
+        """The three figures are one fact. `ha-bambulab` reports no lifetime hours, so this
+        total can only ever be a sum over what *this* ledger recorded — and a total sent
+        alone would leave the panel free to render it as the machine's odometer."""
+        payload = _observed_print_time(
+            ObservedPrintTime(
+                measured=PrintTime(total=timedelta(hours=52, minutes=44), prints=25),
+                since=EPOCH,
+            )
+        )
+
+        assert payload == {"total_minutes": 3164, "prints": 25, "since": EPOCH.isoformat()}
+
+    def test_a_ledger_that_has_timed_nothing_serialises_as_null(self) -> None:
+        """Zero hours would claim a machine has never printed; null claims nothing."""
+        assert _observed_print_time(None) is None

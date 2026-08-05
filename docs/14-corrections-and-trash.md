@@ -729,19 +729,36 @@ filament_ledger/printer/state
       "current_layer": 71,               # int or null
       "total_layers": 209,               # int or null
       "job_name": "vase_final.gcode",    # UNKNOWN_JOB_NAME fallback (gateway:107)
+      "remaining_minutes": 97,           # int or null — null whenever nothing is printing
       "error": { "active": true, "code": "216172782120927489" } | null,
       "online": true | null,
       "connection_mode": "local" | null,
       "active_tray": 4 | null,
-      "trays": [ { ...per-slot shape of trays/sync, read-only... } ]
+      "trays": [ { ...per-slot shape of trays/sync, read-only... } ],
+      "observed_print_time":             # this ledger's own sum, or null
+        { "total_minutes": 3164, "prints": 25, "since": "2026-02-05T18:22:04+00:00" }
     }
 ```
 
-- The job sensors come from the gateway's existing discovery —
-  `PRINT_SENSOR_KEYS` (`bambu_gateway.py:74-84`): `print_status`, `current_layer`,
-  `total_layers`, `print_progress`, `gcode_file_downloaded`, `print_error` — read
-  through the same total, never-raising readers the job events use
-  (`_sensor_state`, `_layer`, `_progress`, `_error_code`, lines 278-336).
+- The job sensors come from the gateway's existing discovery — `PRINT_SENSOR_KEYS`:
+  `print_status`, `current_layer`, `total_layers`, `print_progress`,
+  `gcode_file_downloaded`, `print_error`, and since v1.4 `remaining_time`, `start_time`
+  and `end_time` — read through the same total, never-raising readers the job events use
+  (`_sensor_state`, `_layer`, `_progress`, `_error_code`, `_remaining_minutes`, `_moment`).
+- **`remaining_minutes` is null whenever nothing is printing**, and the gateway is what
+  decides that rather than the panel. Upstream parks the sensor at zero between jobs, so a
+  machine that last printed on Tuesday reports the same zero as one on its final layer;
+  zero is translated as *no job*, which costs the last sub-minute of a real print and buys
+  never claiming a print is finishing on an idle printer ([05 §5.8](05-ha-integration.md)).
+- **`observed_print_time` is the ledger's figure, not the machine's**, and the wire says so
+  by refusing to carry the total alone. `ha-bambulab` exposes no lifetime-hours sensor, so
+  the only honest total available is a sum over the job rows this ledger holds — which is
+  `PrintTime.of`, the same accumulator the Stats card uses over a period ([06
+  §6.7](06-ui-spec.md)), with no period at all. `prints` says how many jobs it covers and
+  `since` is the earliest job recorded, so the tab can name what the total is a total *of*.
+  A figure presented as the printer's lifetime would be an odometer that started the day
+  the integration was installed, which is precisely the fabricated authority this project
+  exists to refuse.
 - **Three sensors join discovery**: active tray, online, connection mode. The physical
   entities are catalogued in [12 — Field Notes](12-field-notes.md) (entity table,
   `bandeja_activa`, `en_linea`, `modo_de_conexion_mqtt`); their upstream
@@ -790,27 +807,40 @@ to the server.
 
 `TABS` gains **Printer** between AMS and Trash. Layout: status line (state, job name,
 error as HMS quad with the verbatim code in the title attribute — the review card's
-pattern, lines 655-665), progress bar with layer counts, connection facts (online,
-mode), and the four-tray strip with each tray's mounted spool from the ledger beside
-what the printer reports. Every displayed figure that is `null` renders as an honest
-dash, never as zero — a missing figure is not a figure of zero
-([UC-04](04-use-cases.md) step 2's principle, applied to display).
+pattern, lines 655-665), progress bar with layer counts and the time remaining,
+connection facts (online, mode), the accumulated-hours card, and the four-tray strip
+with each tray's mounted spool from the ledger beside what the printer reports. Every
+displayed figure that is `null` renders as an honest dash, never as zero — a missing
+figure is not a figure of zero ([UC-04](04-use-cases.md) step 2's principle, applied to
+display).
+
+The accumulated-hours card carries its caveat **inside the card, beside the figure**, and
+not as fine print somewhere below: the sentence naming how many prints the total covers
+and which day it starts from is the difference between a fact and a claim, and a big
+number that arrived without one would be read as the machine's own hours by everybody.
+Absent entirely — like the Stats card — when the ledger has timed nothing, because a
+figure the data cannot support is not improved by drawing a box around it.
 
 ### Acceptance criteria
 
 1. With the printer connected and idle: status, connection mode and trays render; the
-   progress section shows the honest no-job state.
-2. Mid-print: progress, layers and job name match the `ha-bambulab` entities at the
-   moment of refresh.
+   progress section shows the honest no-job state, and **remaining time is a dash** rather
+   than `0 min`.
+2. Mid-print: progress, layers, job name and remaining time match the `ha-bambulab`
+   entities at the moment of refresh.
 3. With `ha-bambulab` absent: `{ dormant: true }` and the teaching empty state — no
    error bar, no spinner.
 4. An unavailable individual sensor renders a dash while the rest of the tab works.
 5. Opening the tab and pressing Refresh cause exactly one command call each. **No timer
    exists and the panel issues nothing on its own**: a new snapshot arrives only when one of
    the gateway's own entities changes, pushed over the subscription, and is held rather than
-   shown while a dialog is open or a field has focus.
+   shown while a dialog is open or a field has focus. `remaining_time` changing about once a
+   minute during a print is one of those entities, which is what makes the countdown count
+   down without anything polling.
 6. Reading the tab never writes: movement count and spool locations are identical
    before and after (distinguishes this path from `trays/sync`).
+7. The accumulated-hours card never appears without the sentence bounding it, and never
+   appears at all on a ledger that has timed no print.
 
 ### Test obligations
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -91,6 +92,20 @@ TOTAL_LAYERS = "sensor.a1_00000000testser_cantidad_total_de_capas"
 PROGRESS = "sensor.a1_00000000testser_progreso_de_la_impresion"
 GCODE_FILE = "sensor.a1_00000000testser_archivo_gcode_descargado"
 PRINT_ERROR = "binary_sensor.a1_00000000testser_error_de_la_impresion"
+
+# The three job-time sensors frozen in v1.4. Their `translation_key`s were read off the
+# reference instance's registry before the constant was frozen (docs/13 — Traps); the
+# localised entity ids follow the pattern every other row on that instance shows, and
+# nothing resolves by them — discovery matches platform and key, which is the whole point.
+#
+# **Deliberately absent from `print_sensors.json`.** That fixture is what the reference
+# instance's job sensors *held* at the moment of capture, and these three were never
+# captured. Leaving them stateless makes the base harness exercise the honest path — a
+# discovered sensor reporting nothing — and every test that wants a figure plants the one
+# it means, which is also the only way a naive or unparseable reading can be written down.
+REMAINING_TIME = "sensor.a1_00000000testser_tiempo_restante"
+START_TIME = "sensor.a1_00000000testser_hora_de_inicio"
+END_TIME = "sensor.a1_00000000testser_hora_de_finalizacion"
 
 # The device ids the fixture registry carries: job events name the printer; the trays
 # hang off the AMS device, which fires no job events.
@@ -207,6 +222,20 @@ class TestDiscovery:
         readings = await BambuLabGateway(as_hass(bambu_hass())).current_trays()
 
         assert len(readings) == 4
+
+    async def test_the_job_time_sensors_resolve_by_key_on_the_spanish_instance(self) -> None:
+        """The three keys frozen in v1.4, discovered the only way anything here is.
+
+        The entity ids read `tiempo_restante` and `hora_de_inicio`; nothing in the gateway
+        contains either string. A key that resolved nothing would leave these figures null
+        forever and look exactly like a printer that never reported them, which is why
+        every key is read off a real registry before it is frozen (docs/13 — Traps) — and
+        why this test asserts on a figure rather than on the constant.
+        """
+        hass = bambu_hass()
+        hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, "97", {})
+
+        assert BambuLabGateway(as_hass(hass)).current_job_status().remaining_minutes == 97
 
     async def test_the_first_ams_wins_when_the_registry_holds_two(self) -> None:
         """v1 tracks a single printer. Only the first unit's states exist here, so four
@@ -652,6 +681,66 @@ class TestJobEventTranslation:
         await hass.drain()
 
         assert listener.received == []
+
+    async def test_the_printers_own_start_and_end_cross_the_boundary_beside_the_figures(
+        self,
+    ) -> None:
+        """The machine's answer to how long the print ran, translated verbatim.
+
+        Nothing here decides what to do with the pair — the domain does. The gateway's
+        only job is to hand over two instants, and it hands over `None` for anything it
+        cannot read as one.
+        """
+        hass = bambu_hass()
+        hass.states.by_entity_id[START_TIME] = State(START_TIME, "2026-08-04T09:12:00+00:00", {})
+        hass.states.by_entity_id[END_TIME] = State(END_TIME, "2026-08-04T11:47:00+00:00", {})
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintEnded)
+        assert event.printer_started_at == datetime(2026, 8, 4, 9, 12, tzinfo=UTC)
+        assert event.printer_ended_at == datetime(2026, 8, 4, 11, 47, tzinfo=UTC)
+
+    async def test_a_start_carries_the_machines_own_start_moment(self) -> None:
+        hass = bambu_hass()
+        hass.states.by_entity_id[START_TIME] = State(START_TIME, "2026-08-04T09:12:00+02:00", {})
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintStarted)
+        # The offset is preserved as an instant, not reinterpreted: 09:12+02:00 is 07:12 UTC.
+        assert event.printer_started_at == datetime(2026, 8, 4, 7, 12, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        ("reading", "why"),
+        [
+            ("2026-08-04T09:12:00", "no offset — a wall clock, not an instant"),
+            ("just now", "not a timestamp at all"),
+            ("", "the sensor reported an empty string"),
+        ],
+    )
+    async def test_a_timestamp_this_boundary_cannot_trust_is_dropped(
+        self, reading: str, why: str
+    ) -> None:
+        """A naive datetime names a wall clock, and this boundary has no business deciding
+        which one — guessing UTC would silently shift a duration by the household's offset.
+        The other two are upstream noise. All three are `None`, never an invented moment."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[START_TIME] = State(START_TIME, reading, {})
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        [event] = listener.received
+        assert isinstance(event, PrintStarted)
+        assert event.printer_started_at is None, why
 
     async def test_a_mid_print_error_event_is_not_a_lifecycle_edge(self) -> None:
         """`event_print_error` fires while the job keeps running; the code it announces

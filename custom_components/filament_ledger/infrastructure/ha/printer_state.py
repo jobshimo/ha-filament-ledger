@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ...application.query import ObservedPrintTime, Queries
 from ...domain.port.repositories import SpoolRepository
 from .bambu_gateway import BambuLabGateway, JobStatus
 from .tray_sync import SlotSyncOutcome, slot_outcome
@@ -32,6 +33,11 @@ class PrinterSnapshot:
     `dormant` is the honest no-printer flag, and it is the *whole* answer when it is set:
     the panel renders the teaching empty state rather than a spinner or four invented
     trays. Everything else is nullable, and null always means *the printer did not say*.
+
+    `observed_print_time` is the one figure here the printer did not say at all: it is the
+    ledger's own sum over the jobs it has recorded, which is why it carries the day it
+    started counting and why the tab labels it as this ledger's total rather than the
+    machine's. There is no lifetime-hours sensor upstream to read instead.
     """
 
     dormant: bool
@@ -44,6 +50,7 @@ class PrinterSnapshot:
     connection_mode: str | None = None
     active_tray: int | None = None
     trays: list[SlotSyncOutcome] = field(default_factory=list)
+    observed_print_time: ObservedPrintTime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +63,10 @@ class ReadPrinterState:
 
     gateway: BambuLabGateway
     spools: SpoolRepository
+    # The accumulated-hours total is a read model, not a sensor, so it comes from the
+    # layer that owns aggregation. Summing job rows here instead would put a second
+    # accumulator in the one place `PrintTime.of` exists to prevent (docs/14 §14.5).
+    queries: Queries
 
     async def execute(self) -> PrinterSnapshot:
         if not self.gateway.discovered:
@@ -68,4 +79,5 @@ class ReadPrinterState:
             dormant=False,
             job=self.gateway.current_job_status(),
             trays=trays,
+            observed_print_time=await self.queries.observed_print_time(),
         )
