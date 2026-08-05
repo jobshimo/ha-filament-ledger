@@ -530,6 +530,150 @@ class TestVoidingADiscard:
         assert restored.spool_id == discarded
 
 
+class TestRestoringTheUnDiscard:
+    async def test_the_spool_is_thrown_away_again_and_not_merely_emptied(
+        self, ledger: Ledger
+    ) -> None:
+        """The symmetric counterpart of §14.4.1's one special case, walked end to end.
+
+        *I threw it away* → *no I did not* → *yes I did*. The reinstatement takes the whole
+        balance back out, so leaving the spool in inventory would answer the third step
+        with **it is empty** rather than **it was thrown away**: the reel would quietly
+        rejoin the stock list as an ordinary depleted spool and leave the waste figures.
+        """
+        spool_id = await a_spool(ledger)
+        assert (await ledger.use_cases.queries.detail(spool_id)).summary.state is SpoolState.SEALED
+
+        await ledger.use_cases.discard_filament.execute(
+            DiscardFilamentCommand(
+                spool_id=spool_id, mode=DiscardMode.WHOLE_SPOOL, reason="water damage"
+            )
+        )
+        discard = await newest_of_type(ledger, MovementType.DISCARD)
+        assert (await ledger.use_cases.queries.detail(spool_id)).summary.state is (
+            SpoolState.DISCARDED
+        )
+
+        await ledger.use_cases.void_movement.execute(VoidMovementCommand(movement_id=discard))
+        undone = (await ledger.use_cases.queries.detail(spool_id)).summary
+        assert (undone.balance, undone.state) == (Grams.of(1000), SpoolState.ACTIVE)
+
+        await ledger.use_cases.restore_movement.execute(discard)
+
+        redone = (await ledger.use_cases.queries.detail(spool_id)).summary
+        assert redone.balance == Grams.of(0)
+        assert redone.state is SpoolState.DISCARDED
+
+    async def test_the_void_row_remembers_which_kind_of_discard_it_undid(
+        self, ledger: Ledger
+    ) -> None:
+        """The fact the restore reads. It cannot be re-derived once the void has appended
+        its reversal — the discard is no longer the last entry — so the void stores it."""
+        whole = await a_spool(ledger, label="Water damaged")
+        partial = await a_spool(ledger, label="Tangled")
+        await ledger.use_cases.discard_filament.execute(
+            DiscardFilamentCommand(
+                spool_id=whole, mode=DiscardMode.WHOLE_SPOOL, reason="water damage"
+            )
+        )
+        whole_discard = await newest_of_type(ledger, MovementType.DISCARD)
+        await ledger.use_cases.discard_filament.execute(
+            DiscardFilamentCommand(
+                spool_id=partial, mode=DiscardMode.PARTIAL, amount=Grams.of(40), reason="tangle"
+            )
+        )
+        partial_discard = await newest_of_type(ledger, MovementType.DISCARD)
+
+        await ledger.use_cases.void_movement.execute(VoidMovementCommand(movement_id=whole_discard))
+        await ledger.use_cases.void_movement.execute(
+            VoidMovementCommand(movement_id=partial_discard)
+        )
+
+        rows = await ledger.database.fetch_all(
+            "SELECT movement_id, undiscarded_spool FROM movement_void ORDER BY rowid"
+        )
+        assert [(row["movement_id"], row["undiscarded_spool"]) for row in rows] == [
+            (whole_discard, 1),
+            (partial_discard, 0),
+        ]
+
+    async def test_restoring_a_partial_discard_leaves_the_spool_where_it_is(
+        self, ledger: Ledger
+    ) -> None:
+        """The other half of the discriminator. Voiding a partial discard changed no spool
+        state, so restoring it must not invent one."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.discard_filament.execute(
+            DiscardFilamentCommand(
+                spool_id=spool_id, mode=DiscardMode.PARTIAL, amount=Grams.of(40), reason="tangle"
+            )
+        )
+        discard = await newest_of_type(ledger, MovementType.DISCARD)
+        await ledger.use_cases.void_movement.execute(VoidMovementCommand(movement_id=discard))
+
+        await ledger.use_cases.restore_movement.execute(discard)
+
+        summary = (await ledger.use_cases.queries.detail(spool_id)).summary
+        assert summary.balance == Grams.of(960)
+        assert summary.state is SpoolState.ACTIVE
+
+    async def test_the_re_discard_frees_the_slot_the_spool_was_mounted_into(
+        self, ledger: Ledger
+    ) -> None:
+        """The un-discard puts a spool back in inventory, where it can be mounted. Redoing
+        the discard has to release that position — a thrown-away reel occupies no tray, and
+        the partial unique index stopped watching it the moment `discarded_at` was set."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.discard_filament.execute(
+            DiscardFilamentCommand(
+                spool_id=spool_id, mode=DiscardMode.WHOLE_SPOOL, reason="water damage"
+            )
+        )
+        discard = await newest_of_type(ledger, MovementType.DISCARD)
+        await ledger.use_cases.void_movement.execute(VoidMovementCommand(movement_id=discard))
+        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+
+        await ledger.use_cases.restore_movement.execute(discard)
+
+        successor = await a_spool(ledger, label="Its replacement")
+        await ledger.use_cases.mount_spool.execute(successor, SLOT_1)
+        assert (await ledger.use_cases.queries.detail(spool_id)).summary.state is (
+            SpoolState.DISCARDED
+        )
+
+    async def test_the_spool_is_out_of_reach_again_afterwards(self, ledger: Ledger) -> None:
+        """The consequence, pinned rather than left to be discovered.
+
+        A spool that is `DISCARDED` again is retired again, so the chain of §14.4.2 — void
+        the reinstatement in turn — has nowhere to return the grams, exactly as it would
+        for any other entry on a discarded spool. That is the product's own arithmetic:
+        `DISCARDED` is the one state nothing leaves, its single narrow exit is voiding the
+        whole-spool `DISCARD`, and a movement is voidable **once**. One undo per discard,
+        and this spool has spent it.
+        """
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.discard_filament.execute(
+            DiscardFilamentCommand(
+                spool_id=spool_id, mode=DiscardMode.WHOLE_SPOOL, reason="water damage"
+            )
+        )
+        discard = await newest_of_type(ledger, MovementType.DISCARD)
+        await ledger.use_cases.void_movement.execute(VoidMovementCommand(movement_id=discard))
+        await ledger.use_cases.restore_movement.execute(discard)
+        reinstatement = await newest_of_type(ledger, MovementType.REINSTATEMENT)
+
+        with pytest.raises(RestitutionUnavailableError, match="out of inventory"):
+            await ledger.use_cases.void_movement.execute(
+                VoidMovementCommand(movement_id=reinstatement)
+            )
+        with pytest.raises(MovementAlreadyVoidedError, match="already been deleted once"):
+            await ledger.use_cases.void_movement.execute(VoidMovementCommand(movement_id=discard))
+
+        assert (await ledger.use_cases.queries.detail(spool_id)).summary.state is (
+            SpoolState.DISCARDED
+        )
+
+
 class TestReassigningACharge:
     async def test_the_compensating_pair_moves_the_charge_and_the_job_with_it(
         self, ledger: Ledger

@@ -192,7 +192,8 @@ class TestMigration0003AddsCorrectionsProvenanceAndTheTrash:
     async def test_it_applies_cleanly_to_an_empty_database(self, tmp_path: Path) -> None:
         database = await Database.open(tmp_path / "ledger.db", run_inline)
         try:
-            assert await database.migrate() == 3
+            # The whole real set, so this is the latest version rather than 0003's.
+            assert await database.migrate() == 5
 
             objects = await database.fetch_all(
                 "SELECT name FROM sqlite_master WHERE name IN "
@@ -405,5 +406,190 @@ class TestMigration0003AddsCorrectionsProvenanceAndTheTrash:
 
             with pytest.raises(sqlite3.IntegrityError):
                 await database.execute(mounted, ("clash", None))
+        finally:
+            await database.close()
+
+
+LEGACY_TYPED_MOVEMENT = (
+    "INSERT INTO movement (id, spool_id, type, amount_mg, source, occurred_at, recorded_at) "
+    "VALUES (?, ?, ?, ?, 'USER_CONFIRMED', datetime('now'), datetime('now'))"
+)
+
+LEGACY_VOID = (
+    "INSERT INTO movement_void (movement_id, voided_at, reason, reversal_movement_id) "
+    "VALUES (?, datetime('now'), ?, ?)"
+)
+
+
+async def _staged_at_version_three(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Database, Path]:
+    """A populated database stopped at version 3 — the shape of every install that has
+    ever deleted a history entry, and the one 0005 has to arrive into."""
+    database, staged = await _staged_at_version_two(tmp_path, monkeypatch)
+    _stage_0003(staged)
+    assert await database.migrate() == 3
+    return database, staged
+
+
+def _stage_0005(staged: Path) -> None:
+    source = next(MIGRATIONS.glob("0005_*.sql"))
+    (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+class TestMigration0005TeachesTheVoidRowAboutTheUnDiscard:
+    """docs/14 §14.4.1-2 — the fact that stopped being derivable, given a column.
+
+    Additive in the strictest sense available to `ALTER TABLE`: one flag on a status
+    record, defaulted, and not a statement in the file touches `movement`.
+    """
+
+    async def test_it_applies_to_a_database_populated_in_the_old_shape(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The upgrade every install with a trash performs, with both kinds of chapter
+        already in the table: one that returned the grams, one that returned nothing."""
+        database, staged = await _staged_at_version_three(tmp_path, monkeypatch)
+        try:
+            await database.execute(LEGACY_SPOOL, ("spool", None))
+            await database.execute(LEGACY_TYPED_MOVEMENT, ("charge", "spool", "DISCARD", -84_100))
+            await database.execute(
+                LEGACY_TYPED_MOVEMENT, ("reversal", "spool", "VOID_REVERSAL", 84_100)
+            )
+            await database.execute(LEGACY_TYPED_MOVEMENT, ("orphan", "spool", "DISCARD", -40_000))
+            await database.execute(LEGACY_VOID, ("charge", "wrong spool", "reversal"))
+            await database.execute(LEGACY_VOID, ("orphan", "nothing came back", None))
+
+            _stage_0005(staged)
+            assert await database.migrate() == 5
+
+            columns = {
+                row["name"] for row in await database.fetch_all("PRAGMA table_info(movement_void)")
+            }
+            assert "undiscarded_spool" in columns
+            movement_columns = {
+                row["name"] for row in await database.fetch_all("PRAGMA table_info(movement)")
+            }
+            assert "undiscarded_spool" not in movement_columns
+        finally:
+            await database.close()
+
+    async def test_it_backfills_every_existing_chapter_as_no_un_discard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deliberate half, and the case that argues it: `undiscarded` below *is* a
+        chapter that un-discarded its spool — a whole-spool `DISCARD`, voided, the spool
+        back in inventory with `discarded_at` cleared — and it still backfills to no.
+
+        Nothing recorded the fact, and it cannot be recovered: a partial `DISCARD` voided
+        on a spool that was never retired leaves those same traces, which is exactly what
+        `partial` is here to show. The two mistakes are not symmetric. A wrong `0` makes an
+        open chapter restore the way every restore behaved before this migration — the
+        behaviour that install already has, and at most a handful of chapters are open at
+        an upgrade. A wrong `1` would throw a spool away that nobody threw away, inventing
+        a real-world event that counts as waste. Under-claim.
+        """
+        database, staged = await _staged_at_version_three(tmp_path, monkeypatch)
+        try:
+            await database.execute(LEGACY_SPOOL, ("spool", None))
+            for movement, kind, amount in (
+                ("undiscarded", "DISCARD", -1_000_000),
+                ("undiscarded-reversal", "VOID_REVERSAL", 1_000_000),
+                ("partial", "DISCARD", -40_000),
+                ("partial-reversal", "VOID_REVERSAL", 40_000),
+            ):
+                await database.execute(LEGACY_TYPED_MOVEMENT, (movement, "spool", kind, amount))
+            await database.execute(LEGACY_VOID, ("undiscarded", None, "undiscarded-reversal"))
+            await database.execute(LEGACY_VOID, ("partial", None, "partial-reversal"))
+
+            _stage_0005(staged)
+            assert await database.migrate() == 5
+
+            rows = await database.fetch_all(
+                "SELECT movement_id, undiscarded_spool FROM movement_void ORDER BY movement_id"
+            )
+            assert [(row["movement_id"], row["undiscarded_spool"]) for row in rows] == [
+                ("partial", 0),
+                ("undiscarded", 0),
+            ]
+        finally:
+            await database.close()
+
+    async def test_it_leaves_the_rest_of_every_chapter_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The additive claim, checked rather than asserted."""
+        database, staged = await _staged_at_version_three(tmp_path, monkeypatch)
+        try:
+            await database.execute(LEGACY_SPOOL, ("spool", None))
+            await database.execute(LEGACY_TYPED_MOVEMENT, ("charge", "spool", "DISCARD", -84_100))
+            await database.execute(
+                LEGACY_TYPED_MOVEMENT, ("reversal", "spool", "VOID_REVERSAL", 84_100)
+            )
+            await database.execute(LEGACY_VOID, ("charge", "wrong spool", "reversal"))
+            columns = (
+                "movement_id, voided_at, reason, reversal_movement_id, reinstated_at, "
+                "reinstatement_movement_id"
+            )
+            before = await database.fetch_all(f"SELECT {columns} FROM movement_void")
+
+            _stage_0005(staged)
+            assert await database.migrate() == 5
+
+            after = await database.fetch_all(f"SELECT {columns} FROM movement_void")
+            assert [tuple(row) for row in after] == [tuple(row) for row in before]
+        finally:
+            await database.close()
+
+    async def test_a_chapter_cannot_claim_an_un_discard_it_could_not_have_made(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The new invariant at the last layer. A void without restitution returned no
+        balance, so nothing was stranded outside inventory and there was nothing to bring a
+        spool back for — the row would describe something that never happened.
+
+        SQLite validates a new column's CHECK against the rows already in the table, so
+        this clause is also what proves the backfill above consistent: the migration would
+        have refused to apply if any existing row had contradicted it.
+        """
+        database, staged = await _staged_at_version_three(tmp_path, monkeypatch)
+        try:
+            await database.execute(LEGACY_SPOOL, ("spool", None))
+            await database.execute(LEGACY_TYPED_MOVEMENT, ("orphan", "spool", "DISCARD", -40_000))
+            _stage_0005(staged)
+            assert await database.migrate() == 5
+
+            with pytest.raises(sqlite3.IntegrityError):
+                await database.execute(
+                    "INSERT INTO movement_void (movement_id, voided_at, reason, "
+                    "reversal_movement_id, undiscarded_spool) "
+                    "VALUES ('orphan', datetime('now'), 'nothing came back', NULL, 1)"
+                )
+        finally:
+            await database.close()
+
+    async def test_running_the_runner_again_changes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        database, staged = await _staged_at_version_three(tmp_path, monkeypatch)
+        try:
+            await database.execute(LEGACY_SPOOL, ("spool", None))
+            await database.execute(LEGACY_TYPED_MOVEMENT, ("charge", "spool", "DISCARD", -84_100))
+            await database.execute(LEGACY_VOID, ("charge", "nothing came back", None))
+
+            _stage_0005(staged)
+            assert await database.migrate() == 5
+            assert await database.migrate() == 5
+            assert await database.migrate() == 5
+
+            versions = await database.fetch_all(
+                "SELECT version FROM schema_version ORDER BY version"
+            )
+            assert [row["version"] for row in versions] == [1, 2, 3, 5]
+            row = await database.fetch_one(
+                "SELECT undiscarded_spool FROM movement_void WHERE movement_id = 'charge'"
+            )
+            assert row is not None
+            assert row["undiscarded_spool"] == 0
         finally:
             await database.close()
