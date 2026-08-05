@@ -590,6 +590,7 @@ const EN = {
   "printer.status": "Status",
   "printer.job": "Job",
   "printer.progress": "Progress",
+  "printer.remaining": "Remaining",
   "printer.layer": "Layer",
   "printer.layerOf": "[[current]] of [[total]]",
   "printer.online": "Online",
@@ -599,6 +600,11 @@ const EN = {
   "printer.no": "no",
   "printer.errorHeading": "Printer error",
   "printer.noError": "No error reported.",
+  "printer.hoursHeading": "Print time recorded here",
+  "printer.hoursObserved":
+    "Measured across [[count]] prints this ledger has recorded since [[since]]. It is not " +
+    "the machine's lifetime counter — the printer reports no such figure — so the total " +
+    "starts the day Filament Ledger was installed, not the day the printer was.",
   "printer.traysHeading": "Trays",
   "printer.trayLedger": "ledger: [[spool]]",
   "printer.trayLedgerEmpty": "ledger: nothing mounted",
@@ -1163,6 +1169,7 @@ const ES = {
   "printer.status": "Estado",
   "printer.job": "Trabajo",
   "printer.progress": "Progreso",
+  "printer.remaining": "Restante",
   "printer.layer": "Capa",
   "printer.layerOf": "[[current]] de [[total]]",
   "printer.online": "En línea",
@@ -1172,6 +1179,12 @@ const ES = {
   "printer.no": "no",
   "printer.errorHeading": "Error de la impresora",
   "printer.noError": "No se informa de ningún error.",
+  "printer.hoursHeading": "Tiempo de impresión registrado aquí",
+  "printer.hoursObserved":
+    "Medido sobre [[count]] impresiones que este registro ha guardado desde el [[since]]. " +
+    "No es el contador de vida de la máquina: la impresora no informa esa cifra, así que " +
+    "el total empieza el día en que se instaló Filament Ledger, no el día en que se " +
+    "estrenó la impresora.",
   "printer.traysHeading": "Bandejas",
   "printer.trayLedger": "registro: [[spool]]",
   "printer.trayLedgerEmpty": "registro: nada montado",

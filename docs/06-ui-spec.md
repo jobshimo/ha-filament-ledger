@@ -939,6 +939,23 @@ timestamps became the moment the ending arrived. That row's duration is zero, an
 how long a print took. The card says how many prints the figures cover, and **when nothing in
 the period can be measured the card is absent entirely** — a row of dashes teaches nothing.
 
+**The printer's own pair is preferred for a print that finished.** `started_at` and
+`ended_at` are bounded by when Home Assistant *heard*, so a restart, a reload or a busy bus
+lands inside that subtraction and none of it happened to the print. The machine reports both
+moments itself, and since v1.4 they are stored beside the ledger's
+([05 §5.8](05-ha-integration.md)). The clearest gain is the row a restart leaves behind: it
+has a zero-length ledger pair and has always been excluded, and it now counts whenever the
+machine reported its own two moments.
+
+**A cancelled or failed job keeps the ledger's pair, deliberately.** Upstream derives its end
+from the time remaining, so until a job stops that figure is a *prediction* of when it would
+finish. At a finish the prediction has converged on the present and is a measurement; at a
+cancellation forty minutes in it still points at an ending that never happened, and taking it
+would report the print as hours longer than it ran. An interrupted print is different in kind
+— the distinction [ADR-0004](adr/0004-approval-queue-for-estimates.md) rests on — and this is
+one more place it costs something. The clocks are never mixed either way: each duration is a
+subtraction *within* one pair, and both pairs answer the same question in the same unit.
+
 **Charts are hand-rolled inline SVG.** [ADR-0006](adr/0006-vanilla-panel.md) stands: no
 framework, no bundler, no chart library. Bars are drawn relative to the largest value rather
 than to the total, because the question is *which colour goes fastest* and not *what share of

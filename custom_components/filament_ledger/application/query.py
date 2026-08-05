@@ -382,21 +382,55 @@ class ReviewOutcomes:
 class PrintTime:
     """Measured print time, and how many prints it was measured over.
 
-    Derived from `print_job.started_at`/`ended_at` — both real columns since migration
-    0001 — so this is a measurement, not an estimate. It covers **only jobs with a
-    positive duration**, which excludes exactly one thing: the row `TrackPrintJob` writes
-    when a restart swallowed a print's start and `started_at` and `ended_at` are both the
-    moment the ending arrived. That row's duration is zero, and zero is not how long a
-    print took. `prints` travels beside the total so the panel can say what the average is
-    an average *of* rather than implying it covers every job in the period.
+    Every duration comes from `PrintJob.measured_duration`, so this is a measurement and
+    never an estimate: the printer's own `start_time`/`end_time` pair for a job that ran to
+    completion, and the ledger's own `started_at`/`ended_at` — real columns since migration
+    0001 — for everything else. It covers **only jobs with a positive duration**,
+    which excludes the row `TrackPrintJob` writes when a restart swallowed a print's start
+    and both of its timestamps became the moment the ending arrived. That row's duration is
+    zero, and zero is not how long a print took. `prints` travels beside the total so the
+    panel can say what the average is an average *of* rather than implying it covers every
+    job in the period.
     """
 
     total: timedelta
     prints: int
 
+    @classmethod
+    def of(cls, jobs: Sequence[PrintJob]) -> PrintTime | None:
+        """Sum what can be measured, or `None` when nothing can.
+
+        **The one accumulator.** The Stats card sums a period's jobs and the Printer tab
+        sums every job the ledger holds; two accumulators would be two answers to one
+        question, and they would eventually disagree about which rows count.
+        """
+        durations = [duration for job in jobs if (duration := job.measured_duration) is not None]
+        if not durations:
+            return None
+        return cls(total=sum(durations, timedelta()), prints=len(durations))
+
     @property
     def average(self) -> timedelta:
         return self.total / self.prints
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedPrintTime:
+    """Every print this ledger has ever timed, and the day it started counting.
+
+    Deliberately **not** the machine's lifetime hours. `ha-bambulab` exposes no sensor for
+    those, so a figure presented as an odometer could only be this sum wearing a label it
+    has not earned — one that quietly began the day the integration was installed. `since`
+    is what keeps the claim honest: the earliest print in the ledger, so the panel can say
+    what the total is a total *of* rather than implying it covers the machine's life.
+
+    `since` is the first job **recorded**, not the first job measured. The question it
+    answers is when this ledger started watching, and a job whose duration could not be
+    measured was still watched.
+    """
+
+    measured: PrintTime
+    since: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -730,11 +764,6 @@ class Queries:
                     per_job[movement.job_id] = per_job.get(movement.job_id, Grams.zero()) + amount
 
         jobs = await self.jobs.list_in_period(since)
-        durations = [
-            job.ended_at - job.started_at
-            for job in jobs
-            if job.ended_at is not None and job.ended_at > job.started_at
-        ]
 
         return StatisticsView(
             period=period,
@@ -756,12 +785,30 @@ class Queries:
                 for material, amount in _descending(by_material)
             ],
             top_prints=await self._top_prints(per_job),
-            print_time=(
-                PrintTime(total=sum(durations, timedelta()), prints=len(durations))
-                if durations
-                else None
-            ),
+            print_time=PrintTime.of(jobs),
         )
+
+    async def observed_print_time(self) -> ObservedPrintTime | None:
+        """Every print this ledger has ever timed — the Printer tab's total (docs/14 §14.5).
+
+        The same sum `statistics` shows for a period, with no period at all. `None` when
+        nothing has a measurable duration, which is how every read model here declines to
+        invent a metric it cannot support.
+
+        One unbounded pass over `print_job`, which is the read `statistics(ALL_TIME)` has
+        always performed and is affordable for the same reason: a heavy household prints a
+        few hundred times a year, and the table holds one narrow row each (docs/08 §8.5).
+        It runs on every printer push, so the cost is worth naming rather than assuming —
+        should a ledger ever grow past that, the answer is a stored running total, not a
+        second accumulator disagreeing with this one.
+        """
+        jobs = await self.jobs.list_in_period(None)
+        measured = PrintTime.of(jobs)
+        if measured is None:
+            return None
+        # `list_in_period` answers oldest first, so the first row is the first print this
+        # ledger ever saw — the honest anchor for a total that is not the machine's own.
+        return ObservedPrintTime(measured=measured, since=jobs[0].started_at)
 
     async def _review_outcomes(self, since: datetime | None) -> ReviewOutcomes:
         resolved = await self.reviews.list_resolved(since)

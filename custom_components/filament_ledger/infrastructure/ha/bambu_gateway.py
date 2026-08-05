@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -72,6 +73,12 @@ _TRAY_MARKER = "_tray_"
 # The job sensors, by upstream's own translation keys (docs/05 §5.8, docs/12). Resolved
 # once at construction, same as the trays; the printer's device id is derived from these
 # entries because the job events on the bus name only a device.
+#
+# Every key here was read off the reference instance's entity registry **before** it was
+# frozen, which is the rule `FUTURE_PRINT_SENSOR_KEYS` below exists to explain. The last
+# three joined in v1.4: `remaining_time` is what the Printer tab shows for a job in
+# progress, and `start_time`/`end_time` are the machine's own answer to how long a print
+# actually took, as opposed to how long Home Assistant took to notice it.
 PRINT_SENSOR_KEYS = frozenset(
     {
         "print_weight",
@@ -81,6 +88,9 @@ PRINT_SENSOR_KEYS = frozenset(
         "print_progress",
         "gcode_file_downloaded",
         "print_error",
+        "remaining_time",
+        "start_time",
+        "end_time",
     }
 )
 
@@ -147,6 +157,10 @@ class JobStatus:
     the gateway's standing policy applied to display: a missing figure is not a figure of
     zero, and the tab renders a dash for each one. `name` alone has a stated fallback
     (`UNKNOWN_JOB_NAME`), because a blank job name reads as a rendering bug.
+
+    `remaining_minutes` is the one field whose absence covers two situations, and they
+    render identically on purpose: the sensor said nothing, and there is no job for it to
+    say anything about. See `_remaining_minutes`.
     """
 
     status: str | None
@@ -155,6 +169,7 @@ class JobStatus:
     total_layers: int | None
     progress: Percentage | None
     error: PrinterError | None
+    remaining_minutes: int | None
 
 
 class BambuLabGateway:
@@ -209,6 +224,13 @@ class BambuLabGateway:
 
         The set is what discovery found. A dormant gateway returns an empty one, and a
         subscription over nothing correctly never fires.
+
+        `remaining_time` joining the set is what makes a countdown count down: the sensor
+        changes about once a minute during a print, and each change pushes one debounced
+        snapshot. That is still nothing polling — it is the machine saying so — and a
+        remaining time frozen at whatever it read when the tab was opened would be the
+        stalest possible figure on a page whose whole point is being current (docs/14
+        §14.5, amended v1.1).
         """
         return frozenset(self._entity_by_slot.values()) | frozenset(self._print_sensors.values())
 
@@ -227,6 +249,7 @@ class BambuLabGateway:
             total_layers=self._total_layers(),
             progress=self._progress(),
             error=self._printer_error(),
+            remaining_minutes=self._remaining_minutes(),
         )
 
     def subscribe(self, listener: TrayListener) -> None:
@@ -354,7 +377,11 @@ class BambuLabGateway:
         describe this job: the counters reset when the next print starts.
         """
         if event_type == EVENT_PRINT_STARTED:
-            return PrintStarted(name=self._job_name(), plan=self._per_tray_weights())
+            return PrintStarted(
+                name=self._job_name(),
+                plan=self._per_tray_weights(),
+                printer_started_at=self._moment("start_time"),
+            )
         outcome = _OUTCOMES.get(event_type) if isinstance(event_type, str) else None
         if outcome is None:
             return None  # event_print_error and anything upstream adds later
@@ -367,6 +394,8 @@ class BambuLabGateway:
             reported_usage=self._per_tray_weights(),
             raw_gcode_state=self._text_state("print_status"),
             raw_print_error=self._error_code(),
+            printer_started_at=self._moment("start_time"),
+            printer_ended_at=self._moment("end_time"),
         )
 
     def _sensor_state(self, key: str) -> State | None:
@@ -403,6 +432,52 @@ class BambuLabGateway:
         """Zero total layers is reported before a file is sliced — unknown, not a total."""
         value = self._layer("total_layers")
         return value if value is not None and value >= 1 else None
+
+    def _remaining_minutes(self) -> int | None:
+        """How much longer the job in progress has, in whole minutes — or `None`.
+
+        **Zero is read as "no job", not as "any moment now".** Upstream parks this sensor
+        at zero between prints, so a machine that finished last Tuesday reports the same
+        zero as one whose last layer is going down — and of the two readings that a `0 min`
+        on screen could mean, the idle one is far more often the true one and is the one
+        that would be a lie about a printer nobody is standing at. The cost is the final
+        sub-minute of a real print, which shows a dash instead of a countdown. That is the
+        same rule `_total_layers` applies to a file that is not sliced yet: under-claim.
+
+        A negative figure is upstream noise, and anything unparseable is dropped the way
+        `_layer` drops it — this reader is total, like every other one here.
+        """
+        state = self._sensor_state("remaining_time")
+        if state is None:
+            return None
+        try:
+            minutes = int(state.state)
+        except ValueError:
+            LOGGER.debug("remaining_time reads %r, which is not a minute count", state.state)
+            return None
+        return minutes if minutes > 0 else None
+
+    def _moment(self, key: str) -> datetime | None:
+        """One of the printer's own timestamps, or `None` when it cannot be trusted.
+
+        A timestamp sensor carries an ISO-8601 instant. A value that does not parse is
+        dropped, and so is one carrying **no offset**: a naive datetime names a wall clock
+        rather than an instant, and this boundary has no business deciding which clock. It
+        would also be uncomparable with everything else the domain holds, so refusing it
+        here is what keeps the readers total rather than moving the failure inward.
+        """
+        state = self._sensor_state(key)
+        if state is None:
+            return None
+        try:
+            moment = datetime.fromisoformat(state.state)
+        except ValueError:
+            LOGGER.debug("%s reads %r, which is not an ISO-8601 instant", key, state.state)
+            return None
+        if moment.tzinfo is None:
+            LOGGER.debug("%s reads %r, which names no offset; skipped", key, state.state)
+            return None
+        return moment
 
     def _progress(self) -> Percentage | None:
         state = self._sensor_state("print_progress")

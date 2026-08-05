@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from ...application.query import (
     GlobalHistoryLine,
     HistoryLine,
+    ObservedPrintTime,
     PendingReviewDetail,
     PrintTime,
     SpoolDetail,
@@ -390,6 +391,9 @@ def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
         "current_layer": job.current_layer if job else None,
         "total_layers": job.total_layers if job else None,
         "job_name": job.name if job else None,
+        # Minutes, like every other duration on the wire. Null while nothing is printing —
+        # the gateway's rule, not the panel's, so the tab has no idle case to invent.
+        "remaining_minutes": job.remaining_minutes if job else None,
         "error": _printer_error(job),
         # Null until their upstream translation keys are verified on the reference
         # instance and frozen (`FUTURE_PRINT_SENSOR_KEYS`). An undiscovered sensor
@@ -398,6 +402,25 @@ def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
         "connection_mode": snapshot.connection_mode,
         "active_tray": snapshot.active_tray,
         "trays": [_slot_sync(outcome) for outcome in snapshot.trays],
+        "observed_print_time": _observed_print_time(snapshot.observed_print_time),
+    }
+
+
+def _observed_print_time(observed: ObservedPrintTime | None) -> dict[str, Any] | None:
+    """Every print this ledger has timed, or **null** when it has timed none.
+
+    `since` and `prints` are not decoration: this is **not** the machine's lifetime
+    counter, upstream exposes no sensor for one, and a total presented as an odometer
+    would be an odometer that started the day the integration was installed. Sending the
+    total without the two figures that bound it would leave the panel free to imply
+    exactly that, so the wire carries all three or nothing.
+    """
+    if observed is None:
+        return None
+    return {
+        "total_minutes": _minutes(observed.measured.total),
+        "prints": observed.measured.prints,
+        "since": observed.since.isoformat(),
     }
 
 

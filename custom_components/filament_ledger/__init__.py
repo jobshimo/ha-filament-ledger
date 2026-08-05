@@ -204,8 +204,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     sync_trays = TraySync(gateway=gateway, detect_spool=use_cases.detect_spool, spools=spools)
 
     # The Printer tab's read-only glance over the same gateway (docs/14 §14.5). It runs no
-    # use case and writes nothing — the sync above stays the one mutation path.
-    printer = ReadPrinterState(gateway=gateway, spools=spools)
+    # use case and writes nothing — the sync above stays the one mutation path. `queries`
+    # rides along for the accumulated-hours total, which is a sum over the ledger's own job
+    # rows rather than anything the machine reports.
+    printer = ReadPrinterState(gateway=gateway, spools=spools, queries=queries)
 
     entry.runtime_data = LedgerRuntime(
         database=database,

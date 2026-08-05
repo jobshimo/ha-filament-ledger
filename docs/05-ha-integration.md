@@ -305,6 +305,7 @@ it is allowed to touch is written down rather than discovered during implementat
 | Job lifecycle | `bambu_lab_event` on the HA bus, `type` ∈ `event_print_started`, `event_print_finished`, `event_print_canceled`, `event_print_failed`, `event_print_error` |
 | Per-tray consumption | Attributes of the printer's `print_weight` sensor, keyed `AMS <n> Tray <m>` and `External Spool` |
 | Job progress | The `print_progress`, `current_layer` and `total_layers` sensors |
+| Job timing | The `remaining_time` sensor (whole minutes) and the `start_time` / `end_time` timestamp sensors |
 | Raw state | The `print_status` sensor (a lowercased `gcode_state`) and the `print_error` sensor |
 | Tray identity | Attributes of the AMS tray sensors: `tag_uid`, `type`, `color`, `tray_uuid`, `remain` |
 | Connectivity | The printer device's availability |
@@ -336,6 +337,26 @@ an upstream refactor into a corrupted ledger.
   reports sixteen zeros. Treating that as an identity would merge every untagged spool the
   user owns into one — and the identity belongs to the *spool*, which moves between trays,
   not to the tray.
+- **The printer keeps its own clock, and it is not this one.** `start_time` and `end_time`
+  are the machine's answer to when a print ran, and they are a better measure of a print's
+  duration than the moments Home Assistant processed the lifecycle events — a restart or a
+  busy bus lands in the second pair and none of it happened to the print. They are stored
+  in `print_job.printer_started_at` / `printer_ended_at`, **beside** the ledger's own two
+  and never over them. UC-04 derives every consumption movement's `occurred_at` from
+  `ended_at`, and the ledger orders itself by `occurred_at`
+  ([04 UC-04](04-use-cases.md)); a foreign clock reaching that column would reorder prints
+  against entries this integration stamped itself. The two printer columns are read by one
+  subtraction and by nothing else, so no ordering can see them.
+- **`end_time` is a prediction until the print ends.** Upstream computes it from the time
+  remaining, so a job cancelled forty minutes in still reports the end it was heading for.
+  At a *finish* the prediction has converged on the present and is a measurement; anywhere
+  else it is not one, and only a `FINISHED` job's pair is used as a duration
+  ([06 §6.7](06-ui-spec.md)). Both values are recorded whatever the outcome, because the
+  job record keeps the printer's claims verbatim.
+- **`remaining_time` reads zero between prints.** Upstream parks the sensor there when
+  nothing is running, so zero is translated as *no job* rather than as *about to finish*.
+  The cost is the final sub-minute of a real print, which shows a dash — the same
+  under-claim `total_layers` makes for a file that is not sliced yet.
 
 ### Connection mode
 
