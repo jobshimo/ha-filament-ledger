@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from ...application.query import (
     GlobalHistoryLine,
     HistoryLine,
+    ObservedPrintTime,
     PendingReviewDetail,
     PrintTime,
     SpoolDetail,
@@ -93,6 +94,7 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
         "percentage": summary.percentage,
         "state": summary.state.value,
         "confidence": summary.confidence.value,
+        "confidence_basis": _confidence_basis(summary),
         "needs_weighing": summary.confidence.needs_weighing,
         "location": describe_location(spool.location),
         "tag_uid": spool.tag_uid.value if spool.tag_uid else None,
@@ -106,6 +108,33 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
         "has_anomaly": summary.has_anomaly,
         "registered_at": spool.registered_at.isoformat(),
     }
+
+
+def _confidence_basis(summary: SpoolSummary) -> dict[str, Any]:
+    """What the badge was derived from, in the units the panel renders (docs/06 §6.5).
+
+    Whole grams and whole percent, for the reason §6.8 gives balances: this is a figure
+    somebody reads at a glance beside a balance already rounded the same way, and a tenth
+    would claim a precision the drift it describes does not have.
+
+    `anchor` is the movement type the window opens after — the panel already renders those
+    in the reader's language — or **null** for a history carrying no anchor at all. The two
+    timestamps are ISO or null, and null is never rendered as a zero or a dash-shaped date:
+    the panel drops the clause instead.
+    """
+    basis = summary.confidence_basis
+    return {
+        "anchor": basis.anchor.value if basis.anchor is not None else None,
+        "anchored_at": _iso_or_none(basis.anchored_at),
+        "consumed_since_g": whole_grams(basis.consumed_since),
+        "consumed_since_pct": _whole_percent(summary.drawn_since_anchor * 100),
+        "estimates_since": basis.estimates_since,
+        "latest_estimate_at": _iso_or_none(basis.latest_estimate_at),
+    }
+
+
+def _whole_percent(value: Decimal) -> int:
+    return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 def entry_direction(movement: Movement) -> str:
@@ -362,6 +391,9 @@ def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
         "current_layer": job.current_layer if job else None,
         "total_layers": job.total_layers if job else None,
         "job_name": job.name if job else None,
+        # Minutes, like every other duration on the wire. Null while nothing is printing —
+        # the gateway's rule, not the panel's, so the tab has no idle case to invent.
+        "remaining_minutes": job.remaining_minutes if job else None,
         "error": _printer_error(job),
         # Null until their upstream translation keys are verified on the reference
         # instance and frozen (`FUTURE_PRINT_SENSOR_KEYS`). An undiscovered sensor
@@ -370,6 +402,25 @@ def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
         "connection_mode": snapshot.connection_mode,
         "active_tray": snapshot.active_tray,
         "trays": [_slot_sync(outcome) for outcome in snapshot.trays],
+        "observed_print_time": _observed_print_time(snapshot.observed_print_time),
+    }
+
+
+def _observed_print_time(observed: ObservedPrintTime | None) -> dict[str, Any] | None:
+    """Every print this ledger has timed, or **null** when it has timed none.
+
+    `since` and `prints` are not decoration: this is **not** the machine's lifetime
+    counter, upstream exposes no sensor for one, and a total presented as an odometer
+    would be an odometer that started the day the integration was installed. Sending the
+    total without the two figures that bound it would leave the panel free to imply
+    exactly that, so the wire carries all three or nothing.
+    """
+    if observed is None:
+        return None
+    return {
+        "total_minutes": _minutes(observed.measured.total),
+        "prints": observed.measured.prints,
+        "since": observed.since.isoformat(),
     }
 
 

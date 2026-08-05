@@ -60,13 +60,20 @@ class TrackPrintJob:
 
     async def _started(self, event: PrintStarted) -> PrintJobId:
         """A new job, a new identity. The upstream event carries no job id, so the row
-        created here is what a later ending correlates back to (see `_running_job`)."""
+        created here is what a later ending correlates back to (see `_running_job`).
+
+        `started_at` is **this** clock's, not the printer's, and the printer's own answer
+        lands beside it rather than over it. Everything the ledger orders itself by is
+        stamped from one clock; the machine's report is a second fact about the same
+        moment, and `PrintJob` says why the two must not be merged.
+        """
         job = PrintJob(
             id=new_print_job_id(),
             name=event.name,
             state=PrintJobState.RUNNING,
             started_at=self.clock.now(),
             reported_usage=event.plan,
+            printer_started_at=event.printer_started_at,
         )
         async with self.uow:
             await self.jobs.save(job)
@@ -74,7 +81,14 @@ class TrackPrintJob:
 
     async def _ended(self, event: PrintEnded) -> PrintJobId:
         """Close the running job with the moment's figures — creating the row first when
-        a restart swallowed the start, because a review must never be lost to a restart."""
+        a restart swallowed the start, because a review must never be lost to a restart.
+
+        `ended_at` stays `now`. UC-04 stamps every movement's `occurred_at` from it, and
+        the whole ledger orders itself by `occurred_at` — so a printer's clock reaching it
+        would sort a print against reconciliations it never happened near. The machine's
+        own pair is recorded in its own two columns instead, where nothing compares it to
+        anything (`PrintJob` states the rule and the consequence).
+        """
         now = self.clock.now()
         job = await self._running_job()
         if job is None:
@@ -101,6 +115,16 @@ class TrackPrintJob:
             ),
             raw_gcode_state=event.raw_gcode_state,
             raw_print_error=event.raw_print_error,
+            # The same rule the plan follows, for the same reason: the ending's reading
+            # wins when the sensor gave one, and the start's capture survives when it did
+            # not. A machine that reset `start_time` before the finish arrived keeps the
+            # start this job was actually opened with.
+            printer_started_at=(
+                event.printer_started_at
+                if event.printer_started_at is not None
+                else job.printer_started_at
+            ),
+            printer_ended_at=event.printer_ended_at,
         )
 
         reason = _REVIEW_REASONS.get(event.outcome)

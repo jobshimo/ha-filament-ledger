@@ -104,6 +104,17 @@ class RecordPrintConsumption:
         now = self.clock.now()
         # Separate facts: the print finished when the job says it did; `now` is merely
         # when the ledger heard about it (docs/08-data-model.md).
+        #
+        # **Both come from this ledger's clock, and that is load-bearing.** Every read that
+        # orders the ledger sorts on `occurred_at` — the spool detail's running balance,
+        # the history's newest-first slice, and `movements_since_anchor`, which decides
+        # confidence by asking which entries fall after the last reconciliation. A foreign
+        # clock here would reorder those against entries stamped by `SystemClock`, and the
+        # damaging direction is silent: a printer running slow sorts its print *before* a
+        # reconciliation that really happened first, dropping the print out of the anchor
+        # window and reporting more confidence than the spool has earned. So the printer's
+        # own timestamps live in `printer_started_at`/`printer_ended_at` and never reach
+        # this line.
         occurred_at = recorded.ended_at if recorded.ended_at is not None else now
 
         for slot, used in sorted(consuming.items()):

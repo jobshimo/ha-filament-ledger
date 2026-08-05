@@ -22,7 +22,8 @@ from .database import Database
 
 COLUMNS = (
     "id, name, state, started_at, ended_at, layer_reached, total_layers, "
-    "progress_pct, reported_usage, raw_gcode_state, raw_print_error, consumption_recorded"
+    "progress_pct, reported_usage, raw_gcode_state, raw_print_error, "
+    "printer_started_at, printer_ended_at, consumption_recorded"
 )
 
 
@@ -67,6 +68,8 @@ def _to_job(row: sqlite3.Row) -> PrintJob:
         reported_usage=usage_from_json(row["reported_usage"]),
         raw_gcode_state=row["raw_gcode_state"],
         raw_print_error=row["raw_print_error"],
+        printer_started_at=_parse(row["printer_started_at"]),
+        printer_ended_at=_parse(row["printer_ended_at"]),
         consumption_recorded=bool(row["consumption_recorded"]),
     )
 
@@ -84,7 +87,7 @@ class SqlitePrintJobRepository:
     async def save(self, job: PrintJob) -> None:
         await self.database.execute(
             f"""
-            INSERT INTO print_job ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO print_job ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 state = excluded.state,
@@ -96,6 +99,8 @@ class SqlitePrintJobRepository:
                 reported_usage = excluded.reported_usage,
                 raw_gcode_state = excluded.raw_gcode_state,
                 raw_print_error = excluded.raw_print_error,
+                printer_started_at = excluded.printer_started_at,
+                printer_ended_at = excluded.printer_ended_at,
                 consumption_recorded = excluded.consumption_recorded
             """,
             (
@@ -110,6 +115,11 @@ class SqlitePrintJobRepository:
                 usage_to_json(job.reported_usage),
                 job.raw_gcode_state,
                 job.raw_print_error,
+                # The printer's own pair, normalised to UTC like every other instant here.
+                # `_iso` shifts the offset and never the moment, so the subtraction that
+                # reads them back is the machine's own elapsed time to the second.
+                _iso(job.printer_started_at) if job.printer_started_at else None,
+                _iso(job.printer_ended_at) if job.printer_ended_at else None,
                 int(job.consumption_recorded),
             ),
         )

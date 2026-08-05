@@ -137,6 +137,23 @@ retrieved, and that retrieval is known to fail in LAN mode ([Q4](01-vision.md)).
 figure is not a figure of zero. Recording zero for a print that consumed 84 g is a silent,
 optimistic lie, and it is the only failure in this system that leaves no trace at all.
 
+**Which clock stamps the entry.** Step 3b writes `occurred_at` from the job's `ended_at`,
+which is when Home Assistant processed the ending — this integration's own clock, the same
+one every other movement is stamped from. The printer reports the moment itself, and that
+report is deliberately **not** used here.
+
+The ledger orders itself by `occurred_at`: the running balance in a spool's history, the
+newest-first slice the History view reads, and the anchor window confidence is derived from
+— every movement after the most recent reconciliation ([02 §2.6](02-domain-model.md)). Those
+are comparisons *between* entries, so they only mean anything while one clock stamps them
+all. A printer running a few minutes behind would sort its print before a reconciliation
+that really happened first, dropping the print out of the anchor window and reporting a
+confidence the spool has not earned — silently, and in the flattering direction.
+
+So the machine's own `start_time` and `end_time` are stored as two columns of their own on
+the job ([05 §5.8](05-ha-integration.md)). They are the better measure of *how long a print
+took*, which is a subtraction inside one clock, and they are read for that and nothing else.
+
 **Why automatic here and nowhere else.** Not because the number is measured — it is not. It
 is the slicer's plan, and [01 §1.1](01-vision.md) sets out exactly what that means. It is
 automatic because **the job ran to completion, so the plan was carried out in full**. Plan and

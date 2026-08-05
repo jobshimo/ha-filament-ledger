@@ -13,9 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
+from custom_components.filament_ledger.application.reconcile_spool import ReconcileSpoolCommand
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
 from custom_components.filament_ledger.application.review_queue import OpenPendingReviewCommand
 from custom_components.filament_ledger.domain.event import (
@@ -154,13 +156,83 @@ class TestAutomaticDeduction:
         assert job.ended_at is not None
         assert row["occurred_at"] == job.ended_at.isoformat()
 
+    async def test_the_printers_clock_never_reaches_the_ledgers_ordering(
+        self, ledger: Ledger
+    ) -> None:
+        """The ordering assumption, asserted rather than argued (docs/04 UC-04).
+
+        This machine's clock is a year out — an exaggeration of the minutes a real one
+        drifts, chosen so the failure would be unmissable. The consumption entry must
+        still be dated by this ledger's clock, because `occurred_at` is what every read
+        that orders the ledger sorts on and a foreign clock in that column reorders a
+        print against entries this integration stamped itself.
+        """
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        a_year_late = EPOCH + timedelta(days=365)
+
+        await ledger.use_cases.track_print_job.execute(
+            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=a_year_late)
+        )
+        ledger.clock.advance(minutes=42)
+        job_id = await ledger.use_cases.track_print_job.execute(
+            replace(
+                finished({SLOT_1: Grams.of(10)}),
+                printer_started_at=a_year_late,
+                printer_ended_at=a_year_late + timedelta(minutes=155),
+            )
+        )
+
+        [row] = await consumption_rows(ledger)
+        assert row["occurred_at"] == ledger.clock.now().isoformat()
+        # And the machine's own figures are on the job all the same — kept, not discarded.
+        job = await SqlitePrintJobRepository(ledger.database).get(job_id)
+        assert job is not None
+        assert job.printer_ended_at == a_year_late + timedelta(minutes=155)
+
+    async def test_a_wandering_printer_clock_cannot_move_a_print_past_a_reconciliation(
+        self, ledger: Ledger
+    ) -> None:
+        """The consequence the split exists to prevent, spelled out.
+
+        A reconciliation is the anchor confidence is measured from: everything after it is
+        unaccounted for, everything before it is inside the figure it established
+        ([02 §2.6]). Weigh the spool, then print 300 g of a 1000 g reel — that is 30% drawn
+        since the anchor, which is MEDIUM. Had the printer's clock (a year behind here)
+        dated the print, it would have sorted *before* the reconciliation, fallen out of the
+        anchor window, and left the spool reading HIGH: more confidence than it has earned,
+        which is the flattering direction and the one nobody notices.
+        """
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        # A scale that disagrees by 5 g, which is what makes this a movement at all.
+        await ledger.use_cases.reconcile_spool.execute(
+            ReconcileSpoolCommand(spool_id=spool_id, measured=Grams.of(995), includes_core=False)
+        )
+        ledger.clock.advance(days=1)
+        a_year_early = EPOCH - timedelta(days=365)
+
+        await ledger.use_cases.track_print_job.execute(
+            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=a_year_early)
+        )
+        await ledger.use_cases.track_print_job.execute(
+            replace(
+                finished({SLOT_1: Grams.of(300)}),
+                printer_started_at=a_year_early,
+                printer_ended_at=a_year_early + timedelta(hours=5),
+            )
+        )
+
+        summary = (await ledger.use_cases.queries.detail(spool_id)).summary
+        assert summary.confidence is Confidence.MEDIUM
+
     async def test_consumption_degrades_confidence_by_volume_not_by_kind(
         self, ledger: Ledger
     ) -> None:
-        """PRINT_CONSUMPTION is unattended, but confidence turns on the movement's type,
-        not its source: an automatic deduction never earns LOW — that is reserved for
-        estimates — it only drifts a balance toward MEDIUM once a fifth of the opening
-        weight has been drawn."""
+        """PRINT_CONSUMPTION is unattended, but confidence turns on how much left the spool
+        rather than on who authorised it: a measured deduction drifts a balance to MEDIUM
+        once a fifth of the opening weight has been drawn, and both spools here are inside
+        that band's ends."""
         lightly_used = await a_spool(ledger, label="lightly used")
         heavily_used = await a_spool(ledger, label="heavily used")
         await ledger.use_cases.mount_spool.execute(lightly_used, SLOT_1)

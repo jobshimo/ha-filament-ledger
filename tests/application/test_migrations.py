@@ -951,3 +951,66 @@ class TestMigration0005TeachesTheVoidRowAboutTheUnDiscard:
             assert row["undiscarded_spool"] == 0
         finally:
             await database.close()
+
+
+def _stage_0006(staged: Path) -> None:
+    source = next(MIGRATIONS.glob("0006_*.sql"))
+    (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+class TestMigration0006GivesThePrintersClockItsOwnColumns:
+    """docs/05 §5.8 — the machine's own start and end, beside the ledger's rather than over.
+
+    Additive in the strictest sense: two nullable columns on `print_job`, no backfill, and
+    not one statement touches `movement`. A job recorded before this migration ran has
+    nothing to say about the printer's clock, and NULL is exactly that.
+    """
+
+    async def test_it_applies_to_a_database_populated_in_the_old_shape(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        database, staged = await _staged_at_version_three_for_0005(tmp_path, monkeypatch)
+        try:
+            _stage_0005(staged)
+            assert await database.migrate() == 5
+            await database.execute(LEGACY_JOB, ("job-before-the-upgrade",))
+
+            _stage_0006(staged)
+            assert await database.migrate() == 6
+
+            columns = {
+                row["name"] for row in await database.fetch_all("PRAGMA table_info(print_job)")
+            }
+            assert {"printer_started_at", "printer_ended_at"} <= columns
+            movement_columns = {
+                row["name"] for row in await database.fetch_all("PRAGMA table_info(movement)")
+            }
+            assert "printer_started_at" not in movement_columns
+        finally:
+            await database.close()
+
+    async def test_an_existing_job_says_nothing_about_the_machines_clock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No backfill, and the absence of one is the decision. The ledger's own pair is
+        *not* copied across: two columns holding Home Assistant's timestamps under the
+        printer's name would claim a measurement nobody made, and the duration falls back
+        to that pair anyway — which is what those prints have always been measured by."""
+        database, staged = await _staged_at_version_three_for_0005(tmp_path, monkeypatch)
+        try:
+            _stage_0005(staged)
+            assert await database.migrate() == 5
+            await database.execute(LEGACY_JOB, ("job-before-the-upgrade",))
+
+            _stage_0006(staged)
+            assert await database.migrate() == 6
+
+            row = await database.fetch_one(
+                "SELECT started_at, printer_started_at, printer_ended_at FROM print_job"
+            )
+            assert row is not None
+            assert row["started_at"] == "2026-08-02T12:00:00+00:00"
+            assert row["printer_started_at"] is None
+            assert row["printer_ended_at"] is None
+        finally:
+            await database.close()
