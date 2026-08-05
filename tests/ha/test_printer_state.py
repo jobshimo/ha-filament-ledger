@@ -20,6 +20,8 @@ from homeassistant.core import State
 
 from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId
 from custom_components.filament_ledger.domain.value.location import AmsSlot
+from custom_components.filament_ledger.domain.value.print_event import PrintEnded, PrintStarted
+from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import (
     UNKNOWN_JOB_NAME,
     BambuLabGateway,
@@ -39,6 +41,7 @@ from .test_bambu_gateway import (
     PRINT_ERROR,
     PROGRESS,
     REGISTRY_ROWS,
+    REMAINING_TIME,
     STATUS,
     TOTAL_LAYERS,
     TRAY_1_TAG,
@@ -74,6 +77,9 @@ def wire(harness: Harness, rows: list[dict[str, str]] | None = None) -> None:
     harness.runtime.printer = ReadPrinterState(
         gateway=BambuLabGateway(as_hass(harness.hass)),
         spools=SqliteSpoolRepository(harness.ledger.database),
+        # The real read model over the harness's real ledger, so the accumulated total is
+        # a sum over rows a test wrote rather than over a number a fake agreed to return.
+        queries=harness.ledger.use_cases.queries,
     )
 
 
@@ -140,11 +146,13 @@ class TestPopulated:
             "current_layer",
             "total_layers",
             "job_name",
+            "remaining_minutes",
             "error",
             "online",
             "connection_mode",
             "active_tray",
             "trays",
+            "observed_print_time",
         }
 
     async def test_the_unverified_sensors_serialise_as_null_never_as_a_guess(
@@ -218,6 +226,115 @@ class TestPopulated:
 
         assert trays[0]["status"] == "mounted"
         assert trays[0]["spool_id"] == spool_id
+
+
+class TestRemainingTime:
+    """The one figure the tab shows only while something is printing (docs/14 §14.5)."""
+
+    @pytest.fixture(autouse=True)
+    def _wired(self, harness: Harness) -> None:
+        wire(harness)
+
+    async def test_a_running_job_reports_the_minutes_it_has_left(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        harness.hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, "97", {})
+
+        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] == 97
+
+    async def test_an_idle_printers_zero_is_no_job_rather_than_any_moment_now(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Upstream parks the sensor at zero between prints, so `0` reads identically on a
+        machine that finished last Tuesday and one on its final layer. Rendering `0 min`
+        would claim a print is about to end on a printer nobody is standing at; a dash
+        claims nothing, and the cost is the last sub-minute of a real print."""
+        harness.hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, "0", {})
+
+        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
+
+    async def test_a_sensor_reporting_nothing_at_all_is_null_not_zero(self, ws: WsClient) -> None:
+        """The base fixture never captured this sensor's state, which is the honest shape
+        of a discovered entity that has not reported: null, exactly as for any other."""
+        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
+
+    @pytest.mark.parametrize("reading", ["-5", "soon", "97.0", ""])
+    async def test_a_reading_that_is_not_a_minute_count_is_dropped(
+        self, ws: WsClient, harness: Harness, reading: str
+    ) -> None:
+        """Upstream noise, in every shape it has: a negative countdown, a word, a decimal
+        the reader does not accept, and an empty string. Every one is an absent figure."""
+        harness.hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, reading, {})
+
+        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
+
+
+class TestObservedPrintTime:
+    """This ledger's own hours, labelled as this ledger's own (docs/14 §14.5)."""
+
+    @pytest.fixture(autouse=True)
+    def _wired(self, harness: Harness) -> None:
+        wire(harness)
+
+    async def test_a_ledger_that_has_timed_nothing_reports_no_total(self, ws: WsClient) -> None:
+        """Null rather than zero hours. A fresh install has not watched the printer for no
+        time; it has not watched it at all, and the tab renders nothing rather than a
+        card claiming a machine has never printed."""
+        assert (await ws.result_dict(PRINTER_STATE))["observed_print_time"] is None
+
+    async def test_the_total_carries_the_prints_and_the_day_it_starts_from(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The three figures travel together, because the total alone is an odometer.
+
+        `ha-bambulab` reports no lifetime hours, so this can only ever be a sum over what
+        this ledger recorded — and a number presented without the day it started counting
+        would be read as the machine's own.
+        """
+        first = harness.ledger.clock.now()
+        await _a_timed_job(harness, "one.3mf", minutes=90)
+        harness.ledger.clock.advance(days=2)
+        await _a_timed_job(harness, "two.3mf", minutes=30)
+
+        observed = (await ws.result_dict(PRINTER_STATE))["observed_print_time"]
+
+        assert observed == {
+            "total_minutes": 120,
+            "prints": 2,
+            "since": first.isoformat(),
+        }
+
+    async def test_a_job_the_ledger_could_not_time_still_dates_the_total(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """`since` answers *when did this ledger start watching*, and a print whose
+        duration could not be measured was still watched. Dating the total from the first
+        *measurable* job would quietly shorten the window the figure covers."""
+        first = harness.ledger.clock.now()
+        await _a_timed_job(harness, "lost-its-start.3mf", minutes=0)
+        harness.ledger.clock.advance(days=1)
+        await _a_timed_job(harness, "real.3mf", minutes=45)
+
+        observed = cast(
+            "dict[str, object]", (await ws.result_dict(PRINTER_STATE))["observed_print_time"]
+        )
+
+        assert observed["prints"] == 1
+        assert observed["total_minutes"] == 45
+        assert observed["since"] == first.isoformat()
+
+
+async def _a_timed_job(harness: Harness, name: str, *, minutes: int) -> None:
+    """One print, started and ended through the real use case on the harness's clock.
+
+    `minutes=0` writes the row a restart leaves behind — both timestamps the same moment —
+    which is the row that must not be counted as a zero-length print.
+    """
+    await harness.ledger.use_cases.track_print_job.execute(PrintStarted(name=name))
+    harness.ledger.clock.advance(minutes=minutes)
+    await harness.ledger.use_cases.track_print_job.execute(
+        PrintEnded(outcome=PrintJobState.FINISHED, name=name)
+    )
 
 
 class TestUnavailableSensors:

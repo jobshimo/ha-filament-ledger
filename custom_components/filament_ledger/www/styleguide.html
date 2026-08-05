@@ -208,9 +208,10 @@ const STATS = {
 
 const PRINTER = {
   dormant: false, status: "RUNNING", progress_pct: 42, current_layer: 88, total_layers: 209,
-  job_name: "680106-Box and lid",
+  job_name: "680106-Box and lid", remaining_minutes: 97,
   error: { active: true, code: "216173881625542657" },
   online: true, connection_mode: "LAN", active_tray: 1,
+  observed_print_time: { total_minutes: 3164, prints: 25, since: iso(180) },
   trays: [
     { slot: 1, status: "matched", tag_uid: "A1B2C3D4", name_hint: "Bambu PLA Basic",
       material_hint: "PLA", colour_hint: "#1f8a4c", spool_id: "s-1", spool_name: "Bambu PLA Basic" },

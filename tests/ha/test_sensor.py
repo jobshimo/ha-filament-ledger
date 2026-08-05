@@ -18,7 +18,11 @@ from custom_components.filament_ledger.application.adjust_spool import (
     DiscardFilamentCommand,
     DiscardMode,
 )
-from custom_components.filament_ledger.application.query import LedgerSnapshot, SpoolSummary
+from custom_components.filament_ledger.application.query import (
+    ConfidenceBasis,
+    LedgerSnapshot,
+    SpoolSummary,
+)
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
 from custom_components.filament_ledger.application.review_queue import (
     DismissReviewCommand,
@@ -35,6 +39,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     SlotIndex,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
+from custom_components.filament_ledger.domain.value.movement_type import MovementType
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
@@ -216,6 +221,13 @@ class TestAggregates:
             balance=Grams.of(400),
             state=SpoolState.ACTIVE,
             confidence=Confidence.LOW,
+            confidence_basis=ConfidenceBasis(
+                anchor=MovementType.OPENING_BALANCE,
+                anchored_at=EPOCH,
+                consumed_since=Grams.of(600),
+                estimates_since=1,
+                latest_estimate_at=EPOCH,
+            ),
             movement_count=4,
             last_movement_at=EPOCH,
             has_anomaly=False,

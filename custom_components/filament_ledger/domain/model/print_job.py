@@ -10,7 +10,7 @@ from the same preserved facts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..error import InvalidValueError
 from ..value.grams import Grams
@@ -41,6 +41,19 @@ class PrintJob:
     the searchable HMS quad string is display work for the review card, not a fact about
     the job — and reformatting on the way in would destroy the very verbatimness that
     makes reclassification possible (docs/07-consumption-estimation.md §7.7).
+
+    **Four timestamps, two clocks, and the split is deliberate.** `started_at` and
+    `ended_at` are the ledger's: the moments Home Assistant processed the lifecycle events,
+    stamped from the same `Clock` every movement is stamped from. `printer_started_at` and
+    `printer_ended_at` are the machine's own report of the same two moments, and they are
+    *additional* rather than authoritative. Letting the printer's clock set the ledger's
+    pair would put a foreign clock into `Movement.occurred_at`, which UC-04 derives from
+    `ended_at` — and the ledger orders itself by `occurred_at`
+    (docs/08-data-model.md §8.1). A printer running a few minutes slow would sort its print
+    *before* a reconciliation that happened earlier in real time, which drops that print out
+    of `movements_since_anchor` and hands the spool a confidence it has not earned. The
+    printer's pair is read by `measured_duration` and by nothing else, so no ordering
+    anywhere in the ledger can see it.
     """
 
     id: PrintJobId
@@ -54,10 +67,43 @@ class PrintJob:
     reported_usage: dict[SlotIndex, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
+    printer_started_at: datetime | None = None
+    printer_ended_at: datetime | None = None
     # UC-04's idempotency guard: set in the same transaction as the movements it covers,
     # because a print deducted twice is indistinguishable from a real duplicate after the
     # fact. Carried here from day one so the schema and the entity never disagree.
     consumption_recorded: bool = False
+
+    @property
+    def measured_duration(self) -> timedelta | None:
+        """How long this print actually ran, or `None` when nothing here can say.
+
+        The printer's own pair wins **for a job that reached `FINISHED`**, because there it
+        is the better measurement: the ledger's pair is bounded by when Home Assistant
+        *heard*, so a slow bus, a restart or an integration reload lands in that
+        subtraction and none of it happened to the print. The clearest case is the row a
+        restart leaves behind, where the ledger has no start at all and the machine does.
+
+        **An interrupted job keeps the ledger's pair, and that is not a detail.** Upstream
+        computes its end from the time remaining, so before a job stops that figure is a
+        *prediction* of when it would finish. At a finish the prediction has converged on
+        the present and is a measurement; at a cancellation forty minutes in, it is still
+        pointing at the ending that never happened, and trusting it would report a print
+        as hours longer than it ran. An interrupted print is different in kind — the same
+        distinction docs/adr/0004 rests on — and this is where that costs something.
+
+        Zero is not a duration, in either pair. On the ledger's that excludes exactly one
+        row: the one `TrackPrintJob` writes when a restart swallowed a start and both
+        timestamps became the moment the ending arrived (docs/06-ui-spec.md §6.7). On the
+        printer's it also absorbs the incoherent pair — an ending read while `start_time`
+        had already been reset for the next job — which is why the events record that pair
+        verbatim and leave the sense-making here.
+        """
+        if self.state is PrintJobState.FINISHED:
+            machine = _span(self.printer_started_at, self.printer_ended_at)
+            if machine is not None:
+                return machine
+        return _span(self.started_at, self.ended_at)
 
     def __post_init__(self) -> None:
         if self.layer_reached is not None and self.layer_reached < 0:
@@ -75,3 +121,15 @@ class PrintJob:
             if used.is_negative:
                 msg = f"reported usage for slot {slot} cannot be negative, got {used}"
                 raise InvalidValueError(msg)
+
+
+def _span(start: datetime | None, end: datetime | None) -> timedelta | None:
+    """One clock's elapsed time, or `None` when that pair cannot describe a print.
+
+    Half a pair says nothing, and a pair that does not move forward is not a duration —
+    which covers both the zero-length restart row and a printer whose two moments arrived
+    out of order.
+    """
+    if start is None or end is None or end <= start:
+        return None
+    return end - start

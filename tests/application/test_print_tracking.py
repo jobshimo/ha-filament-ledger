@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -32,7 +33,7 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from .conftest import Ledger
+from .conftest import EPOCH, Ledger
 
 SLOT_1 = SlotIndex(1)
 SLOT_2 = SlotIndex(2)
@@ -61,6 +62,8 @@ def ended(
     total_layers: int | None = 209,
     reported_usage: dict[SlotIndex, Grams] | None = None,
     raw_print_error: int | None = None,
+    printer_started_at: datetime | None = None,
+    printer_ended_at: datetime | None = None,
 ) -> PrintEnded:
     return PrintEnded(
         outcome=outcome,
@@ -71,6 +74,8 @@ def ended(
         reported_usage=reported_usage,
         raw_gcode_state="pause",
         raw_print_error=raw_print_error,
+        printer_started_at=printer_started_at,
+        printer_ended_at=printer_ended_at,
     )
 
 
@@ -184,6 +189,89 @@ class TestAnInterruptedPrint:
         [review] = await SqliteReviewRepository(ledger.database).list_pending()
         assert review.job_id == job.id
         assert review.reason is ReviewReason.FAILED
+
+    async def test_the_printers_own_clock_is_stored_beside_the_ledgers_never_over_it(
+        self, ledger: Ledger
+    ) -> None:
+        """The whole of Part 2's decision, in one assertion pair.
+
+        The machine here says the print ran from 09:12 to 11:47 — nowhere near the fake
+        clock this ledger stamps with — and both facts survive intact. `started_at` and
+        `ended_at` stay this ledger's, because UC-04 derives every movement's `occurred_at`
+        from `ended_at` and the whole ledger orders itself by that column
+        (docs/04 UC-04); the machine's pair lands in two columns nothing compares.
+        """
+        machine_start = datetime(2026, 8, 4, 9, 12, tzinfo=UTC)
+        machine_end = datetime(2026, 8, 4, 11, 47, tzinfo=UTC)
+        await ledger.use_cases.track_print_job.execute(
+            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=machine_start)
+        )
+        ledger.clock.advance(minutes=42)
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, printer_ended_at=machine_end)
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert (job.started_at, job.ended_at) == (EPOCH, ledger.clock.now())
+        assert (job.printer_started_at, job.printer_ended_at) == (machine_start, machine_end)
+        # The measurement the two columns exist for: the machine's, not the 42 minutes
+        # this ledger's own clock happened to advance by.
+        assert job.measured_duration == timedelta(hours=2, minutes=35)
+
+    async def test_the_start_survives_an_ending_that_read_no_start_time(
+        self, ledger: Ledger
+    ) -> None:
+        """The same rule the plan follows. A machine that had already reset `start_time`
+        for the next job would otherwise take this print's start down with it."""
+        machine_start = datetime(2026, 8, 4, 9, 12, tzinfo=UTC)
+        await ledger.use_cases.track_print_job.execute(
+            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=machine_start)
+        )
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, printer_ended_at=datetime(2026, 8, 4, 11, 47, tzinfo=UTC))
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.printer_started_at == machine_start
+
+    async def test_a_cancellation_records_the_machines_claim_without_measuring_by_it(
+        self, ledger: Ledger
+    ) -> None:
+        """Upstream's end is derived from the time remaining, so a cancelled job reports
+        the ending it was heading for rather than the one it had. Both figures are stored —
+        the record keeps claims verbatim — and the duration is the ledger's 42 minutes,
+        not the three hours the machine was still planning on (docs/05 §5.8)."""
+        machine_start = datetime(2026, 8, 4, 9, 12, tzinfo=UTC)
+        would_have_finished = datetime(2026, 8, 4, 14, 30, tzinfo=UTC)
+        await ledger.use_cases.track_print_job.execute(
+            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=machine_start)
+        )
+        ledger.clock.advance(minutes=42)
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.CANCELLED, printer_ended_at=would_have_finished)
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.printer_ended_at == would_have_finished
+        assert job.measured_duration == timedelta(minutes=42)
+
+    async def test_a_machine_that_reported_neither_moment_stores_neither(
+        self, ledger: Ledger
+    ) -> None:
+        """Every job before v1.4 is this shape, and so is every unavailable sensor. Null,
+        never a stand-in from the ledger's own clock — two columns pretending to be the
+        machine's report would be the exact lie the split exists to prevent."""
+        await ledger.use_cases.track_print_job.execute(started())
+
+        await ledger.use_cases.track_print_job.execute(ended())
+
+        [job] = await stored_jobs(ledger)
+        assert job.printer_started_at is None
+        assert job.printer_ended_at is None
+        assert job.measured_duration is None
 
     async def test_an_ending_ends_the_newest_running_job(self, ledger: Ledger) -> None:
         """A stale RUNNING row — an ending that never arrived — must not swallow the

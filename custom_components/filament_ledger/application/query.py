@@ -32,8 +32,12 @@ from ..domain.port.repositories import (
     SpoolRepository,
 )
 from ..domain.service.anomaly_detector import AnomalyDetector
-from ..domain.service.balance_calculator import balance, running_balances
-from ..domain.service.confidence_evaluator import ConfidenceEvaluator
+from ..domain.service.balance_calculator import balance, consumed, running_balances
+from ..domain.service.confidence_evaluator import (
+    ConfidenceEvaluator,
+    anchor_movement,
+    movements_since_anchor,
+)
 from ..domain.value.colour import Colour
 from ..domain.value.confidence import Confidence
 from ..domain.value.grams import Grams
@@ -57,11 +61,59 @@ def describe_location(location: Location) -> dict[str, str | int | None]:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfidenceBasis:
+    """The facts a confidence badge was derived from, so a surface can say why it changed.
+
+    `ConfidenceEvaluator` answers *how much should I trust this number* and returns a level
+    and nothing else — it is a pure domain function and stays one. The question a user
+    actually asks is the next one: **why has it changed?** Answering that means naming the
+    anchor and measuring from it, which is assembly rather than judgement, so it happens
+    here. docs/adr/0007 already settled the same boundary for void filtering: the domain
+    service stays pure, and the application prepares what it is fed and what is shown beside
+    its answer.
+
+    Nothing here is a second opinion. The window is the evaluator's own
+    `movements_since_anchor`, over the same movements the level was evaluated on, so the
+    sentence and the badge cannot disagree.
+    """
+
+    # The anchor's type, which is what distinguishes *since you weighed it* from *since you
+    # registered it* — two different claims, and the user deserves to know which one they
+    # are being given. Always `RECONCILIATION` or `OPENING_BALANCE`; `None` only for a
+    # history that carries no anchor at all.
+    anchor: MovementType | None
+    anchored_at: datetime | None
+    consumed_since: Grams
+    # How many approved estimates have landed since the anchor, and when the most recent one
+    # did. Zero is the ordinary case and is what tells a surface that the level was reached
+    # by consumption rather than by an estimate.
+    estimates_since: int
+    latest_estimate_at: datetime | None
+
+
+def confidence_basis(movements: Sequence[Movement]) -> ConfidenceBasis:
+    """Read the same window `ConfidenceEvaluator` reads, and report what is in it."""
+    since = movements_since_anchor(movements)
+    anchor = anchor_movement(movements)
+    estimates = [movement for movement in since if movement.is_estimate]
+    return ConfidenceBasis(
+        anchor=anchor.type if anchor is not None else None,
+        anchored_at=anchor.occurred_at if anchor is not None else None,
+        consumed_since=consumed(since),
+        estimates_since=len(estimates),
+        latest_estimate_at=max((e.occurred_at for e in estimates), default=None),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class SpoolSummary:
     spool: Spool
     balance: Grams
     state: SpoolState
     confidence: Confidence
+    # Why the level is what it is. Travels with it everywhere, because a badge nothing
+    # explains is a badge the user learns to ignore.
+    confidence_basis: ConfidenceBasis
     movement_count: int
     last_movement_at: datetime | None
     has_anomaly: bool
@@ -69,6 +121,15 @@ class SpoolSummary:
     @property
     def percentage(self) -> int:
         return self.spool.remaining_percentage(self.balance).rounded
+
+    @property
+    def drawn_since_anchor(self) -> Decimal:
+        """What has left the spool since the anchor, as a share of the opening weight.
+
+        The figure the consumption rungs of §2.6 are read against, so a surface can show
+        the reader the same number the rule was applied to rather than a paraphrase.
+        """
+        return self.confidence_basis.consumed_since.ratio_to(self.spool.opening_weight)
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,21 +382,55 @@ class ReviewOutcomes:
 class PrintTime:
     """Measured print time, and how many prints it was measured over.
 
-    Derived from `print_job.started_at`/`ended_at` — both real columns since migration
-    0001 — so this is a measurement, not an estimate. It covers **only jobs with a
-    positive duration**, which excludes exactly one thing: the row `TrackPrintJob` writes
-    when a restart swallowed a print's start and `started_at` and `ended_at` are both the
-    moment the ending arrived. That row's duration is zero, and zero is not how long a
-    print took. `prints` travels beside the total so the panel can say what the average is
-    an average *of* rather than implying it covers every job in the period.
+    Every duration comes from `PrintJob.measured_duration`, so this is a measurement and
+    never an estimate: the printer's own `start_time`/`end_time` pair for a job that ran to
+    completion, and the ledger's own `started_at`/`ended_at` — real columns since migration
+    0001 — for everything else. It covers **only jobs with a positive duration**,
+    which excludes the row `TrackPrintJob` writes when a restart swallowed a print's start
+    and both of its timestamps became the moment the ending arrived. That row's duration is
+    zero, and zero is not how long a print took. `prints` travels beside the total so the
+    panel can say what the average is an average *of* rather than implying it covers every
+    job in the period.
     """
 
     total: timedelta
     prints: int
 
+    @classmethod
+    def of(cls, jobs: Sequence[PrintJob]) -> PrintTime | None:
+        """Sum what can be measured, or `None` when nothing can.
+
+        **The one accumulator.** The Stats card sums a period's jobs and the Printer tab
+        sums every job the ledger holds; two accumulators would be two answers to one
+        question, and they would eventually disagree about which rows count.
+        """
+        durations = [duration for job in jobs if (duration := job.measured_duration) is not None]
+        if not durations:
+            return None
+        return cls(total=sum(durations, timedelta()), prints=len(durations))
+
     @property
     def average(self) -> timedelta:
         return self.total / self.prints
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedPrintTime:
+    """Every print this ledger has ever timed, and the day it started counting.
+
+    Deliberately **not** the machine's lifetime hours. `ha-bambulab` exposes no sensor for
+    those, so a figure presented as an odometer could only be this sum wearing a label it
+    has not earned — one that quietly began the day the integration was installed. `since`
+    is what keeps the claim honest: the earliest print in the ledger, so the panel can say
+    what the total is a total *of* rather than implying it covers the machine's life.
+
+    `since` is the first job **recorded**, not the first job measured. The question it
+    answers is when this ledger started watching, and a job whose duration could not be
+    measured was still watched.
+    """
+
+    measured: PrintTime
+    since: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +495,10 @@ class Queries:
             chapters = await self.open_chapters()
         history = await self.movements.list_for_spool(spool.id)
         current = balance(history)
+        # One filtered view of the history, read by both the level and the reason for it.
+        # Two calls to `chapters.visible` would be two chances for the sentence to describe
+        # a window the badge was not evaluated over.
+        accounted = chapters.visible(history)
         return SpoolSummary(
             spool=spool,
             balance=current,
@@ -411,8 +510,9 @@ class Queries:
             # at the application layer — `ConfidenceEvaluator` stays pure, an accepted
             # cost recorded in docs/adr/0007.
             confidence=self.confidence.evaluate(
-                movements=chapters.visible(history), opening_weight=spool.opening_weight
+                movements=accounted, opening_weight=spool.opening_weight
             ),
+            confidence_basis=confidence_basis(accounted),
             # The count is of the whole history: it is what the detail view renders and
             # what SEALED is derived from, and hiding rows from it would make a spool
             # with one voided print read as never used.
@@ -632,7 +732,10 @@ class Queries:
         since = period.since(self.clock.now())
         chapters = await self.open_chapters()
 
-        consumed = Grams.zero()
+        # `used` rather than `consumed`: the module-level `consumed()` is the domain sum over
+        # one spool's window, and a local of the same name inside a period-wide aggregation
+        # would read as that function to anyone skimming.
+        used = Grams.zero()
         wasted = Grams.zero()
         by_colour: dict[Colour, Grams] = {}
         by_material: dict[str, Grams] = {}
@@ -653,7 +756,7 @@ class Queries:
             if movement.type in _WASTE_TYPES:
                 wasted = wasted + amount
             elif movement.type in _CONSUMPTION_TYPES:
-                consumed = consumed + amount
+                used = used + amount
                 by_colour[spool.colour] = by_colour.get(spool.colour, Grams.zero()) + amount
                 material = spool.material.display_name
                 by_material[material] = by_material.get(material, Grams.zero()) + amount
@@ -661,16 +764,11 @@ class Queries:
                     per_job[movement.job_id] = per_job.get(movement.job_id, Grams.zero()) + amount
 
         jobs = await self.jobs.list_in_period(since)
-        durations = [
-            job.ended_at - job.started_at
-            for job in jobs
-            if job.ended_at is not None and job.ended_at > job.started_at
-        ]
 
         return StatisticsView(
             period=period,
             since=since,
-            consumed=consumed,
+            consumed=used,
             wasted=wasted,
             prints=PrintOutcomes(
                 finished=_count(jobs, PrintJobState.FINISHED),
@@ -687,12 +785,30 @@ class Queries:
                 for material, amount in _descending(by_material)
             ],
             top_prints=await self._top_prints(per_job),
-            print_time=(
-                PrintTime(total=sum(durations, timedelta()), prints=len(durations))
-                if durations
-                else None
-            ),
+            print_time=PrintTime.of(jobs),
         )
+
+    async def observed_print_time(self) -> ObservedPrintTime | None:
+        """Every print this ledger has ever timed — the Printer tab's total (docs/14 §14.5).
+
+        The same sum `statistics` shows for a period, with no period at all. `None` when
+        nothing has a measurable duration, which is how every read model here declines to
+        invent a metric it cannot support.
+
+        One unbounded pass over `print_job`, which is the read `statistics(ALL_TIME)` has
+        always performed and is affordable for the same reason: a heavy household prints a
+        few hundred times a year, and the table holds one narrow row each (docs/08 §8.5).
+        It runs on every printer push, so the cost is worth naming rather than assuming —
+        should a ledger ever grow past that, the answer is a stored running total, not a
+        second accumulator disagreeing with this one.
+        """
+        jobs = await self.jobs.list_in_period(None)
+        measured = PrintTime.of(jobs)
+        if measured is None:
+            return None
+        # `list_in_period` answers oldest first, so the first row is the first print this
+        # ledger ever saw — the honest anchor for a total that is not the machine's own.
+        return ObservedPrintTime(measured=measured, since=jobs[0].started_at)
 
     async def _review_outcomes(self, since: datetime | None) -> ReviewOutcomes:
         resolved = await self.reviews.list_resolved(since)

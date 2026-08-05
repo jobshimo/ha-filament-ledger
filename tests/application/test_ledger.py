@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from functools import partial
 from pathlib import Path
 
@@ -58,6 +59,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     TagUid,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
+from custom_components.filament_ledger.domain.value.movement_type import MovementType
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
 from custom_components.filament_ledger.infrastructure.ha.serialisers import (
     stock_grams,
@@ -177,6 +179,112 @@ class TestReconciliation:
         assert (await ledger.use_cases.queries.detail(spool_id)).summary.confidence is (
             Confidence.HIGH
         )
+
+
+class TestConfidenceExplainsItself:
+    """A badge that changes for a reason nothing on screen names teaches the user to
+    ignore it. The level says how much to trust the balance; the basis says why, and both
+    are read off the same window so they cannot disagree.
+    """
+
+    async def test_a_fresh_spool_is_anchored_on_its_own_registration(self, ledger: Ledger) -> None:
+        """*Since you registered it* — the honest claim for a spool never weighed, and a
+        different claim from *since you weighed it*."""
+        spool_id = await a_spool(ledger)
+        basis = (await ledger.use_cases.queries.detail(spool_id)).summary.confidence_basis
+
+        assert basis.anchor is MovementType.OPENING_BALANCE
+        assert basis.anchored_at == ledger.clock.now()
+        assert basis.consumed_since == Grams.zero()
+        assert basis.estimates_since == 0
+        assert basis.latest_estimate_at is None
+
+    async def test_it_counts_what_has_left_the_spool_since_that_anchor(
+        self, ledger: Ledger
+    ) -> None:
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=spool_id, amount=Grams.of(-300), reason="spent")
+        )
+
+        summary = (await ledger.use_cases.queries.detail(spool_id)).summary
+        assert summary.confidence is Confidence.MEDIUM
+        assert summary.confidence_basis.consumed_since == Grams.of(300)
+        # The same figure the rule was applied to, not a paraphrase of it.
+        assert summary.drawn_since_anchor == Decimal("0.3")
+
+    async def test_weighing_the_spool_moves_the_anchor_and_empties_the_window(
+        self, ledger: Ledger
+    ) -> None:
+        """The claim changes from *since you registered it* to *since you weighed it*, and
+        the count starts again — which is exactly why the badge returns to HIGH."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=spool_id, amount=Grams.of(-300), reason="spent")
+        )
+        ledger.clock.advance(days=3)
+        await ledger.use_cases.reconcile_spool.execute(
+            ReconcileSpoolCommand(spool_id=spool_id, measured=Grams.of(940))
+        )
+
+        basis = (await ledger.use_cases.queries.detail(spool_id)).summary.confidence_basis
+        assert basis.anchor is MovementType.RECONCILIATION
+        assert basis.anchored_at == ledger.clock.now()
+        assert basis.consumed_since == Grams.zero()
+
+    async def test_use_after_the_weighing_is_measured_from_the_weighing(
+        self, ledger: Ledger
+    ) -> None:
+        """Not from registration. A spool weighed at 690 g and then drawn 50 g has 50 g
+        unaccounted for, and saying 350 g would be describing history the scale settled."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=spool_id, amount=Grams.of(-300), reason="spent")
+        )
+        await ledger.use_cases.reconcile_spool.execute(
+            ReconcileSpoolCommand(spool_id=spool_id, measured=Grams.of(940))
+        )
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=spool_id, amount=Grams.of(-50), reason="bracket")
+        )
+
+        summary = (await ledger.use_cases.queries.detail(spool_id)).summary
+        assert summary.confidence_basis.consumed_since == Grams.of(50)
+        assert summary.confidence is Confidence.HIGH
+
+    async def test_a_correction_that_adds_filament_back_is_not_negative_consumption(
+        self, ledger: Ledger
+    ) -> None:
+        """`consumed` counts what left, and increases are ignored rather than netted off:
+        an adjustment that puts 20 g back does not mean 20 g fewer were printed."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=spool_id, amount=Grams.of(-300), reason="spent")
+        )
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=spool_id, amount=Grams.of(20), reason="miscounted")
+        )
+
+        basis = (await ledger.use_cases.queries.detail(spool_id)).summary.confidence_basis
+        assert basis.consumed_since == Grams.of(300)
+
+    async def test_the_second_consumption_rung_is_reached_and_explains_itself(
+        self, ledger: Ledger
+    ) -> None:
+        """Past 41% of the opening weight the measured drift plausibly exceeds the delta
+        `AnomalyDetector` already flags, so the level is LOW — and the basis says the level
+        was reached by consumption rather than by an approved estimate, which is the one
+        thing the badge alone cannot tell the reader."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=spool_id, amount=Grams.of(-420), reason="a long print")
+        )
+
+        summary = (await ledger.use_cases.queries.detail(spool_id)).summary
+        assert summary.confidence is Confidence.LOW
+        assert summary.confidence.needs_weighing
+        assert summary.confidence_basis.estimates_since == 0
+        assert summary.confidence_basis.consumed_since == Grams.of(420)
 
 
 class TestDiscard:

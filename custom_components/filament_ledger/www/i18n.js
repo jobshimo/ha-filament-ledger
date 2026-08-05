@@ -68,6 +68,22 @@ const EN = {
   "conf.LOW": "Low",
   "conf.suffix": "[[level]] confidence",
 
+  // -- why the badge reads what it reads (docs/06 §6.5) ------------------------------
+  //
+  // Two self-contained lines rather than one sentence with a hole in the middle: the
+  // reason stands beside the chip, the anchor stands under it. Neither depends on the
+  // other's grammar, so a translation is free to order each as its language wants.
+  //
+  // `conf.anchor.*` is keyed by the anchor's movement type, and the two keys are the two
+  // different claims: *since you weighed it* and *since you registered it* are not the
+  // same promise, and a reader is owed the one that is actually being made.
+  "conf.why.estimate": "an estimate was approved [[when]]",
+  "conf.why.drawn": "[[grams]] g drawn, [[pct]]% of this spool",
+  "conf.why.nothing": "nothing drawn yet",
+  "conf.anchor.RECONCILIATION": "Counting since you weighed it, [[when]]",
+  "conf.anchor.OPENING_BALANCE": "Counting since you registered it, [[when]] · never weighed",
+  "conf.anchor.NONE": "Nothing confirmed to count from",
+
   // -- estimator provenance (docs/06 §6.3) -------------------------------------------
   "est.LINEAR_PROGRESS": "Estimated from progress · approximate",
   "est.NONE": "Reported by the printer · not an estimate",
@@ -574,6 +590,7 @@ const EN = {
   "printer.status": "Status",
   "printer.job": "Job",
   "printer.progress": "Progress",
+  "printer.remaining": "Remaining",
   "printer.layer": "Layer",
   "printer.layerOf": "[[current]] of [[total]]",
   "printer.online": "Online",
@@ -583,6 +600,11 @@ const EN = {
   "printer.no": "no",
   "printer.errorHeading": "Printer error",
   "printer.noError": "No error reported.",
+  "printer.hoursHeading": "Print time recorded here",
+  "printer.hoursObserved":
+    "Measured across [[count]] prints this ledger has recorded since [[since]]. It is not " +
+    "the machine's lifetime counter — the printer reports no such figure — so the total " +
+    "starts the day Filament Ledger was installed, not the day the printer was.",
   "printer.traysHeading": "Trays",
   "printer.trayLedger": "ledger: [[spool]]",
   "printer.trayLedgerEmpty": "ledger: nothing mounted",
@@ -637,6 +659,14 @@ const ES = {
   "conf.MEDIUM": "Media",
   "conf.LOW": "Baja",
   "conf.suffix": "confianza [[level]]",
+
+  // -- por qué la insignia dice lo que dice (docs/06 §6.5) ---------------------------
+  "conf.why.estimate": "se aprobó una estimación [[when]]",
+  "conf.why.drawn": "[[grams]] g consumidos, el [[pct]] % de esta bobina",
+  "conf.why.nothing": "todavía no se ha consumido nada",
+  "conf.anchor.RECONCILIATION": "Contando desde que la pesó, [[when]]",
+  "conf.anchor.OPENING_BALANCE": "Contando desde que la registró, [[when]] · nunca pesada",
+  "conf.anchor.NONE": "No hay ninguna medición confirmada desde la que contar",
 
   // -- procedencia de la estimación --------------------------------------------------
   "est.LINEAR_PROGRESS": "Estimado a partir del progreso · aproximado",
@@ -1139,6 +1169,7 @@ const ES = {
   "printer.status": "Estado",
   "printer.job": "Trabajo",
   "printer.progress": "Progreso",
+  "printer.remaining": "Restante",
   "printer.layer": "Capa",
   "printer.layerOf": "[[current]] de [[total]]",
   "printer.online": "En línea",
@@ -1148,6 +1179,12 @@ const ES = {
   "printer.no": "no",
   "printer.errorHeading": "Error de la impresora",
   "printer.noError": "No se informa de ningún error.",
+  "printer.hoursHeading": "Tiempo de impresión registrado aquí",
+  "printer.hoursObserved":
+    "Medido sobre [[count]] impresiones que este registro ha guardado desde el [[since]]. " +
+    "No es el contador de vida de la máquina: la impresora no informa esa cifra, así que " +
+    "el total empieza el día en que se instaló Filament Ledger, no el día en que se " +
+    "estrenó la impresora.",
   "printer.traysHeading": "Bandejas",
   "printer.trayLedger": "registro: [[spool]]",
   "printer.trayLedgerEmpty": "registro: nada montado",

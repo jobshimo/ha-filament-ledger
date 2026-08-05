@@ -354,8 +354,11 @@ renegotiating them.
   writes two linked entries. Restoring writes a reinstatement. You can always read what happened
   *and* what you decided about what happened —
   [ADR-0007 — Corrections are more history](docs/adr/0007-corrections-are-more-history.md).
-- **Confidence travels with the number.** A balance anchored by a fresh weighing is `HIGH`. One
-  that has taken an approved estimate since is `LOW`, and says so on every surface that shows it.
+- **Confidence travels with the number, and says why.** A balance anchored by a fresh weighing
+  is `HIGH`. One that has taken an approved estimate since is `LOW`, and so is one drawn far
+  enough past its last weighing that the accumulated drift is worth checking. The dot appears on
+  every surface that shows a balance; the spool's own page adds the sentence behind it —
+  *301 g drawn, 30% of this spool · counting since you weighed it, 3 days ago*.
 
 Internally everything is integer milligrams. Rounding is a display concern and never touches a
 stored value.

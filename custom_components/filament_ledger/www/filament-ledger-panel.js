@@ -1863,6 +1863,57 @@ class FilamentLedgerPanel extends HTMLElement {
     return `<span class="conf ${CONFIDENCE_CLASS[level] ?? ""}"><i></i>${text}</span>`;
   }
 
+  /**
+   * The badge and the two lines that explain it, as docs/06 §6.5 draws them: the reason
+   * beside the chip, the anchor under it.
+   *
+   * A level on its own is a colour that changes for reasons the reader cannot see — and
+   * LOW is reached two ways, so the badge alone cannot even say which rule fired. The
+   * reason names it; the anchor says *since when*, and whether that anchor is a weighing
+   * or a registration, because the two are different promises.
+   *
+   * Every fact here was measured server-side (`ConfidenceBasis`, `application/query.py`)
+   * over the same window the level was evaluated on, so the sentence cannot describe a
+   * spool the badge does not. What is left in the panel is choosing strings — the only
+   * part of the explanation that belongs in the layer with no test harness (docs/14 §14.8).
+   *
+   * `when()` returns an already-safe fragment, so it goes in through `fill`; the two
+   * figures are wire numbers and go in as parameters, where `t` escapes them.
+   */
+  confidenceBlock(spool) {
+    const t = this._t;
+    const chip = this.confidenceChip(spool.confidence, true);
+    const basis = spool.confidence_basis;
+    if (!basis) return `<div class="foot">${chip}</div>`;
+
+    let reason;
+    if (basis.estimates_since) {
+      reason = fill(t("conf.why.estimate"), "when", this.when(basis.latest_estimate_at));
+    } else if (basis.consumed_since_g > 0) {
+      reason = t("conf.why.drawn", {
+        grams: basis.consumed_since_g,
+        pct: basis.consumed_since_pct,
+      });
+    } else {
+      reason = t("conf.why.nothing");
+    }
+
+    // A history with no anchor at all names none rather than inventing one — the same
+    // honesty the rest of the panel shows a figure the printer did not report. An anchor
+    // type the table does not know renders escaped rather than as its own key, exactly as
+    // `movementLabel` does: a key is a code constant, and an anchor type is wire data.
+    const key = `conf.anchor.${basis.anchor ?? "NONE"}`;
+    const template = t(key);
+    const anchor =
+      template === key
+        ? esc(basis.anchor)
+        : fill(template, "when", this.when(basis.anchored_at));
+
+    return `
+      <div class="foot">${chip}<span class="muted">· ${reason}</span></div>
+      <div class="conf-anchor">${anchor}</div>`;
+  }
+
   // -- AMS ---------------------------------------------------------------------------
 
   amsView() {
@@ -3030,7 +3081,7 @@ class FilamentLedgerPanel extends HTMLElement {
             <div class="facts">${this.locationLabel(spool.location)} · ${this.stateLabel(spool.state)}${
               spool.tag_uid ? ` · ${t("dlg.tag")} ${esc(spool.tag_uid)}` : ""
             }</div>
-            <div class="foot">${this.confidenceChip(spool.confidence, true)}</div>
+            ${this.confidenceBlock(spool)}
           </div>
         </div>
 
@@ -3230,6 +3281,7 @@ class FilamentLedgerPanel extends HTMLElement {
       `<section class="stack">
         ${this.printerFacts(state)}
         ${this.printerError(state.error)}
+        ${this.printerHours(state.observed_print_time)}
         ${this.printerTrays(state.trays ?? [])}
         <p class="muted small">${t("printer.readOnly")}</p>
         <p class="muted small">${t("printer.pendingSensors")}</p>
@@ -3254,11 +3306,16 @@ class FilamentLedgerPanel extends HTMLElement {
             total: state.total_layers ?? DASH,
           });
     const online = state.online == null ? DASH : t(state.online ? "printer.yes" : "printer.no");
+    // Null covers both "the sensor said nothing" and "nothing is printing" — the gateway
+    // decides which, so there is no idle case to guess at here (docs/14 §14.5).
+    const remaining =
+      state.remaining_minutes == null ? DASH : this.duration(state.remaining_minutes);
     return `
       <div class="card pr-facts">
         ${this.printerFact(t("printer.status"), state.status == null ? DASH : esc(state.status))}
         ${this.printerFact(t("printer.job"), state.job_name == null ? DASH : esc(state.job_name))}
         ${this.printerFact(t("printer.progress"), progress)}
+        ${this.printerFact(t("printer.remaining"), remaining)}
         ${this.printerFact(t("printer.layer"), layer)}
         ${this.printerFact(t("printer.online"), online)}
         ${this.printerFact(
@@ -3274,6 +3331,42 @@ class FilamentLedgerPanel extends HTMLElement {
 
   printerFact(key, value) {
     return `<div class="pr-fact"><div class="k">${key}</div><div class="v">${value}</div></div>`;
+  }
+
+  /**
+   * How long this ledger has watched the machine print — never the machine's own hours.
+   *
+   * The printer reports no lifetime counter, so this total is a sum over the job rows the
+   * ledger holds, and the sentence under it says exactly that: how many prints it covers
+   * and which day it starts from. A big number with no such line would read as an
+   * odometer, which is the fabricated authority this project argues against.
+   *
+   * Absent rather than zeroed when the ledger has timed nothing, for the reason the Stats
+   * card gives: a figure the data cannot support is not improved by drawing a box around it.
+   */
+  printerHours(observed) {
+    if (!observed) return "";
+    const t = this._t;
+    return `
+      <div class="card pr-hours">
+        <h3 class="pr-h">${t("printer.hoursHeading")}</h3>
+        <div class="v">${this.duration(observed.total_minutes)}</div>
+        <p class="muted small">${t("printer.hoursObserved", {
+          count: observed.prints,
+          since: this.day(observed.since),
+        })}</p>
+      </div>`;
+  }
+
+  /**
+   * One date, in the reader's locale. Absolute on purpose, unlike `when()`: this one ends
+   * a sentence that begins "since", and "since 12 days ago" is not a date.
+   *
+   * Returned unescaped because every caller passes it to `t()`, which escapes what it
+   * substitutes — escaping here as well would print the entities.
+   */
+  day(iso) {
+    return new Date(iso).toLocaleDateString();
   }
 
   /**
@@ -4297,6 +4390,9 @@ button.link:hover { color: var(--fl-accent-bright); }
 .conf.high { color: var(--fl-ok); background: var(--fl-ok-soft); } .conf.high i { background: var(--fl-ok); }
 .conf.med  { color: var(--fl-warn); background: var(--fl-warn-soft); } .conf.med i  { background: var(--fl-warn); }
 .conf.low  { color: var(--fl-bad); background: var(--fl-bad-soft); }   .conf.low i  { background: var(--fl-bad); }
+/* The anchor line, under the badge it dates (06 §6.5). Quieter than the reason beside the
+   chip: it answers "since when", which is context rather than the finding. */
+.conf-anchor { margin-top: 5px; font-size: 12px; color: var(--fl-ink-faint); }
 
 .note { background: var(--fl-surface); border: 1px solid var(--fl-line);
   border-left: 3px solid var(--fl-accent); padding: 12px 16px;
@@ -4634,6 +4730,12 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 .pr-bar .track i { display: block; height: 100%; background: var(--fl-accent); }
 .pr-error { padding: 11px 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   border-left: 3px solid var(--fl-bad); }
+/* The accumulated total, with the sentence that keeps it from reading as an odometer.
+   The caveat is not fine print here — it is the difference between a fact and a claim, so
+   it sits in the same card as the figure and never below the fold. */
+.pr-hours { padding: 15px 18px 16px; }
+.pr-hours .v { font-size: 26px; font-variant-numeric: tabular-nums; }
+.pr-hours p { margin: 8px 0 0; }
 .pr-trays { display: flex; flex-direction: column; }
 .tray .empty-reel { border: 1px dashed var(--fl-line); background: none; }
 
