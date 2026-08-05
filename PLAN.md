@@ -26,7 +26,7 @@ merges first takes `0004`.
 
 ---
 
-## Release 1.1.1 — consolidate
+## Release 1.1.1 — consolidate — **SHIPPED**
 
 Everything already written and verified, plus the two small ones. No new capability.
 
@@ -39,11 +39,12 @@ Everything already written and verified, plus the two small ones. No new capabil
 | `.claude/` out of version control | — | to write |
 | Working documents committed | — | to write |
 
-Closes with the manifest bump and the `v1.1.1` tag.
+Tagged `v1.1.1`; `release.yml` validated the tag against the manifest and published on its own —
+the whole chain rehearsed with real content before anything reaches the HACS store.
 
 ---
 
-## Release 1.2.0 — the panel's shape
+## Release 1.2.0 — the panel's shape — **SHIPPED**
 
 The three requests that are about the panel being usable rather than about the ledger being
 right. Sequenced first because none of them touches the model, so they cannot conflict with the
@@ -57,6 +58,10 @@ model changes that follow.
    glyphs. **[ Finished ]** reconciles to zero — no new movement type, no migration.
 3. **History filters** (request 5). Date, colour, weight above/below, free text over the entry
    name, and one control that clears them. Filtering in SQL, not in the panel.
+
+Tagged `v1.2.0`. The sticky heading turned out to be the table's `<thead>` rather than the panel
+header, which was already sticky and measured as holding — the wrapper that made a sticky heading
+impossible had to go, and did.
 
 ---
 
