@@ -1,7 +1,7 @@
 """What the printer reports about a job's lifecycle, translated to domain terms.
 
 Two moments cross the boundary: a job starting, and a job stopping. Everything here is
-already in the domain's vocabulary — slot indices, grams, a terminal state — because the
+already in the domain's vocabulary — tray references, grams, a terminal state — because the
 gateway translates before anything crosses this line, exactly as it does for
 `TrayReading`. Which bus event fired, which sensor carried each figure, and what the
 per-tray attribute keys looked like are boundary concerns that stay in the adapter
@@ -9,6 +9,13 @@ per-tray attribute keys looked like are boundary concerns that stay in the adapt
 
 Every optional field means *unavailable*, never zero. A printer that reported nothing has
 not reported nothing-was-consumed (docs/03-architecture.md §3.8).
+
+**Both moments name their machine, and the field is required.** The bus carries one event
+type for every printer in the house and the payload names only a device, so *which machine
+said this* is knowledge the adapter has and the receiving use case cannot recover: an
+ending that arrived anonymously would be correlated against whatever job happened to be
+running, which with two printers is a coin toss played with somebody's inventory
+(`application/track_print_job.py`).
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from .grams import Grams
-    from .identifiers import SlotIndex
+    from .identifiers import PrinterSerial, TrayRef
     from .percentage import Percentage
 
 
@@ -31,7 +38,9 @@ if TYPE_CHECKING:
 class PrintStarted:
     """A job began.
 
-    `plan` carries the slicer's per-slot totals when the weight sensor's attributes
+    `printer` is the machine that began it — the module docstring says why it is required.
+
+    `plan` carries the slicer's per-tray totals when the weight sensor's attributes
     already hold them — the same figures `PrintJob.reported_usage` preserves, captured at
     the moment they are known to describe *this* job. `None` records that the breakdown
     never materialised, which is the open Q4 question, not a claim of zero.
@@ -43,7 +52,8 @@ class PrintStarted:
     """
 
     name: str
-    plan: dict[SlotIndex, Grams] | None = None
+    printer: PrinterSerial
+    plan: dict[TrayRef, Grams] | None = None
     printer_started_at: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -57,13 +67,16 @@ class PrintStarted:
 class PrintEnded:
     """A job stopped — finished, cancelled or failed.
 
+    `printer` is the machine that stopped it, and it is what this ending will be correlated
+    against — the module docstring says why it is required.
+
     `outcome` is read off the upstream event type and nothing else (Q1, closed): the
     classification is made by code that reads the MQTT stream for a living, and
     `raw_gcode_state` plus `raw_print_error` travel verbatim so a wrong classification
     stays recoverable (docs/07-consumption-estimation.md §7.7).
 
     The progress figures are the moment's readings, captured because an interrupted job
-    will be estimated from them; `reported_usage` is whatever per-slot figures the weight
+    will be estimated from them; `reported_usage` is whatever per-tray figures the weight
     sensor held when the job ended.
 
     `printer_started_at` and `printer_ended_at` are the machine's own pair, read at the
@@ -80,10 +93,11 @@ class PrintEnded:
 
     outcome: PrintJobState
     name: str
+    printer: PrinterSerial
     layer_reached: int | None = None
     total_layers: int | None = None
     progress: Percentage | None = None
-    reported_usage: dict[SlotIndex, Grams] | None = None
+    reported_usage: dict[TrayRef, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
     printer_started_at: datetime | None = None
@@ -107,10 +121,10 @@ class PrintEnded:
         _refuse_negative_usage(self.reported_usage)
 
 
-def _refuse_negative_usage(usage: dict[SlotIndex, Grams] | None) -> None:
-    for slot, used in (usage or {}).items():
+def _refuse_negative_usage(usage: dict[TrayRef, Grams] | None) -> None:
+    for tray, used in (usage or {}).items():
         if used.is_negative:
-            msg = f"usage for slot {slot} cannot be negative, got {used}"
+            msg = f"usage for {tray} cannot be negative, got {used}"
             raise InvalidValueError(msg)
 
 

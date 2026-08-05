@@ -31,14 +31,13 @@ from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
-    SlotIndex,
     SpoolId,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 
-from .conftest import Ledger
+from .conftest import Ledger, a_tray
 
 BLACK = Colour.parse("000000")
 IVORY = Colour.parse("FFFFF0")
@@ -66,7 +65,7 @@ async def a_finished_print(ledger: Ledger, name: str = "vase_final.gcode.3mf") -
             state=PrintJobState.FINISHED,
             started_at=ledger.clock.now(),
             ended_at=ledger.clock.now(),
-            reported_usage={SlotIndex(1): Grams.of("84.1")},
+            reported_usage={a_tray(1): Grams.of("84.1")},
         )
     )
 
@@ -80,7 +79,7 @@ async def an_approved_estimate(ledger: Ledger, spool_id: SpoolId, job_name: str)
     "Slot 1 of a reviewed print", and the name the user recognises lives only in the
     `print_job` row.
     """
-    await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+    await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
     ledger.clock.advance(hours=1)
     review_id = await ledger.use_cases.open_pending_review.execute(
         OpenPendingReviewCommand(
@@ -91,7 +90,7 @@ async def an_approved_estimate(ledger: Ledger, spool_id: SpoolId, job_name: str)
                 started_at=ledger.clock.now(),
                 layer_reached=71,
                 total_layers=209,
-                reported_usage={SlotIndex(1): Grams.of(209)},
+                reported_usage={a_tray(1): Grams.of(209)},
             ),
             reason=ReviewReason.CANCELLED,
         )
@@ -153,7 +152,7 @@ class TestMovementHistory:
         the name the user recognises. The opening balance on the same spool carries no
         job, and its `job_name` is honestly null rather than an empty string."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         ledger.clock.advance(hours=1)
         await a_finished_print(ledger, name="vase_final.gcode.3mf")
 
@@ -311,7 +310,7 @@ class TestHistoryFilters:
         at it twice.
         """
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         ledger.clock.advance(hours=1)
         await a_finished_print(ledger)
         await an_adjustment(ledger, spool_id, "10", "found a spare length")
@@ -330,7 +329,7 @@ class TestHistoryFilters:
         """The symmetric half of the same rule: a −5 g correction is *smaller* than a
         +10 g one, and both are smaller than the print between them."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         ledger.clock.advance(hours=1)
         await a_finished_print(ledger)
         await an_adjustment(ledger, spool_id, "10", "found a spare length")
@@ -344,7 +343,7 @@ class TestHistoryFilters:
 
     async def test_the_two_weights_together_are_a_band(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         ledger.clock.advance(hours=1)
         await a_finished_print(ledger)
         await an_adjustment(ledger, spool_id, "10", "found a spare length")

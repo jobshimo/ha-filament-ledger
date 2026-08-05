@@ -10,6 +10,7 @@ that is the whole design — an API that could set one would make the ledger dec
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Final
 
@@ -45,22 +46,27 @@ from ...const import (
     DEFAULT_OPENING_WEIGHT_G,
     DOMAIN,
 )
-from ...domain.error import DomainError
+from ...domain.error import DomainError, InvalidValueError
 from ...domain.model.pending_review import ReviewCharge
 from ...domain.port.repositories import MovementFilter
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
     MAX_AMS_SLOT,
+    MIN_AMS_INDEX,
     MIN_AMS_SLOT,
+    AmsIndex,
     MovementId,
+    PrinterSerial,
     ReviewId,
     SlotIndex,
     SpoolId,
     TagSource,
     TagUid,
+    TrayRef,
 )
 from ...domain.value.material import Material, MaterialKind
+from .bambu_gateway import TRACKED_AMS
 from .event_bridge import LEDGER_EVENTS
 from .printer_state import PrinterSnapshot
 from .runtime import LedgerConfigEntry, LedgerRuntime, loaded_entries, runtimes
@@ -77,11 +83,26 @@ from .serialisers import (
 )
 from .tray_sync import TraySyncResult
 
-# A slot key as it crosses the wire. JSON object keys are strings, so `Coerce(int)` is
-# what reads `"2"` — and the range is bounded here as well as in the domain, for the same
-# reason the mount command bounds it: `SlotIndex` raises on garbage, and an unvalidated
-# adapter would turn a typo into a stack trace instead of a message.
-_SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
+#: A tray as it crosses the wire — the three parts of `TrayRef`, bounded here as well as
+#: in the domain for the reason every adapter input is: the value objects raise on garbage,
+#: and an unvalidated adapter turns a typo into a stack trace instead of a message.
+#:
+#: **`printer` and `ams` are optional, and their absence names the tray space this ledger
+#: follows** — the machine it has always talked to, whose serial it may not know, on AMS 1.
+#: A caller written against v1 that sends only a slot therefore still lands in the right
+#: tray *while there is one machine for it to mean*; with several followed the absence is
+#: refused rather than resolved, because every way of picking one is a guess with somebody's
+#: spool on the other end (`LedgerRuntime.tray_printer`). The panel sends all three, because
+#: the printer glance already told it what they are.
+_TRAY = vol.Schema(
+    {
+        vol.Optional("printer"): vol.Any(str, None),
+        vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
+        vol.Required("slot"): vol.All(
+            vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+        ),
+    }
+)
 
 #: How many colours one history filter may name. A household's palette is a few dozen, so
 #: the bound costs nobody anything — and it is here because an unbounded list eventually
@@ -109,6 +130,42 @@ def _charges(entries: list[dict[str, Any]]) -> tuple[ReviewCharge, ...]:
         ReviewCharge(spool_id=SpoolId(entry["spool_id"]), amount=Grams.of(entry["amount_g"]))
         for entry in entries
     )
+
+
+def _tray(runtime: LedgerRuntime, payload: dict[str, Any]) -> TrayRef:
+    """One tray reference, off the wire. `_TRAY` states what an absent half means.
+
+    An absent printer is answered by the runtime, never by a bare sentinel:
+    `LedgerRuntime.tray_printer` says why that distinction decides whether a caller lands
+    in the tray space the ledger actually uses or in a second one where every slot is free.
+    """
+    printer = payload.get("printer")
+    return TrayRef(
+        printer=PrinterSerial(printer) if printer else runtime.tray_printer,
+        ams=AmsIndex(int(payload.get("ams", TRACKED_AMS.value))),
+        slot=SlotIndex(int(payload["slot"])),
+    )
+
+
+def _by_tray[T](
+    runtime: LedgerRuntime, entries: list[dict[str, Any]], read: Callable[[dict[str, Any]], T]
+) -> dict[TrayRef, T]:
+    """A wire list of per-tray entries as a mapping, refusing a tray named twice.
+
+    These three payloads were JSON objects keyed by slot until a tray needed three parts to
+    name it, and an object could not be keyed twice. A list can, and two entries for one
+    tray are two answers to one question: keeping the last silently is how a user's first
+    instruction disappears. Refused as an invalid value, which reaches the panel as a
+    sentence rather than as a stack trace.
+    """
+    mapped: dict[TrayRef, T] = {}
+    for entry in entries:
+        tray = _tray(runtime, entry)
+        if tray in mapped:
+            msg = f"{tray} is named twice in one payload; state it once"
+            raise InvalidValueError(msg)
+        mapped[tray] = read(entry)
+    return mapped
 
 
 def _moment(value: object) -> datetime:
@@ -488,9 +545,10 @@ async def handle_adjust(
     {
         vol.Required("type"): f"{DOMAIN}/spools/mount",
         vol.Required("spool_id"): str,
-        # Bounded here as well as in the domain. `SlotIndex` raises a plain `ValueError`,
-        # which `guarded` deliberately does not catch — an unvalidated adapter would turn a
-        # typo into a stack trace instead of a message.
+        # The tray, in the three parts `_TRAY` documents — and on the same terms: naming
+        # only a slot means the tray space this ledger follows, while there is one.
+        vol.Optional("printer"): vol.Any(str, None),
+        vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
         vol.Required("slot"): vol.All(
             vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
         ),
@@ -502,7 +560,7 @@ async def handle_mount(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     runtime = _runtime(hass)
-    await runtime.use_cases.mount_spool.execute(SpoolId(msg["spool_id"]), SlotIndex(msg["slot"]))
+    await runtime.use_cases.mount_spool.execute(SpoolId(msg["spool_id"]), _tray(runtime, msg))
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"ok": True})
 
@@ -537,14 +595,17 @@ async def handle_reviews_list(
     {
         vol.Required("type"): f"{DOMAIN}/reviews/approve",
         vol.Required("review_id"): str,
-        # All three maps are keyed by slot index, matching docs/02 §2.3: `amounts`
+        # All three are **lists of per-tray entries**, matching docs/02 §2.3: `amounts`
         # overrides the frozen estimates, `assign` gives one tray to one spool whole, and
-        # `charges` states the split for a tray that fed from more than one. Amounts are
-        # bounded non-negative here as well as in the domain — a negative confirmation has
-        # no physical reading.
-        vol.Optional("amounts"): {_SLOT_KEY: vol.All(vol.Coerce(float), vol.Range(min=0))},
-        vol.Optional("assign"): {_SLOT_KEY: str},
-        vol.Optional("charges"): {_SLOT_KEY: [_CHARGE]},
+        # `charges` states the split for a tray that fed from more than one. Lists rather
+        # than the objects keyed by slot these used to be, because a tray takes three
+        # parts to name and a JSON key holds one. Amounts are bounded non-negative here as
+        # well as in the domain — a negative confirmation has no physical reading.
+        vol.Optional("amounts"): [
+            _TRAY.extend({vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0))})
+        ],
+        vol.Optional("assign"): [_TRAY.extend({vol.Required("spool_id"): str})],
+        vol.Optional("charges"): [_TRAY.extend({vol.Required("charges"): [_CHARGE]})],
         vol.Optional("note"): vol.Any(str, None),
     }
 )
@@ -561,17 +622,17 @@ async def handle_reviews_approve(
         ApproveReviewCommand(
             review_id=ReviewId(msg["review_id"]),
             amounts=(
-                {SlotIndex(slot): Grams.of(value) for slot, value in amounts.items()}
+                _by_tray(runtime, amounts, lambda entry: Grams.of(entry["amount_g"]))
                 if amounts is not None
                 else None
             ),
             assignments=(
-                {SlotIndex(slot): SpoolId(spool_id) for slot, spool_id in assign.items()}
+                _by_tray(runtime, assign, lambda entry: SpoolId(entry["spool_id"]))
                 if assign is not None
                 else None
             ),
             charges=(
-                {SlotIndex(slot): _charges(entries) for slot, entries in charges.items()}
+                _by_tray(runtime, charges, lambda entry: _charges(entry["charges"]))
                 if charges is not None
                 else None
             ),

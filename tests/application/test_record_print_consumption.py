@@ -34,8 +34,8 @@ from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
-    SlotIndex,
     SpoolId,
+    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
@@ -49,11 +49,11 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from .conftest import EPOCH, Ledger
+from .conftest import A_PRINTER, EPOCH, Ledger, a_tray
 
-SLOT_1 = SlotIndex(1)
-SLOT_2 = SlotIndex(2)
-SLOT_4 = SlotIndex(4)
+TRAY_1 = a_tray(1)
+TRAY_2 = a_tray(2)
+TRAY_4 = a_tray(4)
 
 
 async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
@@ -68,10 +68,11 @@ async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
     return await ledger.use_cases.register_spool.execute(command)
 
 
-def finished(reported_usage: dict[SlotIndex, Grams] | None = None) -> PrintEnded:
+def finished(reported_usage: dict[TrayRef, Grams] | None = None) -> PrintEnded:
     return PrintEnded(
         outcome=PrintJobState.FINISHED,
         name="bracket_v3.gcode.3mf",
+        printer=A_PRINTER,
         layer_reached=209,
         total_layers=209,
         progress=Percentage.of(100),
@@ -81,11 +82,11 @@ def finished(reported_usage: dict[SlotIndex, Grams] | None = None) -> PrintEnded
 
 
 async def ran_to_completion(
-    ledger: Ledger, reported_usage: dict[SlotIndex, Grams] | None
+    ledger: Ledger, reported_usage: dict[TrayRef, Grams] | None
 ) -> PrintJob:
     """One whole lifecycle through the seam as wired: a start, then the FINISHED ending."""
     await ledger.use_cases.track_print_job.execute(
-        PrintStarted(name="bracket_v3.gcode.3mf", plan=None)
+        PrintStarted(name="bracket_v3.gcode.3mf", printer=A_PRINTER, plan=None)
     )
     ledger.clock.advance(minutes=42)
     job_id = await ledger.use_cases.track_print_job.execute(finished(reported_usage))
@@ -112,9 +113,9 @@ class TestAutomaticDeduction:
         AUTOMATIC and the job's id, the flag set, no review — the job ran to completion,
         so no decision is needed."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
-        job = await ran_to_completion(ledger, {SLOT_1: Grams.of("38.2")})
+        job = await ran_to_completion(ledger, {TRAY_1: Grams.of("38.2")})
 
         [row] = await consumption_rows(ledger)
         assert row["spool_id"] == spool_id
@@ -135,9 +136,9 @@ class TestAutomaticDeduction:
         sensor read 296.56 g total with `{"AMS 1 Tray 4": 296.56}` in its attributes at
         the moment the job finished. That figure, against the spool mounted in slot 4."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_4)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_4)
 
-        await ran_to_completion(ledger, {SLOT_4: Grams.of("296.56")})
+        await ran_to_completion(ledger, {TRAY_4: Grams.of("296.56")})
 
         [row] = await consumption_rows(ledger)
         assert row["spool_id"] == spool_id
@@ -148,9 +149,9 @@ class TestAutomaticDeduction:
         """`occurred_at` is when the print finished — the job's ending, not some later
         moment the ledger happened to write."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
-        job = await ran_to_completion(ledger, {SLOT_1: Grams.of(10)})
+        job = await ran_to_completion(ledger, {TRAY_1: Grams.of(10)})
 
         [row] = await consumption_rows(ledger)
         assert job.ended_at is not None
@@ -168,16 +169,18 @@ class TestAutomaticDeduction:
         print against entries this integration stamped itself.
         """
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         a_year_late = EPOCH + timedelta(days=365)
 
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=a_year_late)
+            PrintStarted(
+                name="bracket_v3.gcode.3mf", printer=A_PRINTER, printer_started_at=a_year_late
+            )
         )
         ledger.clock.advance(minutes=42)
         job_id = await ledger.use_cases.track_print_job.execute(
             replace(
-                finished({SLOT_1: Grams.of(10)}),
+                finished({TRAY_1: Grams.of(10)}),
                 printer_started_at=a_year_late,
                 printer_ended_at=a_year_late + timedelta(minutes=155),
             )
@@ -204,7 +207,7 @@ class TestAutomaticDeduction:
         which is the flattering direction and the one nobody notices.
         """
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         # A scale that disagrees by 5 g, which is what makes this a movement at all.
         await ledger.use_cases.reconcile_spool.execute(
             ReconcileSpoolCommand(spool_id=spool_id, measured=Grams.of(995), includes_core=False)
@@ -213,11 +216,13 @@ class TestAutomaticDeduction:
         a_year_early = EPOCH - timedelta(days=365)
 
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=a_year_early)
+            PrintStarted(
+                name="bracket_v3.gcode.3mf", printer=A_PRINTER, printer_started_at=a_year_early
+            )
         )
         await ledger.use_cases.track_print_job.execute(
             replace(
-                finished({SLOT_1: Grams.of(300)}),
+                finished({TRAY_1: Grams.of(300)}),
                 printer_started_at=a_year_early,
                 printer_ended_at=a_year_early + timedelta(hours=5),
             )
@@ -235,10 +240,10 @@ class TestAutomaticDeduction:
         that band's ends."""
         lightly_used = await a_spool(ledger, label="lightly used")
         heavily_used = await a_spool(ledger, label="heavily used")
-        await ledger.use_cases.mount_spool.execute(lightly_used, SLOT_1)
-        await ledger.use_cases.mount_spool.execute(heavily_used, SLOT_2)
+        await ledger.use_cases.mount_spool.execute(lightly_used, TRAY_1)
+        await ledger.use_cases.mount_spool.execute(heavily_used, TRAY_2)
 
-        await ran_to_completion(ledger, {SLOT_1: Grams.of("38.2"), SLOT_2: Grams.of(250)})
+        await ran_to_completion(ledger, {TRAY_1: Grams.of("38.2"), TRAY_2: Grams.of(250)})
 
         light = await ledger.use_cases.queries.detail(lightly_used)
         heavy = await ledger.use_cases.queries.detail(heavily_used)
@@ -251,8 +256,8 @@ class TestIdempotency:
         """Step 1: the guard is the stored row's flag, not the argument's — a redelivered
         job value claiming to be unrecorded still aborts silently."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        job = await ran_to_completion(ledger, {SLOT_1: Grams.of("38.2")})
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        job = await ran_to_completion(ledger, {TRAY_1: Grams.of("38.2")})
 
         await ledger.use_cases.record_print_consumption.execute(
             replace(job, consumption_recorded=False)
@@ -270,11 +275,11 @@ class TestIdempotency:
         the second delivery finds the row recorded and writes nothing at all."""
         ledger = interleaved_ledger
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", plan=None)
+            PrintStarted(name="bracket_v3.gcode.3mf", printer=A_PRINTER, plan=None)
         )
-        event = finished({SLOT_1: Grams.of("38.2")})
+        event = finished({TRAY_1: Grams.of("38.2")})
 
         await asyncio.gather(
             ledger.use_cases.track_print_job.execute(event),
@@ -294,7 +299,7 @@ class TestTheMissingFigureBranch:
 
     async def test_a_figure_that_never_materialised_becomes_a_review(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
         job = await ran_to_completion(ledger, None)
 
@@ -333,18 +338,18 @@ class TestTheMissingFigureBranch:
         that nothing was consumed — the slots are known, so the review freezes them,
         resolution and all, for the approval flow to fill in."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
-        job = await ran_to_completion(ledger, {SLOT_1: Grams.zero()})
+        job = await ran_to_completion(ledger, {TRAY_1: Grams.zero()})
 
         assert job.consumption_recorded is True
         assert await consumption_rows(ledger) == []
         [review] = await SqliteReviewRepository(ledger.database).list_pending()
         assert review.reason is ReviewReason.UNMAPPED_USAGE
         assert review.estimator_used is EstimatorKind.NONE
-        assert review.estimated_usage == {SLOT_1: Grams.zero()}
+        assert review.estimated_usage == {TRAY_1: Grams.zero()}
         # The spool is a fact, the amount is not: a zero charge is what says so.
-        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.zero()))]
+        assert review.charges == [(TRAY_1, ReviewCharge(spool_id, Grams.zero()))]
 
 
 class TestUnresolvedSlots:
@@ -354,13 +359,13 @@ class TestUnresolvedSlots:
         """Step 7: no spool mounted means no deduction and no guess. The review carries
         the printer's figure with a null resolution — *slot 2 used 20 g and nobody knows
         which spool was in it* — for the user to supply the missing half."""
-        job = await ran_to_completion(ledger, {SLOT_2: Grams.of(20)})
+        job = await ran_to_completion(ledger, {TRAY_2: Grams.of(20)})
 
         assert job.consumption_recorded is True
         assert await consumption_rows(ledger) == []
         [review] = await SqliteReviewRepository(ledger.database).list_pending()
         assert review.reason is ReviewReason.UNMAPPED_USAGE
-        assert review.estimated_usage == {SLOT_2: Grams.of(20)}
+        assert review.estimated_usage == {TRAY_2: Grams.of(20)}
         assert review.charges == []
         assert review.estimator_used is EstimatorKind.NONE
 
@@ -369,9 +374,9 @@ class TestUnresolvedSlots:
         review carrying only its own amount. One failure must not hold the other
         hostage — and both land in the same transaction as the flag."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
-        job = await ran_to_completion(ledger, {SLOT_1: Grams.of(30), SLOT_2: Grams.of(20)})
+        job = await ran_to_completion(ledger, {TRAY_1: Grams.of(30), TRAY_2: Grams.of(20)})
 
         [row] = await consumption_rows(ledger)
         assert row["spool_id"] == spool_id
@@ -379,7 +384,7 @@ class TestUnresolvedSlots:
         assert await balance_of(ledger, spool_id) == Grams.of(970)
         [review] = await SqliteReviewRepository(ledger.database).list_pending()
         assert review.job_id == job.id
-        assert review.estimated_usage == {SLOT_2: Grams.of(20)}
+        assert review.estimated_usage == {TRAY_2: Grams.of(20)}
         assert review.charges == []
         [opened] = ledger.events.of(ReviewOpened)
         assert isinstance(opened, ReviewOpened)
@@ -396,14 +401,14 @@ class TestARaceWithAnInterruptedEnding:
         refusal is a warning — and it must not cost the rest of the pass: the resolved
         slot still deducts, and the job is still marked recorded."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         job = PrintJob(
             id=PrintJobId("job-1"),
             name="bracket_v3.gcode.3mf",
             state=PrintJobState.FINISHED,
             started_at=EPOCH,
             ended_at=EPOCH,
-            reported_usage={SLOT_1: Grams.of(30), SLOT_2: Grams.of(20)},
+            reported_usage={TRAY_1: Grams.of(30), TRAY_2: Grams.of(20)},
         )
         await ledger.use_cases.open_pending_review.execute(
             OpenPendingReviewCommand(job=job, reason=ReviewReason.CANCELLED)
@@ -426,9 +431,9 @@ class TestARaceWithAnInterruptedEnding:
 class TestDepletionAndAnomalies:
     async def test_crossing_zero_announces_the_depletion(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
-        await ran_to_completion(ledger, {SLOT_1: Grams.of(1000)})
+        await ran_to_completion(ledger, {TRAY_1: Grams.of(1000)})
 
         assert await balance_of(ledger, spool_id) == Grams.zero()
         [depleted] = ledger.events.of(SpoolDepleted)
@@ -443,9 +448,9 @@ class TestDepletionAndAnomalies:
         inconsistency rather than refusing the truth — the same policy as every other
         movement-writing use case."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
-        await ran_to_completion(ledger, {SLOT_1: Grams.of(1100)})
+        await ran_to_completion(ledger, {TRAY_1: Grams.of(1100)})
 
         assert await balance_of(ledger, spool_id) == Grams.of(-100)
         [anomaly] = ledger.events.of(AnomalyDetected)

@@ -103,8 +103,11 @@ cancel prints. `ha-bambulab` already does that; duplicating it adds risk with no
 
 **N2 — Slicer integration.** No plugin for Bambu Studio or OrcaSlicer.
 
-**N3 — Multi-printer fleet management.** The domain model does not forbid it, but v1 targets a
-single printer. Fleet support must not be designed for speculatively.
+**N3 — Multi-printer fleet management.** *Delivered in part, and the part matters.* v2.0
+follows every machine `ha-bambulab` describes, into **one** inventory: one ledger, several
+printers ([15 §15.7](15-public-release.md)). What stays out of scope is fleet *management* —
+queues, routing a job to a machine, comparing utilisation. This project records what came off
+a reel; it does not decide which printer should have printed it.
 
 **N4 — Cost accounting.** Price per spool, cost per print, and currency handling are a
 separate concern. The ledger records grams. Money is a later, additive feature.

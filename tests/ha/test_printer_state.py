@@ -18,7 +18,7 @@ from typing import cast
 import pytest
 from homeassistant.core import State
 
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId
+from custom_components.filament_ledger.domain.value.identifiers import SpoolId
 from custom_components.filament_ledger.domain.value.location import AmsSlot
 from custom_components.filament_ledger.domain.value.print_event import PrintEnded, PrintStarted
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
@@ -34,6 +34,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
+from ..application.conftest import A_PRINTER, ANOTHER_PRINTER, a_tray
 from .conftest import Harness, a_spool, as_hass
 from .test_bambu_gateway import (
     CURRENT_LAYER,
@@ -42,17 +43,31 @@ from .test_bambu_gateway import (
     PROGRESS,
     REGISTRY_ROWS,
     REMAINING_TIME,
+    SECOND_STATUS,
+    SECOND_TRAYS,
+    SECOND_WEIGHT,
     STATUS,
     TOTAL_LAYERS,
     TRAY_1_TAG,
     TRAY_ATTRIBUTES,
     plant_registry,
     print_sensor_state,
+    second_printer_rows,
     tray_state,
 )
 from .test_websocket_api import WsClient
 
 PRINTER_STATE = "filament_ledger/printer/state"
+
+
+def machine(payload: dict[str, object], index: int = 0) -> dict[str, object]:
+    """One machine's section of the reply (docs/14 §14.5, amended v2.0).
+
+    Every figure that used to sit at the top level sits in one of these, because the tab
+    renders a section per machine. A household with one printer gets a one-element list and
+    a tab that reads exactly as it always has, which is what `index=0` is asserting for.
+    """
+    return cast("list[dict[str, object]]", payload["machines"])[index]
 
 
 @pytest.fixture
@@ -91,16 +106,24 @@ class TestDormant:
     ) -> None:
         """The harness installs no printer, exactly like a test bench.
 
-        The reply carries **only** the flag: a hull of nulls beside it would invite the
-        panel to render seven dashes for a machine that is not there.
+        The reply carries the flag and `tracking`, and nothing else: a hull of nulls
+        beside it would invite the panel to render seven dashes for a machine that is not
+        there. `tracking` is identity rather than measurement — a ledger with no printer
+        still has a tray space to mount into, and it names nobody rather than guessing.
         """
-        assert await ws.result_dict(PRINTER_STATE) == {"dormant": True}
+        assert await ws.result_dict(PRINTER_STATE) == {
+            "dormant": True,
+            "tracking": {"printers": [], "ams": 1, "unnamed": 0},
+        }
 
     async def test_ha_bambulab_absent_reports_dormant(self, ws: WsClient, harness: Harness) -> None:
         """An empty registry: the reader exists, discovery found nothing under it."""
         wire(harness, rows=[])
 
-        assert await ws.result_dict(PRINTER_STATE) == {"dormant": True}
+        assert await ws.result_dict(PRINTER_STATE) == {
+            "dormant": True,
+            "tracking": {"printers": [], "ams": 1, "unnamed": 0},
+        }
 
     async def test_a_printer_without_an_ams_is_not_dormant(
         self, ws: WsClient, harness: Harness
@@ -116,8 +139,8 @@ class TestDormant:
         payload = await ws.result_dict(PRINTER_STATE)
 
         assert payload["dormant"] is False
-        assert payload["status"] == "finish"
-        assert payload["trays"] == []
+        assert machine(payload)["status"] == "finish"
+        assert machine(payload)["trays"] == []
 
 
 class TestPopulated:
@@ -131,16 +154,23 @@ class TestPopulated:
         payload = await ws.result_dict(PRINTER_STATE)
 
         assert payload["dormant"] is False
-        assert payload["status"] == "finish"
-        assert payload["current_layer"] == 71
-        assert payload["total_layers"] == 209
-        assert payload["progress_pct"] == 34
-        assert payload["job_name"] == "381189-Rails for a shelf v2.gcode"
+        assert machine(payload)["status"] == "finish"
+        assert machine(payload)["current_layer"] == 71
+        assert machine(payload)["total_layers"] == 209
+        assert machine(payload)["progress_pct"] == 34
+        assert machine(payload)["job_name"] == "381189-Rails for a shelf v2.gcode"
 
     async def test_the_payload_carries_exactly_the_documented_keys(self, ws: WsClient) -> None:
-        """A pin on the shape docs/14 §14.5 specifies, so a field cannot quietly vanish."""
-        assert set(await ws.result_dict(PRINTER_STATE)) == {
-            "dormant",
+        """A pin on the shape docs/14 §14.5 specifies, so a field cannot quietly vanish.
+
+        The measured figures moved inside `machines` in v2.0; `observed_print_time` did not,
+        because it is the ledger's sum across every machine and no machine's own.
+        """
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert set(payload) == {"dormant", "tracking", "machines", "observed_print_time"}
+        assert set(machine(payload)) == {
+            "printer",
             "status",
             "progress_pct",
             "current_layer",
@@ -152,7 +182,6 @@ class TestPopulated:
             "connection_mode",
             "active_tray",
             "trays",
-            "observed_print_time",
         }
 
     async def test_the_unverified_sensors_serialise_as_null_never_as_a_guess(
@@ -168,9 +197,9 @@ class TestPopulated:
         """
         payload = await ws.result_dict(PRINTER_STATE)
 
-        assert payload["online"] is None
-        assert payload["connection_mode"] is None
-        assert payload["active_tray"] is None
+        assert machine(payload)["online"] is None
+        assert machine(payload)["connection_mode"] is None
+        assert machine(payload)["active_tray"] is None
 
     async def test_the_error_is_the_binary_state_with_no_invented_code(self, ws: WsClient) -> None:
         """The captured sensor reads `off` and exposes no `code` attribute.
@@ -179,7 +208,9 @@ class TestPopulated:
         deriving one from the flag would put a searchable HMS quad on screen that matches
         nothing.
         """
-        assert (await ws.result_dict(PRINTER_STATE))["error"] == {"active": False, "code": None}
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert machine(payload)["error"] == {"active": False, "code": None}
 
     async def test_an_active_error_crosses_the_wire_as_a_decimal_string(
         self, ws: WsClient, harness: Harness
@@ -193,16 +224,19 @@ class TestPopulated:
 
         payload = await ws.result_dict(PRINTER_STATE)
 
-        assert payload["error"] == {"active": True, "code": str(code)}
-        assert int(cast(str, cast(dict[str, object], payload["error"])["code"])) == code
+        error = cast("dict[str, object]", machine(payload)["error"])
+        assert error == {"active": True, "code": str(code)}
+        assert int(cast(str, error["code"])) == code
 
     async def test_the_trays_carry_the_sync_shape(self, ws: WsClient) -> None:
         """`trays` reuses the per-slot shape of `trays/sync`, computed read-only."""
         payload = await ws.result_dict(PRINTER_STATE)
-        trays = cast("list[dict[str, object]]", payload["trays"])
+        trays = cast("list[dict[str, object]]", machine(payload)["trays"])
 
         assert [tray["slot"] for tray in trays] == [1, 2, 3, 4]
         assert set(trays[0]) == {
+            "printer",
+            "ams",
             "slot",
             "status",
             "tag_uid",
@@ -219,10 +253,10 @@ class TestPopulated:
         """The outcome is *derived* by re-reading the ledger, exactly as the sync strip's
         is — but nothing detected it into place. Here the spool is already in the slot."""
         spool_id = await a_spool(harness.ledger, tag_uid=TRAY_1_TAG)
-        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
 
         payload = await ws.result_dict(PRINTER_STATE)
-        trays = cast("list[dict[str, object]]", payload["trays"])
+        trays = cast("list[dict[str, object]]", machine(payload)["trays"])
 
         assert trays[0]["status"] == "mounted"
         assert trays[0]["spool_id"] == spool_id
@@ -240,7 +274,7 @@ class TestRemainingTime:
     ) -> None:
         harness.hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, "97", {})
 
-        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] == 97
+        assert machine(await ws.result_dict(PRINTER_STATE))["remaining_minutes"] == 97
 
     async def test_an_idle_printers_zero_is_no_job_rather_than_any_moment_now(
         self, ws: WsClient, harness: Harness
@@ -251,12 +285,12 @@ class TestRemainingTime:
         claims nothing, and the cost is the last sub-minute of a real print."""
         harness.hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, "0", {})
 
-        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
+        assert machine(await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
 
     async def test_a_sensor_reporting_nothing_at_all_is_null_not_zero(self, ws: WsClient) -> None:
         """The base fixture never captured this sensor's state, which is the honest shape
         of a discovered entity that has not reported: null, exactly as for any other."""
-        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
+        assert machine(await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
 
     @pytest.mark.parametrize("reading", ["-5", "soon", "97.0", ""])
     async def test_a_reading_that_is_not_a_minute_count_is_dropped(
@@ -266,7 +300,7 @@ class TestRemainingTime:
         the reader does not accept, and an empty string. Every one is an absent figure."""
         harness.hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, reading, {})
 
-        assert (await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
+        assert machine(await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
 
 
 class TestObservedPrintTime:
@@ -330,10 +364,12 @@ async def _a_timed_job(harness: Harness, name: str, *, minutes: int) -> None:
     `minutes=0` writes the row a restart leaves behind — both timestamps the same moment —
     which is the row that must not be counted as a zero-length print.
     """
-    await harness.ledger.use_cases.track_print_job.execute(PrintStarted(name=name))
+    await harness.ledger.use_cases.track_print_job.execute(
+        PrintStarted(name=name, printer=A_PRINTER)
+    )
     harness.ledger.clock.advance(minutes=minutes)
     await harness.ledger.use_cases.track_print_job.execute(
-        PrintEnded(outcome=PrintJobState.FINISHED, name=name)
+        PrintEnded(outcome=PrintJobState.FINISHED, name=name, printer=A_PRINTER)
     )
 
 
@@ -351,17 +387,17 @@ class TestUnavailableSensors:
 
         payload = await ws.result_dict(PRINTER_STATE)
 
-        assert payload["progress_pct"] is None
-        assert payload["current_layer"] == 71
-        assert payload["status"] == "finish"
+        assert machine(payload)["progress_pct"] is None
+        assert machine(payload)["current_layer"] == 71
+        assert machine(payload)["status"] == "finish"
 
     async def test_a_missing_sensor_nulls_its_field(self, ws: WsClient, harness: Harness) -> None:
         del harness.hass.states.by_entity_id[STATUS]
 
         payload = await ws.result_dict(PRINTER_STATE)
 
-        assert payload["status"] is None
-        assert payload["total_layers"] == 209
+        assert machine(payload)["status"] is None
+        assert machine(payload)["total_layers"] == 209
 
     async def test_a_missing_error_sensor_is_null_not_a_healthy_printer(
         self, ws: WsClient, harness: Harness
@@ -370,7 +406,7 @@ class TestUnavailableSensors:
         a printer reporting no error — so it is null, not `active: false`."""
         del harness.hass.states.by_entity_id[PRINT_ERROR]
 
-        assert (await ws.result_dict(PRINTER_STATE))["error"] is None
+        assert machine(await ws.result_dict(PRINTER_STATE))["error"] is None
 
     async def test_a_blank_job_name_falls_back_rather_than_rendering_empty(
         self, ws: WsClient, harness: Harness
@@ -379,7 +415,7 @@ class TestUnavailableSensors:
         a rendering bug rather than as an honest unknown."""
         harness.hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, "   ", {})
 
-        assert (await ws.result_dict(PRINTER_STATE))["job_name"] == UNKNOWN_JOB_NAME
+        assert machine(await ws.result_dict(PRINTER_STATE))["job_name"] == UNKNOWN_JOB_NAME
 
     async def test_zero_total_layers_reads_as_unknown_not_as_a_total(
         self, ws: WsClient, harness: Harness
@@ -387,7 +423,7 @@ class TestUnavailableSensors:
         """Reported before a file is sliced. Zero total layers is not a total."""
         harness.hass.states.by_entity_id[TOTAL_LAYERS] = State(TOTAL_LAYERS, "0", {})
 
-        assert (await ws.result_dict(PRINTER_STATE))["total_layers"] is None
+        assert machine(await ws.result_dict(PRINTER_STATE))["total_layers"] is None
 
 
 class TestReadingWritesNothing:
@@ -419,6 +455,108 @@ class TestReadingWritesNothing:
         await ws.result_dict(PRINTER_STATE)
 
         assert await _ledger_snapshot(harness) == before
+
+
+class TestTracking:
+    """Which machines this ledger follows, said where somebody will read it.
+
+    v1.4 warned about a second printer into a log, then named it on a card as *found and not
+    tracked*. v2.0 follows it instead, so what is left to report is the list itself — and a
+    machine whose serial could not be read, which is the one case that still cannot be
+    followed and the one worth a bug report.
+    """
+
+    async def test_the_followed_machine_is_named(self, ws: WsClient, harness: Harness) -> None:
+        wire(harness)
+
+        tracking = cast("dict[str, object]", (await ws.result_dict(PRINTER_STATE))["tracking"])
+
+        assert tracking == {"printers": ["00000000TESTSER"], "ams": 1, "unnamed": 0}
+
+    async def test_a_machine_with_no_readable_serial_is_counted_not_followed(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The one thing left that this version passes over, and it says so rather than
+        leaving it in a log nobody looks at."""
+        nameless = [
+            {
+                "entity_id": f"sensor.p1s_nameless_{key}",
+                "platform": "bambu_lab",
+                "unique_id": f"_{key}",
+                "translation_key": key,
+                "device_id": "00000000000000000000000000zzzzprn",
+            }
+            for key in ("print_weight", "print_status")
+        ]
+        wire(harness, rows=REGISTRY_ROWS + nameless)
+
+        tracking = cast("dict[str, object]", (await ws.result_dict(PRINTER_STATE))["tracking"])
+
+        assert tracking == {"printers": ["00000000TESTSER"], "ams": 1, "unnamed": 1}
+
+
+class TestTwoMachines:
+    """The tab with a second printer, which is what the release is for."""
+
+    @pytest.fixture(autouse=True)
+    def _wired(self, harness: Harness) -> None:
+        wire(harness, rows=REGISTRY_ROWS + second_printer_rows())
+        harness.hass.states.by_entity_id[SECOND_STATUS] = State(SECOND_STATUS, "idle", {})
+        harness.hass.states.by_entity_id[SECOND_WEIGHT] = State(SECOND_WEIGHT, "0", {})
+        for entity_id in SECOND_TRAYS:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(
+                entity_id,
+                {
+                    **TRAY_ATTRIBUTES["sensor.a1_00000000testser_ams_1_bandeja_1"],
+                    "empty": True,
+                    "tag_uid": None,
+                },
+            )
+
+    async def test_both_machines_are_tracked_in_serial_order(self, ws: WsClient) -> None:
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert payload["tracking"] == {
+            "printers": [ANOTHER_PRINTER.value, A_PRINTER.value],
+            "ams": 1,
+            "unnamed": 0,
+        }
+
+    async def test_each_machine_gets_its_own_section_with_its_own_figures(
+        self, ws: WsClient
+    ) -> None:
+        """A section each, not a picker: the person this tab is for is standing at one of
+        their printers, and a selector would make them identify it by serial first."""
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert [
+            entry["printer"] for entry in cast("list[dict[str, object]]", payload["machines"])
+        ] == [
+            ANOTHER_PRINTER.value,
+            A_PRINTER.value,
+        ]
+        assert machine(payload, 0)["status"] == "idle"
+        assert machine(payload, 1)["status"] == "finish"
+
+    async def test_a_machines_trays_are_its_own(self, ws: WsClient) -> None:
+        """Matching on the slot number alone would put the other machine's tray 3 under
+        this one, which is the confusion this release exists to end."""
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        for index, serial in enumerate((ANOTHER_PRINTER.value, A_PRINTER.value)):
+            trays = cast("list[dict[str, object]]", machine(payload, index)["trays"])
+            assert {tray["printer"] for tray in trays} == {serial}
+            assert [tray["slot"] for tray in trays] == [1, 2, 3, 4]
+
+    async def test_one_total_covers_every_machine(self, ws: WsClient, harness: Harness) -> None:
+        """`observed_print_time` stays outside the sections. The rows written before this
+        ledger recorded which machine ran a job name none, so a per-machine split would file
+        real hours under a heading nobody could read."""
+        await _a_timed_job(harness, "one.3mf", minutes=90)
+
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert cast("dict[str, object]", payload["observed_print_time"])["total_minutes"] == 90
 
 
 async def _ledger_snapshot(harness: Harness) -> list[tuple[str, int, str]]:

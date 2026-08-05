@@ -132,16 +132,67 @@ SEALED ──→ ACTIVE ←──→ DEPLETED
 raises the balance above zero and the state follows. `DISCARDED` is terminal, and it is the
 only transition the system has to actually *perform*, because the physical object is gone.
 
+### `TrayRef`
+
+```
+PrinterSerial  printer   — the machine's own serial, as upstream reports it
+AmsIndex       ams       — which AMS unit, numbered as the printer numbers it (AMS 1 → 1)
+SlotIndex      slot      — the tray position on that unit, 1..4
+```
+
+**What actually identifies a tray.** Through v1 a tray was a bare `SlotIndex`, which was a
+correct decision for as long as there was one machine to hold it and stopped being a true one
+the moment the model could hold two: two printers both have a tray 1, and so do two AMS units
+on one printer. Every surface that used to name a slot names one of these instead — where a
+spool is mounted, the key of a job's per-tray usage, the key of a review's per-tray estimate —
+because a figure keyed by an ambiguous name is a figure that lands on the wrong spool the
+first time a second machine appears.
+
+Ordered, so that every reader — the deduction loop, the review card, the persisted JSON —
+sees one canonical tray order rather than each imposing its own.
+
+**Supported since v2.0.** The gateway resolves every machine the registry describes and keys
+each one's trays under its own serial ([05 §5.8](05-ha-integration.md)); the ledger follows
+all of them. Ordering by printer first is what makes a listing of several machines' trays
+group itself, which is how the AMS view draws a section per machine
+([06 §6.4](06-ui-spec.md)).
+
+`UNIDENTIFIED` is a reserved `PrinterSerial`: the printer a ledger has always talked to but
+never recorded the name of. Migration 0007 writes it into every row that predates the
+reference ([08 §8.2](08-data-model.md)), and the composition root replaces it once discovery
+resolves a real serial. It is **accepted** where `TagUid`'s sixteen-zero sentinel is refused,
+and the difference is the point: sixteen zeros denotes the *absence* of a tag, while this
+denotes a real machine whose name is unknown — and a single-printer ledger has exactly one of
+those, so every row carrying it belongs to the same printer.
+
+**That argument is also its limit, and v2.0 draws the limit explicitly.** The sentinel is
+sound only while there is one machine for it to mean. So discovery gives it to a printer whose
+serial it could not read only when that printer is the only one there is; with several, an
+unnamed machine is not followed at all, because two live machines answering to one name would
+share a single tray space and collide slot for slot. For the same reason, adoption replaces
+the placeholder only when discovery names exactly one machine — with several there is no
+record of which one the rows meant, and picking is a guess with somebody's spools on the other
+end ([08 §8.4](08-data-model.md)).
+
 ### `Location`
 
 ```
 Storage()          — on a shelf, not mounted
-AmsSlot(index)     — mounted in AMS slot 1..4
-ExternalSpool()    — feeding the printer directly, bypassing the AMS
+AmsSlot(tray)      — mounted in the tray this `TrayRef` names
+ExternalSpool(printer)
+                   — feeding that printer directly, bypassing its AMS
 ```
 
 A spool is in exactly one location. This models the physical world truthfully: a spool cannot
 be in two places, and "in storage" is a real location, not the absence of one.
+
+`ExternalSpool(printer)` names its machine, since v2.0. Each printer has exactly one direct
+feed, so an unqualified *external spool* names as many positions as there are printers — and
+the partial unique index stating *the direct feed holds one spool* ([08 §8.1](08-data-model.md))
+would have refused the second machine's reel to a ledger that could truthfully hold it.
+Migration 0008 widened the value and the index together, which is the same reading that
+widened `idx_spool_slot` in 0007, arriving one release later because this is the release where
+a second machine is followed rather than merely representable.
 
 ### `TagUid`
 
@@ -242,9 +293,9 @@ should be doing. It is **mandatory, with no silent default** — see §2.8.
 - `opening_weight > 0`
 - `core_weight >= 0`
 - A spool with `discarded_at` set cannot change location or accept new movements.
-- A spool in `AmsSlot(n)` implies no other spool occupies slot `n`, and at most one spool is
-  in `ExternalSpool()`. *(Enforced by the repository, not the entity — they are
-  cross-aggregate rules.)*
+- A spool in `AmsSlot(t)` implies no other spool occupies the tray `t` names — all three
+  parts of it — and at most one spool is in `ExternalSpool()`. *(Enforced by the repository,
+  not the entity — they are cross-aggregate rules.)*
 
 ### `Movement`
 
@@ -287,10 +338,11 @@ str              name
 PrintJobState    state           -- RUNNING | FINISHED | CANCELLED | FAILED
 datetime         started_at
 datetime?        ended_at
+PrinterSerial?   printer         -- which machine ran it; null only before migration 0008
 int?             layer_reached
 int?             total_layers
 Percentage?      progress
-{SlotIndex: Grams}  reported_usage    -- per-tray, from the printer
+{TrayRef: Grams}    reported_usage    -- per-tray, from the printer
 int?             raw_print_error     -- preserved verbatim; see Q1
 str?             raw_gcode_state     -- preserved verbatim; see Q1
 ```
@@ -300,6 +352,20 @@ is an open question (Q1). Storing the raw values means that when the answer is k
 classification can be applied retroactively to jobs already recorded. Discarding them would
 make that impossible.
 
+**`printer` is what makes an ending correlatable, and null is not a machine.** An upstream
+lifecycle event carries no job id, so an ending is matched to the newest `RUNNING` row — and
+with two machines printing at once that row is as likely to be the other one's job. The
+ending's per-tray figures ride with the match, so a mis-correlation deducts one printer's
+grams from the spools in the other printer's trays and flags neither. Correlation is therefore
+by state **and** by machine ([04 UC-04](04-use-cases.md), `TrackPrintJob`).
+
+Null means the ledger did not record which machine ran the job, which is every row written
+before migration 0008 — and a backfill states what the old rows say ([08 §8.4](08-data-model.md)).
+A nameless row is correlated to by nobody: the single print that spanned the upgrade leaves a
+stale `RUNNING` row, its ending opens a fresh one, and that is the shape a restart already
+produced. Letting it match would buy back one duration by guessing which machine a row that
+explicitly does not say belongs to.
+
 ### `PendingReview`
 
 The approval queue. This entity is the mechanism behind principle #1.
@@ -308,9 +374,9 @@ The approval queue. This entity is the mechanism behind principle #1.
 ReviewId                     id
 PrintJobId                   job_id
 ReviewReason                 reason           -- CANCELLED | FAILED | UNCLASSIFIED | UNMAPPED_USAGE
-{SlotIndex: Grams}           estimated_usage
-{SlotIndex: Grams}?          confirmed_usage  -- user-supplied; overrides estimate
-[(SlotIndex, ReviewCharge)]  charges          -- frozen at creation; empty = no spool was mounted
+{TrayRef: Grams}             estimated_usage
+{TrayRef: Grams}?            confirmed_usage  -- user-supplied; overrides estimate
+[(TrayRef, ReviewCharge)]    charges          -- frozen at creation; empty = no spool was mounted
 EstimatorKind                estimator_used   -- which strategy produced the estimate
 ReviewState                  state            -- PENDING | APPROVED | DISMISSED
 datetime                     opened_at
@@ -323,29 +389,33 @@ ReviewCharge = (SpoolId spool_id, Grams amount)
 The entity holds one `ReviewLine` per tray — its `estimated` figure and its `charges` — and
 the two collections above are how a reader asks for one or the other.
 
-**Amounts are keyed by slot, not by spool.** An earlier draft keyed them by `SpoolId`, which
+**Amounts are keyed by tray, not by spool.** An earlier draft keyed them by `SpoolId`, which
 made the case that most needs a review impossible to represent: [UC-04](04-use-cases.md)
-opens a review precisely when a slot reported usage and *no spool was mounted in it*. There
-is no `SpoolId` to key that entry with. Keying by slot and carrying the attribution separately
+opens a review precisely when a tray reported usage and *no spool was mounted in it*. There
+is no `SpoolId` to key that entry with. Keying by tray and carrying the attribution separately
 lets the review say the only honest thing available — *"slot 3 used 12 g and I do not know
 which spool was in it"* — and lets the user supply the missing half.
+
+The key is a whole `TrayRef` and not a tray number, because a review may sit in the queue for
+days: a bare number would come back ambiguous the moment a second machine existed to have
+one, and the deduction would land on whichever tray 1 the reader happened to resolve.
 
 **The estimate is per tray; the attribution is per charge.** They are different shapes, and
 conflating them was a real limitation rather than a tidy simplification. The printer reports
 one figure per tray and can report nothing else, so `estimated_usage` is a map. But a spool
 that empties mid-print and is replaced in the same tray leaves that one figure belonging to
-*two* spools, and a `{slot: SpoolId}` map cannot say so — it can only charge the whole print
+*two* spools, and a `{tray: SpoolId}` map cannot say so — it can only charge the whole print
 to whichever spool happened to be mounted when the job ended, and credit the one that fed the
 first half with nothing. So the attribution is a list of charges, and a tray may appear in it
 more than once.
 
 The charges are **frozen when the review opens**, not looked up at approval time. A spool
 unmounted between the print ending and the user getting to the queue must not silently
-redirect the deduction to whatever is in the slot now. A tray with a mounted spool freezes as
+redirect the deduction to whatever is in the tray now. A tray with a mounted spool freezes as
 one charge for its whole estimate — the honest proposal for a tray nobody has said was shared.
 
 `ReviewReason` gains `UNMAPPED_USAGE` for a job that reached `FINISHED` with usage on an
-unresolvable slot. The other three describe *why the print stopped*, and this one does not —
+unresolvable tray. The other three describe *why the print stopped*, and this one does not —
 the print did not stop, the inventory was incomplete.
 
 **Invariants**
@@ -539,7 +609,7 @@ MovementRepository
 PrintJobRepository
     async get(PrintJobId) -> PrintJob?
     async save(PrintJob) -> None
-    async list_recent(limit) -> PrintJob[]
+    async list_recent(limit, printer=None) -> PrintJob[]
 
 ReviewRepository
     async get(ReviewId) -> PendingReview?
@@ -548,10 +618,10 @@ ReviewRepository
 
 PrinterGateway
     subscribe(listener) -> None               -- registers a callback; no I/O
-    async current_trays() -> {SlotIndex: TrayReading}
+    async current_trays() -> {TrayRef: TrayReading}
 
 ConsumptionEstimator
-    async estimate(PrintJob) -> {SlotIndex: Grams}
+    async estimate(PrintJob) -> {TrayRef: Grams}
     raises EstimationUnavailable
 
 Clock
@@ -612,7 +682,7 @@ not know HA consumes them.
 
 Two events exist specifically to refuse a guess:
 
-`UnknownSpoolDetected` is raised when an unrecognised RFID appears in a slot. The system
+`UnknownSpoolDetected` is raised when an unrecognised RFID appears in a tray. The system
 **does not auto-create a spool** — a guessed opening weight is a fabricated number, and a
 fabricated number in a ledger is worse than a missing one.
 

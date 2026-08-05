@@ -1,7 +1,7 @@
 """UC-05 · OpenPendingReview, UC-06 · ApproveReview and UC-07 · DismissReview.
 
 The queue is how the system refuses to guess. Anything it cannot settle on its own —
-an interrupted print, usage on a slot nobody mapped — becomes a pending item, and nothing
+an interrupted print, usage on a tray nobody mapped — becomes a pending item, and nothing
 leaves the queue without a recorded decision. Opening changes no balance; only approval
 writes to the ledger, and dismissal writes nothing ever.
 """
@@ -42,7 +42,7 @@ from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import ReviewId, SlotIndex, SpoolId
+from ..domain.value.identifiers import ReviewId, SpoolId, TrayRef
 from ..domain.value.location import AmsSlot
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.review import EstimatorKind, ReviewReason, ReviewState
@@ -58,7 +58,7 @@ class OpenPendingReviewCommand:
     the review inside one unit — so `pending_review.job_id`'s foreign key always has a
     row to point at.
 
-    `amounts` is UC-04's channel: when the finished job already carries per-slot figures,
+    `amounts` is UC-04's channel: when the finished job already carries per-tray figures,
     estimation is skipped — the printer reported, and estimating over a report would
     replace a fact with a guess. `reason` comes classified from the caller, because the
     classification is read off the `ha-bambulab` event type at the gateway, and this layer
@@ -67,7 +67,7 @@ class OpenPendingReviewCommand:
 
     job: PrintJob
     reason: ReviewReason
-    amounts: dict[SlotIndex, Grams] | None = None
+    amounts: dict[TrayRef, Grams] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,9 +82,9 @@ class ApproveReviewCommand:
     """
 
     review_id: ReviewId
-    amounts: dict[SlotIndex, Grams] | None = None
-    assignments: dict[SlotIndex, SpoolId] | None = None
-    charges: dict[SlotIndex, tuple[ReviewCharge, ...]] | None = None
+    amounts: dict[TrayRef, Grams] | None = None
+    assignments: dict[TrayRef, SpoolId] | None = None
+    charges: dict[TrayRef, tuple[ReviewCharge, ...]] | None = None
     note: str | None = None
 
 
@@ -141,7 +141,7 @@ class OpenPendingReview:
     async def _open(
         self,
         command: OpenPendingReviewCommand,
-        estimates: dict[SlotIndex, Grams],
+        estimates: dict[TrayRef, Grams],
         estimator_used: EstimatorKind,
     ) -> ReviewOpened:
         """The transactional core: runs inside a unit of work the caller holds."""
@@ -158,14 +158,14 @@ class OpenPendingReview:
         # was shared. No mounted spool freezes as no charge at all — a fact worth
         # recording, not an error.
         lines: list[ReviewLine] = []
-        for slot in sorted(estimates):
-            mounted = await self.spools.find_by_location(AmsSlot(slot))
+        for tray in sorted(estimates):
+            mounted = await self.spools.find_by_location(AmsSlot(tray))
             lines.append(
                 ReviewLine(
-                    slot=slot,
-                    estimated=estimates[slot],
+                    tray=tray,
+                    estimated=estimates[tray],
                     charges=(
-                        (ReviewCharge(spool_id=mounted.id, amount=estimates[slot]),)
+                        (ReviewCharge(spool_id=mounted.id, amount=estimates[tray]),)
                         if mounted is not None
                         else ()
                     ),
@@ -188,7 +188,7 @@ class OpenPendingReview:
 
     async def _estimates_for(
         self, command: OpenPendingReviewCommand
-    ) -> tuple[dict[SlotIndex, Grams], EstimatorKind]:
+    ) -> tuple[dict[TrayRef, Grams], EstimatorKind]:
         if command.amounts is not None:
             # UC-04 already knows the figures; `NONE` records that no estimator touched
             # them (see `EstimatorKind` for why the same member is also the no-data flag).
@@ -196,11 +196,11 @@ class OpenPendingReview:
         try:
             return await self.estimator.estimate(command.job), self.estimator.kind
         except EstimationUnavailableError:
-            # The review still opens: a zero placeholder per known slot plus the explicit
-            # flag. The user is asked; nothing is guessed — and when not even the slots
+            # The review still opens: a zero placeholder per known tray plus the explicit
+            # flag. The user is asked; nothing is guessed — and when not even the trays
             # are known, the review opens empty, documenting that a loss happened whose
             # size nobody can name.
-            zeros = {slot: Grams.zero() for slot in command.job.reported_usage or {}}
+            zeros = {tray: Grams.zero() for tray in command.job.reported_usage or {}}
             return zeros, EstimatorKind.NONE
 
 
@@ -239,7 +239,7 @@ class ApproveReview:
             # Load every charged spool before the first append, so a bad attribution
             # rejects the approval with nothing written.
             charged: dict[SpoolId, Spool] = {}
-            for _slot, _amount, spool_id in approved.confirmed_charges:
+            for _tray, _amount, spool_id in approved.confirmed_charges:
                 if spool_id in charged:
                     continue
                 spool = await self.spools.get(spool_id)
@@ -265,7 +265,7 @@ class ApproveReview:
                 charged[spool_id] = spool
 
             final_balances: dict[SpoolId, Grams] = {}
-            for slot, amount, spool_id in approved.confirmed_charges:
+            for tray, amount, spool_id in approved.confirmed_charges:
                 await self.movements.append(
                     record(
                         spool_id=spool_id,
@@ -273,7 +273,8 @@ class ApproveReview:
                         amount=-amount,
                         source=MovementSource.USER_CONFIRMED,
                         occurred_at=now,
-                        note=f"Slot {slot} of a reviewed print",
+                        # The single-machine sentence, for the reason UC-04's note gives.
+                        note=f"Slot {tray.slot} of a reviewed print",
                         # Both keys, deliberately: without `review_id` the history can say
                         # *confirmed by you* but not which decision confirmed it, and the
                         # queue stops being an audit trail the moment it resolves.

@@ -22,9 +22,12 @@ from custom_components.filament_ledger.domain.model.spool import register as reg
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    AmsIndex,
+    PrinterSerial,
     PrintJobId,
     SlotIndex,
     SpoolId,
+    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.movement_type import (
@@ -37,6 +40,17 @@ from custom_components.filament_ledger.domain.value.review import EstimatorKind,
 EPOCH = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 A_SPOOL_ID = SpoolId("spool-under-test")
 A_JOB_ID = PrintJobId("job-under-test")
+
+# The machine these tests talk to, anonymised the same way the registry fixture is. One
+# printer, because the ledger still follows one — the second serial exists only where a
+# test is about two of them being different.
+A_PRINTER = PrinterSerial("00000000TESTSER")
+ANOTHER_PRINTER = PrinterSerial("00000000OTHERSR")
+
+
+def a_tray(slot: int, *, printer: PrinterSerial = A_PRINTER, ams: int = 1) -> TrayRef:
+    """One tray, named in full. The default is the machine under test, AMS 1."""
+    return TrayRef(printer=printer, ams=AmsIndex(ams), slot=SlotIndex(slot))
 
 
 def at(days: int = 0, minutes: int = 0) -> datetime:
@@ -116,7 +130,7 @@ def a_cancelled_job(
     *,
     layer_reached: int | None = 71,
     total_layers: int | None = 209,
-    reported_usage: dict[SlotIndex, Grams] | None = None,
+    reported_usage: dict[TrayRef, Grams] | None = None,
 ) -> PrintJob:
     """The worked example from docs/06-ui-spec.md §6.3: bracket_v3, stopped at layer 71."""
     return PrintJob(
@@ -135,7 +149,7 @@ def a_line(slot: int, estimated: float, spool_id: SpoolId | None = A_SPOOL_ID) -
     """One tray as `OpenPendingReview` freezes it: the mounted spool takes the whole
     estimate, and no mounted spool freezes as no charge at all."""
     return ReviewLine(
-        slot=SlotIndex(slot),
+        tray=a_tray(slot),
         estimated=Grams.of(estimated),
         charges=(
             (ReviewCharge(spool_id=spool_id, amount=Grams.of(estimated)),)

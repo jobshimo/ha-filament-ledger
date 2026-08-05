@@ -19,19 +19,23 @@ from dataclasses import dataclass
 
 from ..error import InvalidValueError
 from .colour import Colour
-from .identifiers import SlotIndex, TagUid
+from .identifiers import TagUid, TrayRef
 
 
 @dataclass(frozen=True, slots=True)
 class TrayReading:
     """One tray, as last reported by the printer.
 
+    `tray` names the position in full — printer, AMS unit, tray — because the gateway can
+    only report a reading it can say *where* it came from, and a reading that named a bare
+    tray number would be a reading whose printer the ledger had to assume.
+
     `tag` is `None` for an empty tray and for an occupied tray holding a spool with no
     readable tag — the gateway translates the printer's sixteen-zero sentinel to `None`
     before this object exists, and `TagUid` itself refuses the sentinel as the backstop.
     """
 
-    slot: SlotIndex
+    tray: TrayRef
     tag: TagUid | None
     empty: bool
     name: str | None = None
@@ -53,5 +57,5 @@ class TrayReading:
 
     def __str__(self) -> str:
         if self.empty:
-            return f"tray {self.slot}: empty"
-        return f"tray {self.slot}: {self.tag or 'no tag'}"
+            return f"tray {self.tray.slot}: empty"
+        return f"tray {self.tray.slot}: {self.tag or 'no tag'}"

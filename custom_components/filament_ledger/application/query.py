@@ -51,13 +51,41 @@ from .errors import SpoolNotFoundError
 
 
 def describe_location(location: Location) -> dict[str, str | int | None]:
+    """Where a spool is, in the terms a wire and a screen can both use.
+
+    A mounted spool names its machine — a tray in full with `printer`, `ams` and `slot`, and
+    a direct feed with `printer` alone, because that is what identifies each position.
+    `label` stays the single-machine sentence, and deliberately: it is the fallback the panel
+    uses only for a `kind` it does not know, and the panel builds the reader's sentence from
+    the parts — naming a serial beside every spool in a one-machine household would be noise
+    the reader has to look past (docs/06 §6.4, amended v2.0). `ams` and `slot` are null for
+    the locations that are not a tray, which is the shape `slot` already had.
+    """
     match location:
-        case AmsSlot(slot):
-            return {"kind": "AMS_SLOT", "slot": slot.value, "label": f"AMS slot {slot.value}"}
-        case ExternalSpool():
-            return {"kind": "EXTERNAL_SPOOL", "slot": None, "label": "External spool"}
+        case AmsSlot(tray):
+            return {
+                "kind": "AMS_SLOT",
+                "printer": tray.printer.value,
+                "ams": tray.ams.value,
+                "slot": tray.slot.value,
+                "label": f"AMS slot {tray.slot.value}",
+            }
+        case ExternalSpool(printer):
+            return {
+                "kind": "EXTERNAL_SPOOL",
+                "printer": printer.value,
+                "ams": None,
+                "slot": None,
+                "label": "External spool",
+            }
         case Storage():
-            return {"kind": "STORAGE", "slot": None, "label": "Storage"}
+            return {
+                "kind": "STORAGE",
+                "printer": None,
+                "ams": None,
+                "slot": None,
+                "label": "Storage",
+            }
 
 
 @dataclass(frozen=True, slots=True)

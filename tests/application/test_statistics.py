@@ -36,7 +36,6 @@ from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
     ReviewId,
-    SlotIndex,
     SpoolId,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
@@ -46,7 +45,7 @@ from custom_components.filament_ledger.infrastructure.persistence.print_job_repo
     SqlitePrintJobRepository,
 )
 
-from .conftest import Ledger
+from .conftest import Ledger, a_tray
 
 ALL_TIME = StatisticsPeriod.ALL_TIME
 
@@ -84,7 +83,7 @@ async def a_finished_print(
         state=PrintJobState.FINISHED,
         started_at=started,
         ended_at=ledger.clock.now(),
-        reported_usage={SlotIndex(slot): Grams.of(used)},
+        reported_usage={a_tray(slot): Grams.of(used)},
     )
     await ledger.use_cases.record_print_consumption.execute(job)
     return job.id
@@ -108,7 +107,7 @@ async def an_interrupted_print(
         state=outcome,
         started_at=started,
         ended_at=ledger.clock.now(),
-        reported_usage={SlotIndex(slot): Grams.of(used)},
+        reported_usage={a_tray(slot): Grams.of(used)},
     )
     reason = ReviewReason.CANCELLED if outcome is PrintJobState.CANCELLED else ReviewReason.FAILED
     return await ledger.use_cases.open_pending_review.execute(
@@ -120,7 +119,7 @@ class TestPeriod:
     async def test_the_default_window_is_the_last_thirty_days(self, ledger: Ledger) -> None:
         """A print from six weeks ago is history, not this month's consumption."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, used="100")
         ledger.clock.advance(days=40)
 
@@ -128,7 +127,7 @@ class TestPeriod:
 
     async def test_a_wider_window_reaches_further_back(self, ledger: Ledger) -> None:
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, used="100")
         ledger.clock.advance(days=40)
 
@@ -159,8 +158,8 @@ class TestVisibilityLaw:
         """Registered by mistake means it never happened — not even in a chart."""
         kept = await a_spool(ledger, label="kept", colour=Colour.parse("112233"))
         mistake = await a_spool(ledger, label="mistake", colour=Colour.parse("445566"))
-        await ledger.use_cases.mount_spool.execute(kept, SlotIndex(1))
-        await ledger.use_cases.mount_spool.execute(mistake, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(kept, a_tray(1))
+        await ledger.use_cases.mount_spool.execute(mistake, a_tray(2))
         await a_finished_print(ledger, name="kept.3mf", slot=1, used="100")
         await a_finished_print(ledger, name="mistake.3mf", slot=2, used="250")
         await ledger.use_cases.delete_spool.execute(mistake)
@@ -175,7 +174,7 @@ class TestVisibilityLaw:
         """The voided entry and the reversal that returned its grams drop out together,
         which is arithmetically neutral: they sum to zero."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, name="real.3mf", used="100")
         await a_finished_print(ledger, name="wrong.3mf", used="250")
         history = await ledger.use_cases.queries.detail(spool)
@@ -200,7 +199,7 @@ class TestVisibilityLaw:
         landing inside the window while its sibling falls outside must never bend a bar."""
         charged = await a_spool(ledger, label="charged", colour=Colour.parse("112233"))
         correct = await a_spool(ledger, label="correct", colour=Colour.parse("445566"))
-        await ledger.use_cases.mount_spool.execute(charged, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(charged, a_tray(1))
         await a_finished_print(ledger, name="moved.3mf", slot=1, used="100")
         history = await ledger.use_cases.queries.detail(charged)
         charge = next(
@@ -219,7 +218,7 @@ class TestVisibilityLaw:
 
     async def test_a_discard_is_waste_and_never_consumption(self, ledger: Ledger) -> None:
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, used="100")
         await ledger.use_cases.discard_filament.execute(
             DiscardFilamentCommand(
@@ -239,7 +238,7 @@ class TestVisibilityLaw:
     async def test_a_discarded_spools_prints_still_count(self, ledger: Ledger) -> None:
         """Waste is history. Throwing the reel away does not un-print what it printed."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, used="100")
         await ledger.use_cases.discard_filament.execute(
             DiscardFilamentCommand(
@@ -261,12 +260,12 @@ class TestBreakdowns:
         first = await a_spool(ledger, label="purple A", colour=Colour.parse("8323FF"))
         second = await a_spool(ledger, label="purple B", colour=Colour.parse("8323FF"))
         ivory = await a_spool(ledger, label="ivory", colour=Colour.parse("FFFFF0"))
-        await ledger.use_cases.mount_spool.execute(first, SlotIndex(1))
-        await ledger.use_cases.mount_spool.execute(ivory, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(first, a_tray(1))
+        await ledger.use_cases.mount_spool.execute(ivory, a_tray(2))
         await a_finished_print(ledger, name="a.3mf", slot=1, used="60")
         await a_finished_print(ledger, name="b.3mf", slot=2, used="140")
         await ledger.use_cases.unmount_spool.execute(first)
-        await ledger.use_cases.mount_spool.execute(second, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(second, a_tray(1))
         await a_finished_print(ledger, name="c.3mf", slot=1, used="120")
 
         view = await ledger.use_cases.queries.statistics(ALL_TIME)
@@ -279,8 +278,8 @@ class TestBreakdowns:
     async def test_consumption_groups_by_material_biggest_first(self, ledger: Ledger) -> None:
         pla = await a_spool(ledger, material=Material.of(MaterialKind.PLA))
         petg = await a_spool(ledger, material=Material.of(MaterialKind.PETG))
-        await ledger.use_cases.mount_spool.execute(pla, SlotIndex(1))
-        await ledger.use_cases.mount_spool.execute(petg, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(pla, a_tray(1))
+        await ledger.use_cases.mount_spool.execute(petg, a_tray(2))
         await a_finished_print(ledger, name="a.3mf", slot=1, used="40")
         await a_finished_print(ledger, name="b.3mf", slot=2, used="90")
 
@@ -295,7 +294,7 @@ class TestBreakdowns:
         """Five, not six: a top-consumers table is a glance, and the sixth row is where it
         stops being one."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         for index, used in enumerate((10, 60, 30, 50, 20, 40)):
             await a_finished_print(ledger, name=f"print-{index}.3mf", used=str(used))
 
@@ -314,8 +313,8 @@ class TestBreakdowns:
         charges are added rather than listed twice."""
         first = await a_spool(ledger, colour=Colour.parse("112233"))
         second = await a_spool(ledger, colour=Colour.parse("445566"))
-        await ledger.use_cases.mount_spool.execute(first, SlotIndex(1))
-        await ledger.use_cases.mount_spool.execute(second, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(first, a_tray(1))
+        await ledger.use_cases.mount_spool.execute(second, a_tray(2))
         started = ledger.clock.now()
         ledger.clock.advance(minutes=90)
         await ledger.use_cases.record_print_consumption.execute(
@@ -325,7 +324,7 @@ class TestBreakdowns:
                 state=PrintJobState.FINISHED,
                 started_at=started,
                 ended_at=ledger.clock.now(),
-                reported_usage={SlotIndex(1): Grams.of(30), SlotIndex(2): Grams.of(70)},
+                reported_usage={a_tray(1): Grams.of(30), a_tray(2): Grams.of(70)},
             )
         )
 
@@ -339,7 +338,7 @@ class TestBreakdowns:
 class TestOutcomes:
     async def test_prints_are_counted_by_how_they_ended(self, ledger: Ledger) -> None:
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, name="one.3mf")
         await a_finished_print(ledger, name="two.3mf")
         await an_interrupted_print(ledger, outcome=PrintJobState.CANCELLED, name="three.3mf")
@@ -369,7 +368,7 @@ class TestOutcomes:
     async def test_reviews_are_counted_by_how_they_were_decided(self, ledger: Ledger) -> None:
         """Neither number is derivable from the movements: a dismissal writes none."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         approved = await an_interrupted_print(
             ledger, outcome=PrintJobState.CANCELLED, name="approved.3mf"
         )
@@ -385,7 +384,7 @@ class TestOutcomes:
 
     async def test_a_pending_review_is_not_a_decision(self, ledger: Ledger) -> None:
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await an_interrupted_print(ledger, outcome=PrintJobState.CANCELLED)
 
         reviews = (await ledger.use_cases.queries.statistics(ALL_TIME)).reviews
@@ -398,12 +397,12 @@ class TestOutcomes:
         the user weighing the half-printed part and typing what it came to, which is
         UC-06's whole point."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         review = await an_interrupted_print(
             ledger, outcome=PrintJobState.CANCELLED, name="half.3mf", used="40"
         )
         await ledger.use_cases.approve_review.execute(
-            ApproveReviewCommand(review_id=review, amounts={SlotIndex(1): Grams.of(40)})
+            ApproveReviewCommand(review_id=review, amounts={a_tray(1): Grams.of(40)})
         )
 
         view = await ledger.use_cases.queries.statistics(ALL_TIME)
@@ -417,7 +416,7 @@ class TestPrintTime:
         self, ledger: Ledger
     ) -> None:
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, name="one.3mf", minutes=60)
         await a_finished_print(ledger, name="two.3mf", minutes=120)
 
@@ -435,7 +434,7 @@ class TestPrintTime:
         start. That row's duration is zero, and zero is not how long a print took — so it
         is left out of the measurement rather than dragging the average down."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, name="real.3mf", minutes=60)
         moment = ledger.clock.now()
         await ledger.use_cases.record_print_consumption.execute(
@@ -445,7 +444,7 @@ class TestPrintTime:
                 state=PrintJobState.FINISHED,
                 started_at=moment,
                 ended_at=moment,
-                reported_usage={SlotIndex(1): Grams.of(10)},
+                reported_usage={a_tray(1): Grams.of(10)},
             )
         )
 
@@ -469,7 +468,7 @@ class TestPrintTime:
         the machine says 55, and the machine is the one that printed. The card takes the
         measurement, not the observation (docs/06 §6.7)."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         started = ledger.clock.now()
         job_id = await a_finished_print(ledger, name="one.3mf", minutes=60)
         await _restamp_with_the_machines_clock(ledger, job_id, started, minutes=55)
@@ -486,7 +485,7 @@ class TestPrintTime:
         been excluded. It stops being excluded when the printer reported its own two
         moments — the restart cost the ledger a start, not the machine."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         moment = ledger.clock.now()
         await ledger.use_cases.record_print_consumption.execute(
             PrintJob(
@@ -497,7 +496,7 @@ class TestPrintTime:
                 ended_at=moment,
                 printer_started_at=moment - timedelta(minutes=75),
                 printer_ended_at=moment,
-                reported_usage={SlotIndex(1): Grams.of(10)},
+                reported_usage={a_tray(1): Grams.of(10)},
             )
         )
 
@@ -522,7 +521,7 @@ class TestObservedPrintTime:
         """No cut-off, unlike `statistics`: this figure answers *how long has this ledger
         watched*, and `since` is what stops the answer reading as the machine's odometer."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         first = ledger.clock.now()
         await a_finished_print(ledger, name="old.3mf", minutes=60)
         ledger.clock.advance(days=200)
@@ -539,7 +538,7 @@ class TestObservedPrintTime:
         """A print from last year is outside all three periods and inside this total. The
         two readings disagree on purpose — one is a period, this one is everything."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, name="ancient.3mf", minutes=120)
         ledger.clock.advance(days=200)
 
@@ -593,7 +592,7 @@ class TestEmptiness:
     async def test_a_period_with_one_gram_in_it_is_not_empty(self, ledger: Ledger) -> None:
         """`is_empty` is decided on the exact grams, not on the rounded ones."""
         spool = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool, a_tray(1))
         await a_finished_print(ledger, used="0.4")
 
         view = await ledger.use_cases.queries.statistics(ALL_TIME)

@@ -50,8 +50,8 @@ from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
     ReviewId,
-    SlotIndex,
     SpoolId,
+    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
@@ -68,10 +68,10 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from .conftest import EPOCH, Ledger
+from .conftest import EPOCH, Ledger, a_tray
 
-SLOT_1 = SlotIndex(1)
-SLOT_2 = SlotIndex(2)
+TRAY_1 = a_tray(1)
+TRAY_2 = a_tray(2)
 
 
 async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
@@ -91,7 +91,7 @@ def a_job(
     *,
     layer_reached: int | None = 71,
     total_layers: int | None = 209,
-    reported_usage: dict[SlotIndex, Grams] | None = None,
+    reported_usage: dict[TrayRef, Grams] | None = None,
     state: PrintJobState = PrintJobState.CANCELLED,
 ) -> PrintJob:
     return PrintJob(
@@ -112,7 +112,7 @@ async def opened(
     job: PrintJob,
     *,
     reason: ReviewReason = ReviewReason.CANCELLED,
-    amounts: dict[SlotIndex, Grams] | None = None,
+    amounts: dict[TrayRef, Grams] | None = None,
 ) -> ReviewId:
     return await ledger.use_cases.open_pending_review.execute(
         OpenPendingReviewCommand(job=job, reason=reason, amounts=amounts)
@@ -137,8 +137,8 @@ class TestOpeningAReview:
     async def test_an_interrupted_print_becomes_a_pending_item(self, ledger: Ledger) -> None:
         """UC-05 end to end: estimate frozen, resolution frozen, nothing deducted."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
 
         review_id = await opened(ledger, job)
 
@@ -147,8 +147,8 @@ class TestOpeningAReview:
         assert review.reason is ReviewReason.CANCELLED
         # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool as one
         # charge for the whole estimate.
-        assert review.estimated_usage == {SLOT_1: Grams.of(71)}
-        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.of(71)))]
+        assert review.estimated_usage == {TRAY_1: Grams.of(71)}
+        assert review.charges == [(TRAY_1, ReviewCharge(spool_id, Grams.of(71)))]
         assert review.estimator_used is EstimatorKind.LINEAR_PROGRESS
         # No movement. No balance changed. That is the whole point of PENDING.
         assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == Grams.of(1000)
@@ -161,7 +161,7 @@ class TestOpeningAReview:
     async def test_the_job_row_lands_with_the_review(self, ledger: Ledger) -> None:
         """`pending_review.job_id` has a foreign key; the use case saves the job first so
         the ordering is impossible to get wrong from any caller."""
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
 
         await opened(ledger, job)
 
@@ -174,12 +174,12 @@ class TestOpeningAReview:
         job = a_job(
             layer_reached=None,
             total_layers=None,
-            reported_usage={SLOT_1: Grams.of(120), SLOT_2: Grams.of(30)},
+            reported_usage={TRAY_1: Grams.of(120), TRAY_2: Grams.of(30)},
         )
 
         review = await stored_review(ledger, await opened(ledger, job))
 
-        assert review.estimated_usage == {SLOT_1: Grams.zero(), SLOT_2: Grams.zero()}
+        assert review.estimated_usage == {TRAY_1: Grams.zero(), TRAY_2: Grams.zero()}
         assert review.estimator_used is EstimatorKind.NONE
 
     async def test_no_data_at_all_opens_an_empty_review(self, ledger: Ledger) -> None:
@@ -195,7 +195,7 @@ class TestOpeningAReview:
     async def test_caller_supplied_amounts_skip_the_estimator(self, ledger: Ledger) -> None:
         """UC-04's channel: the printer reported figures, and estimating over a report
         would replace a fact with a guess. The estimator would have said 71 g here."""
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
 
         review = await stored_review(
             ledger,
@@ -203,16 +203,16 @@ class TestOpeningAReview:
                 ledger,
                 job,
                 reason=ReviewReason.UNMAPPED_USAGE,
-                amounts={SLOT_1: Grams.of("12.1")},
+                amounts={TRAY_1: Grams.of("12.1")},
             ),
         )
 
-        assert review.estimated_usage == {SLOT_1: Grams.of("12.1")}
+        assert review.estimated_usage == {TRAY_1: Grams.of("12.1")}
         assert review.estimator_used is EstimatorKind.NONE
 
     async def test_an_unoccupied_slot_freezes_as_unresolved(self, ledger: Ledger) -> None:
         """A fact worth recording, not an error — this is the case the queue exists for."""
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
 
         review = await stored_review(ledger, await opened(ledger, job))
 
@@ -225,7 +225,7 @@ class TestOpeningAReview:
         with pytest.raises(InvalidValueError):
             await ledger.use_cases.open_pending_review.open_within_unit(
                 OpenPendingReviewCommand(
-                    job=a_job(reported_usage={SLOT_1: Grams.of(209)}),
+                    job=a_job(reported_usage={TRAY_1: Grams.of(209)}),
                     reason=ReviewReason.UNMAPPED_USAGE,
                 )
             )
@@ -233,7 +233,7 @@ class TestOpeningAReview:
         assert await SqliteReviewRepository(ledger.database).list_pending() == []
 
     async def test_a_job_cannot_hold_two_open_reviews(self, ledger: Ledger) -> None:
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
         await opened(ledger, job)
 
         with pytest.raises(ReviewAlreadyPendingError):
@@ -243,7 +243,7 @@ class TestOpeningAReview:
 
     async def test_a_resolved_review_clears_the_way_for_a_new_one(self, ledger: Ledger) -> None:
         """The index is partial on PENDING: history accumulates, doubt does not."""
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
         first = await opened(ledger, job)
         await ledger.use_cases.dismiss_review.execute(DismissReviewCommand(review_id=first))
 
@@ -258,7 +258,7 @@ class TestOpeningAReview:
         """`idx_review_job_pending`, checked the way `test_ledger` checks the triggers:
         the use case says it first, in the language of the problem; the index makes it
         true against any writer."""
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
         await opened(ledger, job)
 
         with pytest.raises(Exception, match=r"UNIQUE constraint failed: pending_review\.job_id"):
@@ -278,8 +278,8 @@ class TestApprovingAReview:
         `job_id` and `review_id` — and the balance now rests on an estimate, which is
         exactly what LOW confidence means."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
         ledger.clock.advance(days=2)
 
         await ledger.use_cases.approve_review.execute(
@@ -318,25 +318,25 @@ class TestApprovingAReview:
 
     async def test_the_users_number_overrides_the_estimate(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
 
         await ledger.use_cases.approve_review.execute(
-            ApproveReviewCommand(review_id=review_id, amounts={SLOT_1: Grams.of(31)})
+            ApproveReviewCommand(review_id=review_id, amounts={TRAY_1: Grams.of(31)})
         )
 
         detail = await ledger.use_cases.queries.detail(spool_id)
         assert detail.summary.balance == Grams.of(969)
         review = await stored_review(ledger, review_id)
-        assert review.confirmed_usage == {SLOT_1: Grams.of(31)}
-        assert review.estimated_usage == {SLOT_1: Grams.of(71)}
+        assert review.confirmed_usage == {TRAY_1: Grams.of(31)}
+        assert review.estimated_usage == {TRAY_1: Grams.of(71)}
 
     async def test_an_unresolved_nonzero_slot_blocks_and_nothing_is_written(
         self, ledger: Ledger
     ) -> None:
         """Refused rather than rounded: inventing a spool or dropping a real consumption
         are the two failures this project exists to prevent."""
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
 
         with pytest.raises(UnresolvedSlotError):
             await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
@@ -348,16 +348,16 @@ class TestApprovingAReview:
     async def test_an_assignment_supplies_the_missing_spool(self, ledger: Ledger) -> None:
         """The user is one dropdown away from the answer; this is that dropdown."""
         spool_id = await a_spool(ledger)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
 
         await ledger.use_cases.approve_review.execute(
-            ApproveReviewCommand(review_id=review_id, assignments={SLOT_1: spool_id})
+            ApproveReviewCommand(review_id=review_id, assignments={TRAY_1: spool_id})
         )
 
         [row] = await estimated_consumption_rows(ledger)
         assert row["spool_id"] == spool_id
         assert (await stored_review(ledger, review_id)).charges == [
-            (SLOT_1, ReviewCharge(spool_id, Grams.of(71)))
+            (TRAY_1, ReviewCharge(spool_id, Grams.of(71)))
         ]
 
     async def test_a_split_tray_deducts_from_both_spools_in_one_approval(
@@ -367,14 +367,14 @@ class TestApprovingAReview:
         reported one figure; it belongs to two spools, and one decision says so."""
         emptied = await a_spool(ledger)
         replacement = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(emptied, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(emptied, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
 
         await ledger.use_cases.approve_review.execute(
             ApproveReviewCommand(
                 review_id=review_id,
                 charges={
-                    SLOT_1: (
+                    TRAY_1: (
                         ReviewCharge(emptied, Grams.of(11)),
                         ReviewCharge(replacement, Grams.of(60)),
                     )
@@ -398,14 +398,14 @@ class TestApprovingAReview:
     ) -> None:
         """The remainder came off something. Accepting the shortfall would lose it."""
         emptied = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(emptied, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(emptied, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
 
         with pytest.raises(UnresolvedSlotError, match="must add up"):
             await ledger.use_cases.approve_review.execute(
                 ApproveReviewCommand(
                     review_id=review_id,
-                    charges={SLOT_1: (ReviewCharge(emptied, Grams.of(11)),)},
+                    charges={TRAY_1: (ReviewCharge(emptied, Grams.of(11)),)},
                 )
             )
 
@@ -414,8 +414,8 @@ class TestApprovingAReview:
 
     async def test_a_double_click_cannot_deduct_twice(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
         command = ApproveReviewCommand(review_id=review_id)
         await ledger.use_cases.approve_review.execute(command)
 
@@ -430,8 +430,8 @@ class TestApprovingAReview:
         `amount_mg != 0` CHECK would refuse it anyway. Approving a no-data review is
         legal and writes nothing."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        job = a_job(layer_reached=None, total_layers=None, reported_usage={SLOT_1: Grams.of(120)})
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        job = a_job(layer_reached=None, total_layers=None, reported_usage={TRAY_1: Grams.of(120)})
         review_id = await opened(ledger, job)
 
         await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
@@ -448,12 +448,12 @@ class TestApprovingAReview:
         """The physical event happened; the ledger records reality and flags the
         inconsistency rather than refusing the truth."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         review_id = await opened(
             ledger,
             a_job(reported_usage=None),
             reason=ReviewReason.UNMAPPED_USAGE,
-            amounts={SLOT_1: Grams.of(1100)},
+            amounts={TRAY_1: Grams.of(1100)},
         )
 
         await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
@@ -469,8 +469,8 @@ class TestApprovingAReview:
         """Discarding wrote off the whole balance; charging the estimate afterwards would
         count the loss twice. The user zeroes the amount, reassigns, or dismisses."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
         await ledger.use_cases.discard_filament.execute(
             DiscardFilamentCommand(
                 spool_id=spool_id, mode=DiscardMode.WHOLE_SPOOL, reason="water damage"
@@ -491,8 +491,8 @@ class TestApprovingAReview:
         deduct the same grams twice. The measurement stands and the review stays open —
         dismissing it is the user's decision, not the system's."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        job = a_job(layer_reached=84, total_layers=200, reported_usage={SLOT_1: Grams.of(200)})
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        job = a_job(layer_reached=84, total_layers=200, reported_usage={TRAY_1: Grams.of(200)})
         review_id = await opened(ledger, job)
         ledger.clock.advance(days=1)
         weighing = await ledger.use_cases.reconcile_spool.execute(
@@ -513,12 +513,12 @@ class TestApprovingAReview:
         """Only a measurement taken after the print can contain it. An older reconciliation
         says nothing about consumption that had not happened yet."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         await ledger.use_cases.reconcile_spool.execute(
             ReconcileSpoolCommand(spool_id=spool_id, measured=Grams.of(990), includes_core=False)
         )
         ledger.clock.advance(days=1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
 
         await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
 
@@ -538,11 +538,11 @@ class TestFrozenResolution:
         swapped, and approval must charge the spool that was there on Tuesday — not
         whatever happens to be in slot 2 on Friday."""
         tuesday_spool = await a_spool(ledger, label="tuesday")
-        await ledger.use_cases.mount_spool.execute(tuesday_spool, SLOT_2)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_2: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(tuesday_spool, TRAY_2)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_2: Grams.of(209)}))
 
         friday_spool = await a_spool(ledger, label="friday")
-        await ledger.use_cases.mount_spool.execute(friday_spool, SLOT_2)
+        await ledger.use_cases.mount_spool.execute(friday_spool, TRAY_2)
         ledger.clock.advance(days=3)
 
         await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
@@ -568,8 +568,8 @@ class TestConcurrency:
         scheduling, so the assertion is the invariant, not the winner."""
         ledger = interleaved_ledger
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
 
         outcomes = await asyncio.gather(
             ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id)),
@@ -600,7 +600,7 @@ class TestConcurrency:
         ending twice. The one-pending-per-job rule must hold under interleaving, and the
         loser must be told in the language of the problem, not with a constraint name."""
         ledger = interleaved_ledger
-        job = a_job(reported_usage={SLOT_1: Grams.of(209)})
+        job = a_job(reported_usage={TRAY_1: Grams.of(209)})
 
         outcomes = await asyncio.gather(
             opened(ledger, job),
@@ -620,8 +620,8 @@ class TestConcurrency:
 class TestDismissingAReview:
     async def test_dismissal_records_the_decision_and_moves_nothing(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
         ledger.clock.advance(days=1)
 
         await ledger.use_cases.dismiss_review.execute(
@@ -639,7 +639,7 @@ class TestDismissingAReview:
         assert resolved.state is ReviewState.DISMISSED
 
     async def test_a_dismissed_review_stays_dismissed(self, ledger: Ledger) -> None:
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
         await ledger.use_cases.dismiss_review.execute(DismissReviewCommand(review_id=review_id))
 
         with pytest.raises(ReviewAlreadyResolvedError):
@@ -667,7 +667,7 @@ class TestPersistedRoundTrip:
             layer_reached=4,
             total_layers=60,
             progress=Percentage.of("6.7"),
-            reported_usage={SLOT_1: Grams.of("1.9"), SLOT_2: Grams.zero()},
+            reported_usage={TRAY_1: Grams.of("1.9"), TRAY_2: Grams.zero()},
             raw_gcode_state="FAILED",
             raw_print_error=50348044,
             consumption_recorded=True,
@@ -730,22 +730,22 @@ class TestPersistedRoundTrip:
         self, ledger: Ledger
     ) -> None:
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        review_id = await opened(ledger, a_job(reported_usage={SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        review_id = await opened(ledger, a_job(reported_usage={TRAY_1: Grams.of(209)}))
         await ledger.use_cases.approve_review.execute(
             ApproveReviewCommand(
-                review_id=review_id, amounts={SLOT_1: Grams.of(31)}, note="weighed the waste"
+                review_id=review_id, amounts={TRAY_1: Grams.of(31)}, note="weighed the waste"
             )
         )
 
         review = await stored_review(ledger, review_id)
 
         assert review.state is ReviewState.APPROVED
-        assert review.confirmed_usage == {SLOT_1: Grams.of(31)}
-        assert review.estimated_usage == {SLOT_1: Grams.of(71)}
+        assert review.confirmed_usage == {TRAY_1: Grams.of(31)}
+        assert review.estimated_usage == {TRAY_1: Grams.of(71)}
         # The single frozen charge followed the corrected amount: with one charge the sum
         # invariant admits exactly one split, so nothing was decided on anybody's behalf.
-        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.of(31)))]
+        assert review.charges == [(TRAY_1, ReviewCharge(spool_id, Grams.of(31)))]
         assert review.estimator_used is EstimatorKind.LINEAR_PROGRESS
         assert review.reason is ReviewReason.CANCELLED
         assert review.opened_at == EPOCH
