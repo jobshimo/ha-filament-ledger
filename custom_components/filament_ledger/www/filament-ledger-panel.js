@@ -68,6 +68,18 @@ const NOT_VOIDABLE = new Set(["OPENING_BALANCE", "VOID_REVERSAL"]);
 const DASH = "—";
 
 /**
+ * The reserved serial a location carries when the ledger never recorded which machine it
+ * meant (`domain/value/identifiers.py`).
+ *
+ * Mirrored here because the panel has to *label* it — a heading reading `UNIDENTIFIED` over
+ * somebody's spools is a code constant leaking onto a screen, and the sentence that belongs
+ * there instead is in `i18n.js` like every other. Nothing is ever *sent* as this value: an
+ * absent printer travels as an absent field, and the backend resolves it in the one place
+ * that owns the sentinel.
+ */
+const UNIDENTIFIED_PRINTER = "UNIDENTIFIED";
+
+/**
  * The empty filter set, and therefore the whole history (docs/06 §6.6).
  *
  * Mirrors `NO_FILTERS` (`domain/port/repositories.py`) deliberately: *clear every filter* is
@@ -516,26 +528,41 @@ class FilamentLedgerPanel extends HTMLElement {
    * to the reader.
    */
   locationLabel(location) {
-    const key = `loc.${location?.kind}`;
-    const label = this._t(key, { slot: location?.slot });
+    // The machine is named only once more than one holds spools. *AMS slot 3* is a complete
+    // address in a one-printer household and a serial beside it would be fifteen characters
+    // the reader has to look past on every card; with two machines the same three words stop
+    // saying where anything is (docs/06 §6.4, amended v2.0).
+    const suffix = this._amsPrinters().length > 1 ? "_ON" : "";
+    const key = `loc.${location?.kind}${location?.printer ? suffix : ""}`;
+    const label = this._t(key, {
+      slot: location?.slot,
+      printer:
+        location?.printer === UNIDENTIFIED_PRINTER
+          ? this._t("ams.machineUnnamed")
+          : location?.printer,
+    });
     return label === key ? esc(location?.label ?? "") : label;
   }
 
   /**
-   * The tray space this panel acts in: the printer the ledger follows, and its AMS unit.
+   * The tray space one mount acts in: the machine the caller named, and the AMS unit.
    *
-   * Read off the printer glance, which the subscription pushes on connect, so every tab
-   * has it whether or not the Printer tab has been opened. Either half is **omitted** when
-   * the glance has not arrived or named nobody: the backend reads an absent half as *the
-   * tray space this ledger follows*, which is the same answer decided in the one place
-   * that owns the sentinel (`websocket_api._TRAY`). Inventing a name here would be the
-   * panel deciding what an unidentified printer is called.
+   * `printer` is whatever the AMS section that raised the dialog was showing — the panel
+   * knows which machine's tray 3 the user tapped, and with several machines nothing else
+   * does. It is **omitted** when that section had no name to give (the glance has not
+   * arrived, or discovery named nobody), and the backend reads an absent printer as the
+   * tray space this ledger follows, which is the same answer decided in the one place that
+   * owns the sentinel (`websocket_api._TRAY`). Inventing a name here would be the panel
+   * deciding what an unidentified printer is called.
+   *
+   * The AMS ordinal comes from the glance, because there is one per machine and the backend
+   * is what says which.
    */
-  _traySpace() {
-    const tracking = this._printer?.tracking;
+  _traySpace(printer) {
     const space = {};
-    if (tracking?.printer) space.printer = tracking.printer;
-    if (tracking?.ams) space.ams = tracking.ams;
+    if (printer) space.printer = printer;
+    const ams = this._printer?.tracking?.ams;
+    if (ams) space.ams = ams;
     return space;
   }
 
@@ -964,7 +991,14 @@ class FilamentLedgerPanel extends HTMLElement {
         this.guarded(() => this.call("spools/unmount", { spool_id: id }));
         break;
       case "mount-slot":
-        this._dialog = { kind: "mount", slot: Number(slot) };
+        // The machine comes off the section the button was drawn in, because that is the
+        // only place that knows which printer's tray 3 was tapped. Empty means the section
+        // had no name to give, and an absent printer is what the backend resolves.
+        this._dialog = {
+          kind: "mount",
+          slot: Number(slot),
+          printer: target.dataset.printer || null,
+        };
         this.render();
         break;
       case "review-distribute":
@@ -1300,7 +1334,7 @@ class FilamentLedgerPanel extends HTMLElement {
         this.guarded(() =>
           this.call("spools/mount", {
             spool_id: data.spool_id,
-            ...this._traySpace(),
+            ...this._traySpace(this._dialog.printer),
             slot: this._dialog.slot,
           }),
         );
@@ -1953,24 +1987,73 @@ class FilamentLedgerPanel extends HTMLElement {
 
   // -- AMS ---------------------------------------------------------------------------
 
+  /**
+   * The machines whose trays this tab has to show, in one canonical order.
+   *
+   * Two sources, deliberately, and the union is the point. The **followed** set comes from
+   * the printer glance: those machines have trays to mount into whether or not anything is
+   * in them. The **occupied** set comes from the spools themselves: a ledger migrated from
+   * single-printer days holds spools on a machine nobody could name (`printer_adoption`),
+   * and a tab that only listed followed machines would hide them — which is how an
+   * inventory system starts lying about where a reel is.
+   *
+   * Followed first, in the backend's own order, so the machine the user prints on does not
+   * move when a stale one appears behind it.
+   */
+  _amsPrinters() {
+    const followed = this._printer?.tracking?.printers ?? [];
+    const occupied = this._spools
+      .filter((s) => s.location.kind === "AMS_SLOT")
+      .map((s) => s.location.printer);
+    return [...new Set([...followed, ...occupied.filter((p) => p != null).sort()])];
+  }
+
   amsView() {
     const t = this._t;
-    // The trays of the printer this ledger follows. A location now names its printer, so
-    // the match names it too — otherwise a spool an automation mounted into another
-    // machine's tray 3 would appear here as though it were in this one's. When no printer
-    // was identified there is nothing to compare against and every mounted spool is on the
-    // one machine by definition, so the clause stands down rather than matching nothing.
-    const space = this._traySpace();
+    const printers = this._amsPrinters();
+    // No printer, no spools mounted anywhere: one anonymous section, exactly as the tab
+    // has always looked. There is nothing to name and nothing to choose between.
+    const spaces = printers.length ? printers : [null];
+    const followed = new Set(this._printer?.tracking?.printers ?? []);
+    // A heading per machine only once there is more than one. A household with one printer
+    // sees nothing new, because nothing new is true of it — the same rule the tracking card
+    // has followed since v1.4.
+    const named = spaces.length > 1;
+    const sections = spaces.map((printer) => this.amsSection(printer, named, followed));
+
+    // No action row: mounting and unmounting belong to the slot they act on, and a tray
+    // card already carries its own buttons.
+    return this.shell(
+      "",
+      `<section class="stack">
+        <div class="note">${t("ams.note")}</div>
+        ${sections.join("")}
+      </section>`,
+    );
+  }
+
+  /**
+   * One machine's four trays.
+   *
+   * `printer` is null only in the one-anonymous-space case above; the mount button then
+   * names no printer and the backend resolves the absence, which is the same path a v1
+   * automation takes.
+   */
+  amsSection(printer, named, followed) {
+    const t = this._t;
+    // A location names its printer, so the match names it too — otherwise a spool an
+    // automation mounted into another machine's tray 3 would appear here as though it were
+    // in this one's.
     const here = (location) =>
-      location.kind === "AMS_SLOT" &&
-      (space.printer === undefined || location.printer === space.printer);
+      location.kind === "AMS_SLOT" && (printer === null || location.printer === printer);
     const slots = [1, 2, 3, 4].map((slot) => {
       const spool = this._spools.find((s) => here(s.location) && s.location.slot === slot);
       if (!spool) {
         return `<div class="card tray empty-tray">
           <div class="n">${t("ams.slot", { slot })}</div>
           <div class="muted">${t("ams.empty")}</div>
-          <button data-action="mount-slot" data-slot="${slot}">${t("act.mount")}</button>
+          <button data-action="mount-slot" data-slot="${slot}"
+                  data-printer="${esc(printer ?? "")}">${t("act.mount")}</button>
         </div>`;
       }
       // A tray keeps showing an empty spool: the reel is still physically loaded, and a
@@ -1999,16 +2082,30 @@ class FilamentLedgerPanel extends HTMLElement {
         </div>
       </div>`;
     });
+    return `<div class="ams-space">
+      ${named ? this.machineHeading(printer, followed) : ""}
+      <div class="trays">${slots.join("")}</div>
+    </div>`;
+  }
 
-    // No action row: mounting and unmounting belong to the slot they act on, and a tray
-    // card already carries its own buttons.
-    return this.shell(
-      "",
-      `<section class="stack">
-        <div class="note">${t("ams.note")}</div>
-        <div class="trays">${slots.join("")}</div>
-      </section>`,
-    );
+  /**
+   * The heading over one machine's trays, and the one line a stale machine needs.
+   *
+   * A machine holding spools that discovery is *not* currently following is not an error
+   * and is not hidden: it is a ledger that was migrated from single-printer days before a
+   * second machine appeared, or a printer that has gone away. The spools are real, they are
+   * where the ledger last saw them, and the sentence says what to do — move each one onto
+   * the machine it is actually in.
+   */
+  machineHeading(printer, followed) {
+    const t = this._t;
+    const unnamed = printer === UNIDENTIFIED_PRINTER || printer === null;
+    const name = unnamed ? t("ams.machineUnnamed") : esc(printer);
+    const stale = printer !== null && !followed.has(printer);
+    return `<div class="ams-head">
+      <h3 class="pr-h">${name}</h3>
+      ${stale ? `<p class="muted small">${t("ams.machineStale")}</p>` : ""}
+    </div>`;
   }
 
   // -- history -----------------------------------------------------------------------
@@ -3325,20 +3422,36 @@ class FilamentLedgerPanel extends HTMLElement {
 
     // A glance has a moment, and the moment is the user's (docs/14 §14.5) — so the one
     // control that takes a fresh one stays where they left it.
+    //
+    // **A section per machine, not a picker.** The person this tab is for is standing at
+    // one of their printers with a part in their hand, and a selector would make them
+    // identify their machine by a fifteen-character serial before it told them anything —
+    // then remember a choice, which is a wrong default the first time it matters. Sections
+    // scroll, and the other machine's answer is already on the screen when they walk over.
+    const machines = state.machines ?? [];
+    const named = machines.length > 1;
     return this.shell(
       `<div class="bar">
         <button data-action="refresh-printer" ${this._printerLoading ? "disabled" : ""}>${t("printer.refresh")}</button>
       </div>`,
       `<section class="stack">
-        ${this.printerFacts(state)}
         ${this.printerTracking(state.tracking)}
-        ${this.printerError(state.error)}
+        ${machines.map((machine) => this.printerMachine(machine, named)).join("")}
         ${this.printerHours(state.observed_print_time)}
-        ${this.printerTrays(state.trays ?? [])}
         <p class="muted small">${t("printer.readOnly")}</p>
         <p class="muted small">${t("printer.pendingSensors")}</p>
       </section>`,
     );
+  }
+
+  /** One machine's section: what it is called, what it is doing, and what its trays hold. */
+  printerMachine(machine, named) {
+    return `<div class="pr-machine">
+      ${named ? `<h3 class="pr-h pr-machine-h">${esc(machine.printer)}</h3>` : ""}
+      ${this.printerFacts(machine)}
+      ${this.printerError(machine.error)}
+      ${this.printerTrays(machine)}
+    </div>`;
   }
 
   printerFacts(state) {
@@ -3386,35 +3499,39 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * The printers this ledger found and is not following.
+   * What this ledger is following, and what it found and could not follow.
    *
-   * **Rendered only when there is something to say.** A household with one machine sees
-   * nothing new, because there is nothing new to tell it; a household with two has been
-   * losing one of them silently, and *silently* is the part worth fixing before the rest.
-   * The warning existed already — in a log, which is not a place anybody looks.
+   * **Rendered only when there is something to say.** One machine, cleanly named, produces
+   * nothing here — the section heading above its own facts already names it, and a card
+   * repeating that would be chrome. Two or more get the list, because *which machines am I
+   * tracking?* stops being obvious the moment the answer is longer than one.
    *
-   * This is a statement about today's behaviour, not a setting: there is nothing to press,
-   * because following the second machine is not something this version can do.
+   * `unnamed` is what is left of v1.4's `ignored`: every machine with a readable serial is
+   * followed now, so the only thing this ledger passes over is a machine it could not tell
+   * apart from another. That is rare enough to be a bug report, which is precisely why it
+   * is on a screen rather than in a log.
    */
   printerTracking(tracking) {
     const t = this._t;
-    const ignored = tracking?.ignored ?? [];
-    if (!ignored.length) return "";
-    const following = tracking.printer
-      ? t("printer.trackingFollowing", { serial: tracking.printer })
-      : t("printer.trackingFollowingUnnamed");
+    const printers = tracking?.printers ?? [];
+    const unnamed = tracking?.unnamed ?? 0;
+    if (printers.length < 2 && !unnamed) return "";
     return `
       <div class="card pr-tracking">
         <h3 class="pr-h">${t("printer.trackingHeading")}</h3>
-        <p>${following}</p>
-        <p class="muted small">${t("printer.trackingIgnored", { serials: ignored.join(", ") })}</p>
+        ${
+          printers.length
+            ? `<p>${t("printer.trackingFollowing", { serials: printers.join(", ") })}</p>`
+            : ""
+        }
+        ${unnamed ? `<p class="muted small">${t("printer.trackingUnnamed", { count: unnamed })}</p>` : ""}
       </div>`;
   }
 
   /**
-   * How long this ledger has watched the machine print — never the machine's own hours.
+   * How long this ledger has watched printing happen — never any machine's own hours.
    *
-   * The printer reports no lifetime counter, so this total is a sum over the job rows the
+   * No printer reports a lifetime counter, so this total is a sum over the job rows the
    * ledger holds, and the sentence under it says exactly that: how many prints it covers
    * and which day it starts from. A big number with no such line would read as an
    * odometer, which is the fabricated authority this project argues against.
@@ -3425,6 +3542,9 @@ class FilamentLedgerPanel extends HTMLElement {
   printerHours(observed) {
     if (!observed) return "";
     const t = this._t;
+    // One total across every machine, and the sentence under it says so. The job rows
+    // written before this ledger recorded which printer ran them name none, so splitting
+    // the total per machine would file real hours under a heading nobody could read.
     return `
       <div class="card pr-hours">
         <h3 class="pr-h">${t("printer.hoursHeading")}</h3>
@@ -3471,18 +3591,26 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * The four-tray strip: what the printer reports beside what the ledger has mounted.
+   * One machine's four-tray strip: what that printer reports beside what the ledger mounted.
    *
    * The per-slot shapes are the sync command's, computed read-only — this tab never runs
    * `DetectSpool`, so looking at it changes nothing (docs/14 §14.5).
+   *
+   * The ledger side matches on the **whole** tray reference. Matching on the slot number
+   * alone would put the other machine's tray 3 spool under this machine's tray 3, which is
+   * the exact confusion this release exists to end and would read as authoritative.
    */
-  printerTrays(trays) {
+  printerTrays(machine) {
     const t = this._t;
+    const trays = machine.trays ?? [];
     if (!trays.length) return `<div class="note">${t("printer.noTrays")}</div>`;
     const cards = trays
       .map((tray) => {
         const mounted = this._spools.find(
-          (s) => s.location.kind === "AMS_SLOT" && s.location.slot === tray.slot,
+          (s) =>
+            s.location.kind === "AMS_SLOT" &&
+            s.location.printer === tray.printer &&
+            s.location.slot === tray.slot,
         );
         const swatch = tray.colour_hint
           ? `<div class="reel" style="background:${esc(tray.colour_hint)}"></div>`
@@ -4814,14 +4942,30 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 .pr-hours { padding: 15px 18px 16px; }
 .pr-hours .v { font-size: 26px; font-variant-numeric: tabular-nums; }
 .pr-hours p { margin: 8px 0 0; }
-/* The printers this version leaves alone. Marked with the warning rule rather than the
-   error one: nothing is broken, something is simply not being tracked — and the card only
-   exists at all when there is a second machine to name. */
+/* Which machines are followed, and any this version could not tell apart. Marked with the
+   warning rule rather than the error one: nothing is broken — and the card only exists at
+   all when there is a second machine to name or one that could not be named. */
 .pr-tracking { padding: 15px 18px 16px; border-left: 3px solid var(--fl-warn); }
 .pr-tracking p { margin: 0; }
 .pr-tracking p + p { margin-top: 8px; }
 .pr-trays { display: flex; flex-direction: column; }
 .tray .empty-reel { border: 1px dashed var(--fl-line); background: none; }
+
+/* One machine's section of the tab. The gap is the stack's own, so a second machine reads as
+   one more block in the same rhythm rather than as a differently-spaced region; the rule
+   above it is what makes a long scroll on a phone say *a different machine starts here*, and
+   it is absent for the single-machine case where there is nothing to keep apart. */
+.pr-machine { display: flex; flex-direction: column; gap: 16px; }
+.pr-machine + .pr-machine { padding-top: 16px; border-top: 1px solid var(--fl-line); }
+.pr-machine-h { margin-bottom: 0; font-size: 12.5px; letter-spacing: .06em;
+  text-transform: none; color: var(--fl-ink); font-family: var(--fl-font-mono); }
+
+/* One machine's four trays on the AMS tab. Same structure, same reason. */
+.ams-space { display: flex; flex-direction: column; gap: 10px; }
+.ams-head { display: flex; flex-direction: column; gap: 2px; }
+.ams-head .pr-h { margin: 0; text-transform: none; letter-spacing: .06em; font-size: 12.5px;
+  color: var(--fl-ink); font-family: var(--fl-font-mono); }
+.ams-head p { margin: 0; }
 
 /* Settings tab — docs/14 §14.6.4. */
 .set-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; }

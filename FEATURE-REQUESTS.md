@@ -28,7 +28,7 @@ what that change is, so nobody has to take the claim on trust.
 | 6 | Split a print across spools | Buildable **after one model change** | Schema, migration 0004 |
 | 7a | Remaining time, real job duration | Buildable as-is | UI only |
 | 7b | Accumulated hours | Buildable, ours to compute | Behaviour |
-| 7c | More than one printer | Buildable **after one model change** | Schema, its own release |
+| 7c | More than one printer | **Done** (v2.0.0) | Schema, its own release |
 
 The two model changes are set out under items 6 and 7c. Both are **widenings** — every state the
 system can represent today maps onto exactly one state afterwards, so no existing ledger loses a
@@ -291,11 +291,17 @@ assumption is not a UI shortcut; it was baked into the domain:
 
 Every one of those was a correct v1 decision, and every one of them changed together.
 
-> **The first three are done** (v2.0.0): `AmsSlot` carries a `TrayRef`, every per-tray figure
-> is keyed by one, and migration 0007 widened the index to all three parts. **The fourth is
-> not.** The gateway still resolves one printer and warns about the rest — it merely names
-> them on the Printer tab now instead of only in the log. Discovering several, letting the
-> owner choose, and showing them in the AMS view is the release this widening was for.
+> **All four are done** (v2.0.0). `AmsSlot` carries a `TrayRef`, every per-tray figure is keyed
+> by one, migration 0007 widened the index to all three parts, and the gateway now resolves
+> every machine in the registry — each with its own trays, its own job sensors and its own
+> device id, with the AMS and Printer tabs drawing a section per machine. Migration 0008
+> finished the two facts the schema still stated in the singular: which machine ran a job, and
+> which machine a direct feed belongs to.
+>
+> **Owner choice turned out not to be needed, and that is the better answer.** The plan said
+> *discovering several, letting the owner choose*. There is nothing to choose: every machine is
+> followed, one inventory covers them all, and a picker would only have been a way to make the
+> owner name the printers they already own before the integration told them anything.
 
 **The model change.** A tray is currently identified by a bare index. It has to become a
 three-part reference — printer, AMS unit, tray — because that is what physically identifies a

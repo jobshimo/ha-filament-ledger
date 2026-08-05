@@ -85,6 +85,8 @@
       "description": "Coloca una bobina en una bandeja del AMS. No registra ningún movimiento: mover una bobina no consume filamento.",
       "fields": {
         "spool_id": { "name": "Bobina", "description": "Qué bobina." },
+        "printer": { "name": "Impresora", "description": "El número de serie de la máquina. Déjelo vacío mientras este registro siga a una sola impresora; indíquelo cuando siga a varias, porque el número de bandeja por sí solo ya no dice de qué máquina se trata." },
+        "ams": { "name": "Unidad AMS", "description": "Qué AMS de esa impresora, con la numeración que usa la propia impresora. Déjelo vacío para la primera." },
         "slot": { "name": "Bandeja", "description": "Bandeja del AMS, de 1 a 4." }
       }
     },

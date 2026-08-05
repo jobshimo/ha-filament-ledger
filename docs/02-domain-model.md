@@ -151,10 +151,11 @@ first time a second machine appears.
 Ordered, so that every reader — the deduction loop, the review card, the persisted JSON —
 sees one canonical tray order rather than each imposing its own.
 
-**Representable is not supported.** This value lets the model hold several printers. The
-gateway still resolves exactly one and warns about the rest ([05 §5.8](05-ha-integration.md)),
-and the ledger still follows exactly one. Discovering several, letting the owner choose, and
-showing them in the AMS view is a separate change built on this one.
+**Supported since v2.0.** The gateway resolves every machine the registry describes and keys
+each one's trays under its own serial ([05 §5.8](05-ha-integration.md)); the ledger follows
+all of them. Ordering by printer first is what makes a listing of several machines' trays
+group itself, which is how the AMS view draws a section per machine
+([06 §6.4](06-ui-spec.md)).
 
 `UNIDENTIFIED` is a reserved `PrinterSerial`: the printer a ledger has always talked to but
 never recorded the name of. Migration 0007 writes it into every row that predates the
@@ -164,20 +165,34 @@ and the difference is the point: sixteen zeros denotes the *absence* of a tag, w
 denotes a real machine whose name is unknown — and a single-printer ledger has exactly one of
 those, so every row carrying it belongs to the same printer.
 
+**That argument is also its limit, and v2.0 draws the limit explicitly.** The sentinel is
+sound only while there is one machine for it to mean. So discovery gives it to a printer whose
+serial it could not read only when that printer is the only one there is; with several, an
+unnamed machine is not followed at all, because two live machines answering to one name would
+share a single tray space and collide slot for slot. For the same reason, adoption replaces
+the placeholder only when discovery names exactly one machine — with several there is no
+record of which one the rows meant, and picking is a guess with somebody's spools on the other
+end ([08 §8.4](08-data-model.md)).
+
 ### `Location`
 
 ```
 Storage()          — on a shelf, not mounted
 AmsSlot(tray)      — mounted in the tray this `TrayRef` names
-ExternalSpool()    — feeding the printer directly, bypassing the AMS
+ExternalSpool(printer)
+                   — feeding that printer directly, bypassing its AMS
 ```
 
 A spool is in exactly one location. This models the physical world truthfully: a spool cannot
 be in two places, and "in storage" is a real location, not the absence of one.
 
-`ExternalSpool()` deliberately carries no printer yet. The ledger follows one machine, so
-there is one direct feed; widening it is part of the same change that teaches the system to
-follow more than one, not of the change that made a tray representable.
+`ExternalSpool(printer)` names its machine, since v2.0. Each printer has exactly one direct
+feed, so an unqualified *external spool* names as many positions as there are printers — and
+the partial unique index stating *the direct feed holds one spool* ([08 §8.1](08-data-model.md))
+would have refused the second machine's reel to a ledger that could truthfully hold it.
+Migration 0008 widened the value and the index together, which is the same reading that
+widened `idx_spool_slot` in 0007, arriving one release later because this is the release where
+a second machine is followed rather than merely representable.
 
 ### `TagUid`
 
@@ -323,6 +338,7 @@ str              name
 PrintJobState    state           -- RUNNING | FINISHED | CANCELLED | FAILED
 datetime         started_at
 datetime?        ended_at
+PrinterSerial?   printer         -- which machine ran it; null only before migration 0008
 int?             layer_reached
 int?             total_layers
 Percentage?      progress
@@ -335,6 +351,20 @@ The two `raw_*` fields exist because the mapping from printer state to cancellat
 is an open question (Q1). Storing the raw values means that when the answer is known, the
 classification can be applied retroactively to jobs already recorded. Discarding them would
 make that impossible.
+
+**`printer` is what makes an ending correlatable, and null is not a machine.** An upstream
+lifecycle event carries no job id, so an ending is matched to the newest `RUNNING` row — and
+with two machines printing at once that row is as likely to be the other one's job. The
+ending's per-tray figures ride with the match, so a mis-correlation deducts one printer's
+grams from the spools in the other printer's trays and flags neither. Correlation is therefore
+by state **and** by machine ([04 UC-04](04-use-cases.md), `TrackPrintJob`).
+
+Null means the ledger did not record which machine ran the job, which is every row written
+before migration 0008 — and a backfill states what the old rows say ([08 §8.4](08-data-model.md)).
+A nameless row is correlated to by nobody: the single print that spanned the upgrade leaves a
+stale `RUNNING` row, its ending opens a fresh one, and that is the shape a restart already
+produced. Letting it match would buy back one duration by guessing which machine a row that
+explicitly does not say belongs to.
 
 ### `PendingReview`
 
@@ -579,7 +609,7 @@ MovementRepository
 PrintJobRepository
     async get(PrintJobId) -> PrintJob?
     async save(PrintJob) -> None
-    async list_recent(limit) -> PrintJob[]
+    async list_recent(limit, printer=None) -> PrintJob[]
 
 ReviewRepository
     async get(ReviewId) -> PendingReview?

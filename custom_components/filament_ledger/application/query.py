@@ -53,11 +53,13 @@ from .errors import SpoolNotFoundError
 def describe_location(location: Location) -> dict[str, str | int | None]:
     """Where a spool is, in the terms a wire and a screen can both use.
 
-    A mounted spool now names its tray in full — `printer`, `ams`, `slot` — because that is
-    what identifies the position. `label` is unchanged and stays the single-machine
-    sentence: the ledger still follows one printer, and a caller rendering *AMS slot 3* is
-    telling the reader the truth. `printer` and `ams` are null for the two locations that
-    are not a tray, which is the same shape `slot` already had.
+    A mounted spool names its machine — a tray in full with `printer`, `ams` and `slot`, and
+    a direct feed with `printer` alone, because that is what identifies each position.
+    `label` stays the single-machine sentence, and deliberately: it is the fallback the panel
+    uses only for a `kind` it does not know, and the panel builds the reader's sentence from
+    the parts — naming a serial beside every spool in a one-machine household would be noise
+    the reader has to look past (docs/06 §6.4, amended v2.0). `ams` and `slot` are null for
+    the locations that are not a tray, which is the shape `slot` already had.
     """
     match location:
         case AmsSlot(tray):
@@ -68,10 +70,10 @@ def describe_location(location: Location) -> dict[str, str | int | None]:
                 "slot": tray.slot.value,
                 "label": f"AMS slot {tray.slot.value}",
             }
-        case ExternalSpool():
+        case ExternalSpool(printer):
             return {
                 "kind": "EXTERNAL_SPOOL",
-                "printer": None,
+                "printer": printer.value,
                 "ams": None,
                 "slot": None,
                 "label": "External spool",

@@ -29,7 +29,7 @@ from custom_components.filament_ledger.domain.value.location import (
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
 
-from .conftest import EPOCH, a_spool, a_tray, at
+from .conftest import A_PRINTER, EPOCH, a_spool, a_tray, at
 
 
 class TestInvariants:
@@ -90,9 +90,12 @@ class TestLocation:
         assert spool.unmounted().location == Storage()
         assert not is_mounted(Storage())
 
-    def test_the_external_spool_counts_as_mounted(self) -> None:
-        assert is_mounted(a_spool().mounted_externally().location)
-        assert a_spool().mounted_externally().location == ExternalSpool()
+    def test_the_external_spool_counts_as_mounted_and_names_its_machine(self) -> None:
+        """One direct feed per printer (docs/02 §2.2): the location carries the serial, so
+        two machines can each be fed a reel without the ledger calling them one place."""
+        mounted = a_spool().mounted_externally(A_PRINTER)
+        assert is_mounted(mounted.location)
+        assert mounted.location == ExternalSpool(A_PRINTER)
 
     def test_moving_returns_a_new_instance(self) -> None:
         original = a_spool()

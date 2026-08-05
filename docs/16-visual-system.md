@@ -492,3 +492,31 @@ Cancel that were verified once.
 **It adds no state.** The collapsed rendering holds nothing open across a repaint: it is a
 dialog kind like every other, resolved from the spool's id on every render, and a subject
 that went away underneath it says so rather than quoting a figure that is no longer true.
+
+---
+
+## 16.11 The machine section
+
+Two tabs draw the same thing once per printer: the AMS view's four-slot grid
+([06 §6.4](06-ui-spec.md)) and the Printer tab's facts, error and tray strip
+([14 §14.5](14-corrections-and-trash.md)). Both sat directly in the page stack while there
+was one machine, and both now need a way to say *a different machine starts here*.
+
+**Nothing new is invented for it.** The section is the stack it already was, with a heading
+above it and — on the Printer tab, where a section is four cards tall — a hairline rule
+between one machine and the next. The heading is the existing eyebrow (`.pr-h`) with its
+uppercase transform dropped and the mono face applied, because what it carries is a serial:
+a fifteen-character identifier read character by character off a label on a machine, which is
+exactly what §16.2's monospaced face is for. Two type styles were already in the vocabulary;
+this uses one of them differently rather than adding a third.
+
+**The section renders unheaded when there is only one.** A household with one printer sees no
+heading, no rule and no gap it did not have before, because nothing new is true of it. That is
+the same rule the sync strip and the tracking card follow, and it is what keeps a change made
+for two machines from taxing everybody with one.
+
+**The gap is the stack's own.** A second machine reads as one more block in the same rhythm
+rather than as a differently-spaced region, so the vertical scale stays the one §16.3 names
+and no new spacing token is introduced. Density is unchanged: two machines is twice the cards,
+not smaller ones — the tray grid already reflows on its own `auto-fit` track, and the phone
+tier keeps every label and every 44 px target it had.

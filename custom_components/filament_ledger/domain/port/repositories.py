@@ -21,7 +21,14 @@ from ..model.print_job import PrintJob
 from ..model.spool import Spool
 from ..value.colour import Colour
 from ..value.grams import Grams
-from ..value.identifiers import MovementId, PrintJobId, ReviewId, SpoolId, TagUid
+from ..value.identifiers import (
+    MovementId,
+    PrinterSerial,
+    PrintJobId,
+    ReviewId,
+    SpoolId,
+    TagUid,
+)
 from ..value.location import Location
 
 
@@ -228,7 +235,18 @@ class PrintJobRepository(Protocol):
 
     async def save(self, job: PrintJob) -> None: ...
 
-    async def list_recent(self, limit: int) -> list[PrintJob]: ...
+    async def list_recent(self, limit: int, printer: PrinterSerial | None = None) -> list[PrintJob]:
+        """The newest `limit` jobs, newest first — every machine's, or one machine's.
+
+        **`None` here means every machine; `None` on a row means no machine.** The two
+        readings of one absence are not the same fact and this is the only place they meet:
+        the parameter is an unset filter, exactly as `NO_FILTERS` is above, while a row that
+        names no printer is a row written before the ledger recorded which machine ran the
+        job. Naming a serial therefore returns that machine's rows **and only those** — a
+        nameless row is not evidence about any printer and answering with it would put one
+        machine's history under another's name.
+        """
+        ...
 
     async def list_in_period(self, since: datetime | None) -> list[PrintJob]:
         """Every job that *started* at or after `since` — all of them when `None`.

@@ -200,13 +200,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # idempotent use case instead of falling into a gap.
     gateway = BambuLabGateway(hass)
 
-    # Migration 0007 could not name the printer — it runs with a bare SQLite connection —
-    # so it wrote a placeholder into every mounted spool's tray reference. Discovery has
-    # just resolved the real serial, so the rows learn it here, **before** the
-    # reconciliation pass below asks which spool is in which tray. Get the order wrong and
-    # the pass looks up trays under the new name, finds them empty, and mounts a second
-    # spool into every one of them.
-    await adopt_unidentified_trays(database, gateway.printer_serial)
+    # Migrations 0007 and 0008 could not name the printer — they run with a bare SQLite
+    # connection — so they wrote a placeholder into every mounted spool's location.
+    # Discovery has just resolved the real serials, so the rows learn one here, **before**
+    # the reconciliation pass below asks which spool is in which tray. Get the order wrong
+    # and the pass looks up trays under the new name, finds them empty, and mounts a second
+    # spool into every one of them. `adopt_unidentified_trays` states why several
+    # discovered machines adopt nothing at all.
+    await adopt_unidentified_trays(database, gateway.printers)
 
     # The reconciliation pass as an object: startup runs it once below, and the panel's
     # sync button and the `sync_trays` service run the very same wiring on demand.

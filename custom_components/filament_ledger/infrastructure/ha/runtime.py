@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from ...application.query import LedgerSnapshot
 from ...application.use_cases import UseCases
 from ...const import DOMAIN
+from ...domain.error import InvalidValueError
 from ...domain.value.identifiers import UNIDENTIFIED_PRINTER, PrinterSerial
 from ..persistence.database import Database
 from .printer_state import ReadPrinterState
@@ -45,22 +46,36 @@ class LedgerRuntime:
 
     @property
     def tray_printer(self) -> PrinterSerial:
-        """The machine every tray reference this ledger writes belongs to.
+        """The machine a caller that named no printer means — **or a refusal.**
 
-        The answer for a caller that named no printer — a service call, an automation
-        written before a tray had three parts, the panel before its first printer glance
-        arrives. It is the gateway's own answer, never a blind sentinel, and that
-        distinction is load-bearing: with a printer discovered, the spool rows already
-        carry its serial (`printer_adoption`), and defaulting to the sentinel instead
-        would open a *second* tray space in which every slot looked free. Two spools in
-        tray 1, with the unique index correctly seeing two different trays.
+        The answer for a service call, an automation written before a tray had three parts,
+        or any caller naming only a slot. It is the gateway's own answer, never a blind
+        sentinel, and that distinction is load-bearing: with a printer discovered, the spool
+        rows already carry its serial (`printer_adoption`), and defaulting to the sentinel
+        instead would open a *second* tray space in which every slot looked free. Two spools
+        in tray 1, with the unique index correctly seeing two different trays.
 
         Without a gateway there is nothing to ask, and the sentinel is exactly what those
         rows carry — so the two agree there too.
+
+        **With more than one machine followed, the absence is refused rather than resolved.**
+        There is no such thing as *the* printer then, and every way of picking one is a guess
+        with somebody's spool on the other end of it. The v1 promise that an automation
+        naming only a slot keeps working held because there was one machine for it to mean;
+        the moment there are two, that automation is ambiguous and says so out loud instead
+        of landing somewhere plausible (docs/05 §5.4, amended v2.0).
         """
         if self.printer is None:
             return UNIDENTIFIED_PRINTER
-        return self.printer.gateway.tray_printer
+        default = self.printer.gateway.default_printer
+        if default is None:
+            followed = ", ".join(serial.value for serial in self.printer.gateway.printers)
+            msg = (
+                f"this ledger follows more than one printer ({followed}), so a tray named "
+                f"by slot alone does not say which machine; name the printer"
+            )
+            raise InvalidValueError(msg)
+        return default
 
     async def async_refresh(self) -> None:
         await self.coordinator.async_request_refresh()

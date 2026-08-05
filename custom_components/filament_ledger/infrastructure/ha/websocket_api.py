@@ -90,8 +90,10 @@ from .tray_sync import TraySyncResult
 #: **`printer` and `ams` are optional, and their absence names the tray space this ledger
 #: follows** — the machine it has always talked to, whose serial it may not know, on AMS 1.
 #: A caller written against v1 that sends only a slot therefore still lands in the right
-#: tray, which is right: the ledger still follows exactly one printer. The panel sends all
-#: three, because the printer glance already told it what they are.
+#: tray *while there is one machine for it to mean*; with several followed the absence is
+#: refused rather than resolved, because every way of picking one is a guess with somebody's
+#: spool on the other end (`LedgerRuntime.tray_printer`). The panel sends all three, because
+#: the printer glance already told it what they are.
 _TRAY = vol.Schema(
     {
         vol.Optional("printer"): vol.Any(str, None),
@@ -544,7 +546,7 @@ async def handle_adjust(
         vol.Required("type"): f"{DOMAIN}/spools/mount",
         vol.Required("spool_id"): str,
         # The tray, in the three parts `_TRAY` documents — and on the same terms: naming
-        # only a slot still means the tray space this ledger follows.
+        # only a slot means the tray space this ledger follows, while there is one.
         vol.Optional("printer"): vol.Any(str, None),
         vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
         vol.Required("slot"): vol.All(

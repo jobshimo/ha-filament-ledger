@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .identifiers import TrayRef
+from .identifiers import PrinterSerial, TrayRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,17 +31,29 @@ class AmsSlot:
     tray: TrayRef
 
     def __str__(self) -> str:
-        # Still the single-machine sentence, because the ledger still follows one machine
-        # and this string is what a user reads. The reference behind it is what changed.
-        return f"AMS slot {self.tray.slot}"
+        # The machine is named because there can now be more than one, and this string ends
+        # up in an anomaly's explanation: *loaded in AMS slot 3* stopped being an address
+        # the moment a second printer arrived with an AMS slot 3 of its own. What a user
+        # reads on screen is built from the parts by the panel, which drops the serial while
+        # only one machine holds spools (docs/06 §6.4).
+        return f"AMS slot {self.tray.slot} on printer {self.tray.printer}"
 
 
 @dataclass(frozen=True, slots=True)
 class ExternalSpool:
-    """Feeding the printer directly, bypassing the AMS."""
+    """Feeding one printer directly, bypassing that printer's AMS.
+
+    **Named after its machine, for the same reason a tray is.** Each printer has exactly
+    one direct feed, so with several machines an unqualified *external spool* names as many
+    positions as there are printers — and the partial unique index that states *the direct
+    feed holds one spool* (docs/08 §8.1) would have refused the second machine's reel to a
+    ledger that could truthfully hold it. Migration 0008 widened both together.
+    """
+
+    printer: PrinterSerial
 
     def __str__(self) -> str:
-        return "External spool"
+        return f"External spool on printer {self.printer}"
 
 
 Location = Storage | AmsSlot | ExternalSpool

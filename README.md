@@ -94,18 +94,22 @@ sensors should work. **None of them have been tested.** If you run a P1, X1 or A
 as unverified and check the History view after your first print before trusting it. Reports are
 welcome — that is what the issue templates are for.
 
-**One printer per instance — a multi-printer release is on the roadmap.** Today the config flow
-allows a single entry, and the gateway takes the first printer it finds in the registry. If it
-finds others, the Printer tab now names them: *this ledger is following X; Y was found and is
-not being tracked*. That used to be a line in a log, which is not a place anybody looks, and
-*silently* was the part worth fixing first.
+**More than one printer, on one inventory.** Every Bambu Lab machine `ha-bambulab` describes
+is discovered and followed. There is nothing to configure: the AMS and Printer tabs draw a
+section per machine, each print is deducted from the spools in *its own* machine's trays, and
+one ledger covers the lot — a spool moved from one printer to the other is still the same reel
+with the same history. A household with one machine sees exactly what it always saw, because
+nothing new is true of it.
 
-**Support for more than one printer is still planned for a future release**, specified in
-[docs/15 §15.7](docs/15-public-release.md). The model half has landed: a tray is now named by
-printer, AMS unit and tray rather than by a bare number, so a second machine is *representable*
-([docs/02 §2.3](docs/02-domain-model.md)). Nothing follows one yet — discovering several,
-letting you choose, and showing them in the AMS view is the release this widening was for.
-Until it ships, a ledger is one inventory on one machine.
+A machine whose serial `ha-bambulab` does not expose is the one case that is still passed over,
+and the Printer tab says so and asks for a report: two printers answering to one name would
+share a single set of trays. No machine this project has seen reports without its serial.
+
+**A ledger migrated from single-printer days keeps its spools where they are.** If the ledger
+never resolved a printer before the day two appeared, its mounted spools name a machine nobody
+recorded, and nothing is moved onto either of them automatically — the AMS tab shows them as
+their own section, marked, and you mount each one onto the right machine. Guessing would put
+somebody's reel in a printer it is not in.
 
 **No printer at all is a supported mode.** Without `ha-bambulab` the integration installs and
 runs as a manual inventory: register spools, weigh them, discard them, read the history. You

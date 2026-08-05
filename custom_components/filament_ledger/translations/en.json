@@ -85,6 +85,8 @@
       "description": "Put a spool in an AMS slot. Records no movement — moving a spool consumes no filament.",
       "fields": {
         "spool_id": { "name": "Spool", "description": "Which spool." },
+        "printer": { "name": "Printer", "description": "The machine's serial. Leave empty while this ledger follows one printer; name it once it follows several, because a slot number alone no longer says which machine." },
+        "ams": { "name": "AMS unit", "description": "Which AMS on that printer, numbered as the printer numbers it. Leave empty for the first." },
         "slot": { "name": "Slot", "description": "AMS tray, 1 to 4." }
       }
     },

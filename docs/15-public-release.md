@@ -307,43 +307,52 @@ entered the repository; the charts are `<svg>` elements built by the render func
 
 ## 15.7 Multi-printer
 
-**The largest item, and the only one with a hard design-first requirement.** Do not
-begin implementation from this section alone; it defines the ground rules and the
-blast radius, and demands a dedicated design pass first.
+**The largest item, and the only one with a hard design-first requirement. Delivered in
+v2.0.0**; this section is kept as the ground rules it set and the record of which of them
+survived contact.
 
 **Motivation.** N3 ([01 §1.3](01-vision.md)) scoped v1 to one printer and forbade
 speculative fleet design. The gateway honoured it explicitly: "One printer, one AMS.
 v1 targets a single ledger on a single machine; if the registry ever holds several …
-the first (by identity) wins and a warning names the ones ignored"
-(`infrastructure/ha/bambu_gateway.py:26-29`, enforced at lines 404-414 and 433-443).
-Publishing makes multi-printer the most-requested issue on day one; better to have the
-design ready than to grow it under pressure.
+the first (by identity) wins and a warning names the ones ignored". Publishing makes
+multi-printer the most-requested issue on day one; better to have the design ready than to
+grow it under pressure — which is what this section was for, and it is why the release below
+was a widening rather than a rewrite.
 
-**Ground rules for the design pass.**
+**Ground rules for the design pass — all four met in v2.0.0.**
 
-- ~~**Slot keys become `(printer, slot)`.**~~ **Done in v2.0.0**, and as three parts rather
-  than two: `TrayRef` is printer, AMS unit and tray ([02 §2.3](02-domain-model.md)). The
-  domain value, the schema, the wire shapes and the panel widened together, and migration
-  0007 mapped every existing row onto the one printer the ledger has ever talked to. The
-  serial turned out *not* to be readable at migration time — see
-  [08 §8.4](08-data-model.md) — so the rows take a reserved placeholder that startup
-  reconciles. Everything below this line is still to do.
-- **One gateway per printer**, selected by device — either config-entry subentries or
-  a device selector in the options flow; the design pass decides which after checking
-  what HA's subentry support looks like at implementation time. Discovery already
-  groups by device id (`bambu_gateway.py:417-443`); the change is keeping every group
-  instead of `min(groups)`.
-- **One ledger, several printers** — not one ledger per printer. The inventory is the
-  household's shelf; printers are consumers of it. A spool's location gains the
-  printer dimension; the balance arithmetic does not change at all.
-- **The single-printer install must not notice.** Same panel, same views, no printer
-  pickers shown when one printer exists. The feature is additive in the UI exactly as
-  the migration is additive in the schema.
+- ~~**Slot keys become `(printer, slot)`.**~~ **Done**, and as three parts rather than two:
+  `TrayRef` is printer, AMS unit and tray ([02 §2.3](02-domain-model.md)). The domain value,
+  the schema, the wire shapes and the panel widened together, and migration 0007 mapped every
+  existing row onto the one printer the ledger has ever talked to. The serial turned out *not*
+  to be readable at migration time — see [08 §8.4](08-data-model.md) — so the rows take a
+  reserved placeholder that startup reconciles.
+- ~~**One gateway per printer**, selected by device.~~ **Done, and neither subentries nor a
+  device selector were needed.** One gateway holds every machine discovery resolved, keyed by
+  serial, with one bus subscription for the whole house and a device-to-serial map deciding who
+  spoke ([05 §5.8](05-ha-integration.md)). Nothing is selected because there is nothing to
+  choose: every machine with a readable serial is followed, which is a better answer than a
+  picker that would have made the owner name the printers they already own.
+- ~~**One ledger, several printers**~~ — **done**, and not one ledger per printer. The
+  inventory is the household's shelf; printers are consumers of it. A spool's location carries
+  the printer dimension for both mounted kinds, and the balance arithmetic did not change at
+  all.
+- ~~**The single-printer install must not notice.**~~ **Done.** Every per-machine heading,
+  section rule and location suffix renders only once there is more than one machine to keep
+  apart, so a household with one printer sees the panel it already had
+  ([06 §6.4](06-ui-spec.md), [16 §16.11](16-visual-system.md)).
 
-**Acceptance shape** (for the eventual implementation, after its design doc): two
-printers deduct into one inventory with correct attribution; a pre-multi-printer database
-migrates with every existing movement and review mapped to the original printer; a
-single-printer instance's UI is pixel-identical to before.
+**One thing this section did not anticipate, and it is the sharpest part of the work.** An
+upstream lifecycle event carries no job id, so an ending is correlated to the newest `RUNNING`
+row — which with two machines is as likely to be the other one's job. The ending's per-tray
+figures ride with the match, so a mis-correlation deducts one printer's grams from the spools
+in the other printer's trays and flags neither. Correlation is now by state **and** by machine,
+which is why `print_job` gained a `printer` column and why `PrintEvent` carries the serial
+inward ([02 §2.3](02-domain-model.md), [08 §8.1](08-data-model.md)).
+
+**Acceptance shape, as met:** two printers deduct into one inventory with correct attribution;
+a pre-multi-printer database migrates with every existing movement and review intact; a
+single-printer instance's UI is unchanged.
 
 ---
 

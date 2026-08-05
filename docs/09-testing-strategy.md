@@ -112,6 +112,15 @@ rejects a double mount; migrations apply cleanly from empty and are idempotent.
 A1, not hand-written approximations. Hand-written fixtures encode what the developer *believes*
 the printer sends.
 
+**The second machine is the one exception, and it is bounded on purpose.** Nobody has captured
+a two-printer registry, so the multi-printer tests build a second machine in the test module —
+never in `tests/fixtures/`, because adding rows to a capture turns evidence into wishful
+thinking. What it is built from is only the *shapes the capture already proves*: the
+`<serial>_<translation_key>` job-sensor form and the `…_AMS_<ams serial>_tray_<n>` tray form,
+with localised entity ids because that is what the capture shows and what nothing may resolve
+by. A report from a household with two Bambu machines is the thing that would replace it, and
+[CONTRIBUTING](../CONTRIBUTING.md) already asks for exactly that kind of report.
+
 **Estimators** run against real G-code files, including a multi-colour one with purge, and a
 truncated file to prove `EstimationUnavailable` is raised rather than a wrong number returned.
 

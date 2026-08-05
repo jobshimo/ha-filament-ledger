@@ -9,6 +9,15 @@ A `FINISHED` job goes to UC-04 (Q4, closed — docs/12-field-notes.md): the endi
 the automatic deduction and the `consumption_recorded` flag land in one unit inside
 `RecordPrintConsumption`, which degrades to a review with reason `UNMAPPED_USAGE`
 wherever a figure cannot be attributed (docs/04-use-cases.md UC-04).
+
+**Correlation is per printer, and that is the whole of what v2.0 changed here.** An ending
+carries no job id, so it is matched to the newest `RUNNING` row — and with two machines
+printing at once "the newest RUNNING row" is the other machine's job about half the time.
+The consequence is not a cosmetic mislabelling: the ending's per-tray figures are written
+onto that row, so UC-04 would deduct one printer's grams from the spools in the other
+printer's trays, and a cancellation would open a review whose lines name trays the job
+never touched. Both printers are then wrong, and the ledger says so about neither. See
+`_running_job`.
 """
 
 from __future__ import annotations
@@ -21,7 +30,7 @@ from ..domain.model.print_job import PrintJob
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import PrintJobRepository
 from ..domain.port.unit_of_work import UnitOfWork
-from ..domain.value.identifiers import PrintJobId, new_print_job_id
+from ..domain.value.identifiers import PrinterSerial, PrintJobId, new_print_job_id
 from ..domain.value.print_event import PrintEnded, PrintEvent, PrintStarted
 from ..domain.value.print_job_state import PrintJobState
 from ..domain.value.review import ReviewReason
@@ -30,9 +39,14 @@ from .review_queue import OpenPendingReview, OpenPendingReviewCommand
 
 LOGGER = logging.getLogger(__name__)
 
-# How far down the recent-jobs listing the running job is looked for. The job an ending
-# belongs to is expected at the head — anything RUNNING deeper than this is a stale row
-# from an ending that never arrived, not the job that just stopped.
+# How far down **one machine's** recent-jobs listing the running job is looked for. The job
+# an ending belongs to is expected at the head — anything RUNNING deeper than this is a
+# stale row from an ending that never arrived, not the job that just stopped.
+#
+# Counted per printer since v2.0, which is what keeps the number meaning what it says: a
+# machine printing one long job while another runs fifteen short ones would push the long
+# job out of a shared window of ten and lose the correlation to a limit that was never
+# about it.
 CORRELATION_WINDOW = 10
 
 # Why a review opens, keyed by how the job ended. `FINISHED` is deliberately absent:
@@ -72,6 +86,7 @@ class TrackPrintJob:
             name=event.name,
             state=PrintJobState.RUNNING,
             started_at=self.clock.now(),
+            printer=event.printer,
             reported_usage=event.plan,
             printer_started_at=event.printer_started_at,
         )
@@ -90,15 +105,17 @@ class TrackPrintJob:
         anything (`PrintJob` states the rule and the consequence).
         """
         now = self.clock.now()
-        job = await self._running_job()
+        job = await self._running_job(event.printer)
         if job is None:
-            # The integration restarted mid-print: no RUNNING row exists for this ending.
-            # The start time is gone; `now` is the honest lower bound for both timestamps.
+            # The integration restarted mid-print: no RUNNING row exists for this ending on
+            # this machine. The start time is gone; `now` is the honest lower bound for both
+            # timestamps.
             job = PrintJob(
                 id=new_print_job_id(),
                 name=event.name,
                 state=PrintJobState.RUNNING,
                 started_at=now,
+                printer=event.printer,
             )
         ended = replace(
             job,
@@ -154,15 +171,29 @@ class TrackPrintJob:
             )
         return ended.id
 
-    async def _running_job(self) -> PrintJob | None:
-        """The newest RUNNING job — the one a terminal event belongs to.
+    async def _running_job(self, printer: PrinterSerial) -> PrintJob | None:
+        """The newest RUNNING job **on this machine** — the one its terminal event belongs to.
 
         Correlation by state rather than by an in-memory id, deliberately: memory does
-        not survive a restart, and the row does. If several RUNNING rows exist — endings
-        that never arrived — the newest is the one that just stopped; the stale ones stay
-        verbatim, reclassifiable later.
+        not survive a restart, and the row does. If several RUNNING rows exist for one
+        machine — endings that never arrived — the newest is the one that just stopped;
+        the stale ones stay verbatim, reclassifiable later.
+
+        **By state *and by machine*, because state alone stopped being an identity.** With
+        two printers the newest RUNNING row is as likely to be the other one's job as this
+        one's, and closing it would write this ending's per-tray figures onto that job — so
+        UC-04 deducts these grams from the spools in *that* machine's trays, and the ledger
+        reports both printers wrongly while flagging neither.
+
+        A row that names no printer matches nothing here, which is the one behaviour a
+        migrated ledger notices: the single print that spanned the upgrade to 0008 has a
+        nameless RUNNING row, its ending opens a fresh one, and the stale row is left as
+        every uncorrelated ending already leaves one. That costs a duration and a plan for
+        one job, once. Letting it match would buy them back by guessing which machine a row
+        belongs to that explicitly does not say — and guessing is the entire failure this
+        method exists to end. `PrintJob.printer` states the same choice from the other side.
         """
-        for job in await self.jobs.list_recent(CORRELATION_WINDOW):
+        for job in await self.jobs.list_recent(CORRELATION_WINDOW, printer=printer):
             if job.state is PrintJobState.RUNNING:
                 return job
         return None

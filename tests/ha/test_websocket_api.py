@@ -47,7 +47,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
-from ..application.conftest import A_PRINTER, EPOCH, a_tray
+from ..application.conftest import A_PRINTER, ANOTHER_PRINTER, EPOCH, a_tray
 from .conftest import FakeHass, Harness, a_spool, as_hass
 
 # The captured reference instance: the same registry rows and tray attributes the gateway
@@ -57,6 +57,7 @@ from .test_bambu_gateway import (
     TRAY_1_TAG,
     TRAY_ATTRIBUTES,
     plant_registry,
+    second_printer_rows,
     tray_state,
 )
 
@@ -859,6 +860,52 @@ class TestMountAndUnmount:
             await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
         ).summary.spool.location
         assert location == AmsSlot(a_tray(1))
+
+    async def test_with_two_machines_a_slot_alone_is_refused_rather_than_guessed(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The v1 compatibility above held because there was one machine for it to mean.
+
+        With two, *slot 1* names two trays and there is nothing to prefer between them. The
+        caller gets a sentence naming both serials instead of a mount that landed somewhere
+        plausible — which is the failure this whole release is about (docs/05 §5.4).
+        """
+        plant_registry(harness.hass, REGISTRY_ROWS + second_printer_rows())
+        harness.runtime.printer = ReadPrinterState(
+            gateway=BambuLabGateway(as_hass(harness.hass)),
+            spools=SqliteSpoolRepository(harness.ledger.database),
+            queries=harness.ledger.use_cases.queries,
+        )
+        spool_id = await a_created_spool(ws)
+
+        _, message = await ws.error(MOUNT, spool_id=spool_id, slot=1)
+
+        assert "more than one printer" in message
+        assert A_PRINTER.value in message
+        location = (
+            await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        ).summary.spool.location
+        assert location == Storage()
+
+    async def test_naming_the_printer_mounts_into_that_machines_tray(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The panel always names one, because the AMS section the button was drawn in
+        knows which machine's tray 1 was tapped."""
+        plant_registry(harness.hass, REGISTRY_ROWS + second_printer_rows())
+        harness.runtime.printer = ReadPrinterState(
+            gateway=BambuLabGateway(as_hass(harness.hass)),
+            spools=SqliteSpoolRepository(harness.ledger.database),
+            queries=harness.ledger.use_cases.queries,
+        )
+        spool_id = await a_created_spool(ws)
+
+        await ws.result_dict(MOUNT, spool_id=spool_id, printer=ANOTHER_PRINTER.value, ams=1, slot=1)
+
+        location = (
+            await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        ).summary.spool.location
+        assert location == AmsSlot(a_tray(1, printer=ANOTHER_PRINTER))
 
     async def test_every_mutation_refreshes_the_entities(
         self, ws: WsClient, harness: Harness

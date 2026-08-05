@@ -9,6 +9,13 @@ per-tray attribute keys looked like are boundary concerns that stay in the adapt
 
 Every optional field means *unavailable*, never zero. A printer that reported nothing has
 not reported nothing-was-consumed (docs/03-architecture.md §3.8).
+
+**Both moments name their machine, and the field is required.** The bus carries one event
+type for every printer in the house and the payload names only a device, so *which machine
+said this* is knowledge the adapter has and the receiving use case cannot recover: an
+ending that arrived anonymously would be correlated against whatever job happened to be
+running, which with two printers is a coin toss played with somebody's inventory
+(`application/track_print_job.py`).
 """
 
 from __future__ import annotations
@@ -23,13 +30,15 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from .grams import Grams
-    from .identifiers import TrayRef
+    from .identifiers import PrinterSerial, TrayRef
     from .percentage import Percentage
 
 
 @dataclass(frozen=True, slots=True)
 class PrintStarted:
     """A job began.
+
+    `printer` is the machine that began it — the module docstring says why it is required.
 
     `plan` carries the slicer's per-tray totals when the weight sensor's attributes
     already hold them — the same figures `PrintJob.reported_usage` preserves, captured at
@@ -43,6 +52,7 @@ class PrintStarted:
     """
 
     name: str
+    printer: PrinterSerial
     plan: dict[TrayRef, Grams] | None = None
     printer_started_at: datetime | None = None
 
@@ -56,6 +66,9 @@ class PrintStarted:
 @dataclass(frozen=True, slots=True)
 class PrintEnded:
     """A job stopped — finished, cancelled or failed.
+
+    `printer` is the machine that stopped it, and it is what this ending will be correlated
+    against — the module docstring says why it is required.
 
     `outcome` is read off the upstream event type and nothing else (Q1, closed): the
     classification is made by code that reads the MQTT stream for a living, and
@@ -80,6 +93,7 @@ class PrintEnded:
 
     outcome: PrintJobState
     name: str
+    printer: PrinterSerial
     layer_reached: int | None = None
     total_layers: int | None = None
     progress: Percentage | None = None
