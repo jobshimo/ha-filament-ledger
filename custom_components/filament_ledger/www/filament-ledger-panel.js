@@ -1257,6 +1257,17 @@ class FilamentLedgerPanel extends HTMLElement {
 
   // -- rendering ---------------------------------------------------------------------
 
+  /**
+   * The one region of the panel that scrolls, or null before the first paint.
+   *
+   * Queried rather than held, because the element it names is destroyed and rebuilt on
+   * every paint (ADR-0006). A field would go stale exactly once per render, which is the
+   * hardest kind of stale to notice.
+   */
+  get _scroller() {
+    return this._root?.querySelector(".view-scroll") ?? null;
+  }
+
   render() {
     if (!this._root) return;
     const t = this._t;
@@ -1267,16 +1278,51 @@ class FilamentLedgerPanel extends HTMLElement {
     const view = this._detail ? `detail:${this._detail.id}` : this._tab;
     const entering = view !== this._painted;
     this._painted = view;
+    // Where the reader had got to, read while the scroller that knows it still exists.
+    //
+    // One flag governs both halves, because they are the same distinction: arriving
+    // somewhere is animated and opens at the top, being repainted where you already are is
+    // neither. Without this a push from the backend — a print finishing while somebody is
+    // reading row forty — throws them back to the top, and a live panel that does that is
+    // worse than one that never updates at all (docs/06 §6.1).
+    const offset = entering ? 0 : (this._scroller?.scrollTop ?? 0);
     this._root.innerHTML = `
       ${this.header()}
       <main class="${entering ? "entering" : ""}">
         ${this._error ? this.errorBar() : ""}
-        ${this._loading ? `<div class="empty">${t("app.loading")}</div>` : this.body()}
+        ${this._loading ? this.shell("", `<div class="empty">${t("app.loading")}</div>`) : this.body()}
       </main>
       ${this._dialog ? this.dialog() : ""}
     `;
-    // After the paint, never before: the strip being measured has to exist first.
+    // Both of these after the paint and never before: the nodes they measure and move are
+    // the ones the line above has just built. The browser clamps the offset to the new
+    // maximum on its own, so a repaint that shortened the list lands at its end rather
+    // than out of range.
+    const scroller = this._scroller;
+    if (scroller) scroller.scrollTop = offset;
     this._syncTabStrip();
+  }
+
+  /**
+   * The layout shell every view is built from (docs/06 §6.1).
+   *
+   * Two regions under the header, and only the second one moves: the actions a view offers
+   * stay put while its content scrolls beneath them. The panel is used standing at a
+   * printer, where reaching a control means scrolling back up one-handed with a failed part
+   * in the other hand — so the controls do not go anywhere.
+   *
+   * **A view with no actions renders no row at all**, rather than an empty one. An action
+   * region that is present-but-empty costs its margin on every tab that has nothing to put
+   * in it, and vertical space is scarcest on the device this panel exists for.
+   *
+   * Both arguments are already-safe markup — a view's own template, not wire data — so
+   * neither is escaped here. The escaping happens where the data is interpolated, as it
+   * does everywhere else in this file.
+   */
+  shell(actions, content) {
+    return `
+      ${actions ? `<div class="view-bar">${actions}</div>` : ""}
+      <div class="view-scroll">${content}</div>`;
   }
 
   /**
@@ -1361,9 +1407,12 @@ class FilamentLedgerPanel extends HTMLElement {
 
   inventoryView() {
     const t = this._t;
+    // No actions while there are no spools: the one thing to do is the empty state's own
+    // call to action, and offering it twice would teach that they differ.
     if (!this._spools.length) {
-      return `
-        <section class="stack">
+      return this.shell(
+        "",
+        `<section class="stack">
           ${this.syncStrip()}
           <div class="empty teach">
             <h2>${t("inv.emptyTitle")}</h2>
@@ -1373,26 +1422,31 @@ class FilamentLedgerPanel extends HTMLElement {
               <button class="link" data-action="sync-trays">${t("inv.sync")}</button>
               ${t("inv.emptyLoadedTail")}</p>
           </div>
-        </section>`;
+        </section>`,
+      );
     }
 
     const stat = (key, value, alert) =>
       `<div class="stat"><div class="k">${key}</div><div class="v ${alert ? "alert" : ""}">${value}</div></div>`;
 
-    return `
-      <section class="stack">
+    // The two buttons lead the view rather than following the summary card, which is where
+    // docs/06 §6.2 has always drawn them and where a pinned row has to be anyway. The
+    // summary is a figure to read, not a control to reach: it scrolls with the spools.
+    return this.shell(
+      `<div class="bar">
+        <button class="primary" data-action="dialog" data-id="new-spool">${t("inv.newSpool")}</button>
+        <button data-action="sync-trays">${t("inv.sync")}</button>
+      </div>`,
+      `<section class="stack">
         <div class="card summary">
           ${stat(t("inv.totalStock"), esc(grams(this._stock?.total_g ?? 0)))}
           ${stat(t("inv.spools"), esc(this._stock?.spool_count ?? 0))}
           ${stat(t("inv.needsWeighing"), esc(this._stock?.needs_weighing ?? 0), this._stock?.needs_weighing)}
         </div>
-        <div class="bar">
-          <button class="primary" data-action="dialog" data-id="new-spool">${t("inv.newSpool")}</button>
-          <button data-action="sync-trays">${t("inv.sync")}</button>
-        </div>
         ${this.syncStrip()}
         <div class="grid">${this._spools.map((s) => this.spoolCard(s)).join("")}</div>
-      </section>`;
+      </section>`,
+    );
   }
 
   /** The last sync's outcome, one line per slot the printer reported. Transient. */
@@ -1550,29 +1604,44 @@ class FilamentLedgerPanel extends HTMLElement {
       </div>`;
     });
 
-    return `
-      <section class="stack">
+    // No action row: mounting and unmounting belong to the slot they act on, and a tray
+    // card already carries its own buttons.
+    return this.shell(
+      "",
+      `<section class="stack">
         <div class="note">${t("ams.note")}</div>
         <div class="trays">${slots.join("")}</div>
-      </section>`;
+      </section>`,
+    );
   }
 
   // -- history -----------------------------------------------------------------------
 
+  /**
+   * The whole ledger, newest first (docs/06 §6.6).
+   *
+   * The longest surface in the panel and the one the shell exists for: the header and the
+   * tab strip stay above it however far down the entries the reader gets. It offers no
+   * actions of its own yet — the filters docs/06 §6.6 owes it are the row that will go
+   * there, and the shell is where they will go rather than a second thing to invent.
+   */
   historyView() {
     const t = this._t;
     if (!this._movements.length) {
-      return `
-      <div class="empty teach">
-        <h2>${t("history.emptyTitle")}</h2>
-        <p>${t("history.emptyBody")}</p>
-        <p class="muted">${t("history.emptyFoot")}</p>
-      </div>`;
+      return this.shell(
+        "",
+        `<div class="empty teach">
+          <h2>${t("history.emptyTitle")}</h2>
+          <p>${t("history.emptyBody")}</p>
+          <p class="muted">${t("history.emptyFoot")}</p>
+        </div>`,
+      );
     }
 
     const rows = this._movements.map((m) => this.historyRow(m)).join("");
-    return `
-      <section class="stack">
+    return this.shell(
+      "",
+      `<section class="stack">
         <div class="card ledger-wrap">
           <h3>${t("history.heading")}</h3>
           <div class="scroll">
@@ -1587,7 +1656,8 @@ class FilamentLedgerPanel extends HTMLElement {
           </div>
           <p class="muted small">${t("history.foot", { count: this._movements.length })}</p>
         </div>
-      </section>`;
+      </section>`,
+    );
   }
 
   historyRow(m) {
@@ -1662,31 +1732,33 @@ class FilamentLedgerPanel extends HTMLElement {
   statsView() {
     const t = this._t;
     const stats = this._stats;
+    // The period selector is this tab's action row, in all three states: choosing a window
+    // is the only thing the view does, and a selector that scrolls away below a page of
+    // charts is a selector the reader has to hunt for to change their mind.
     if (!stats) {
       // Nothing yet, for one of two reasons. While the first read is in flight, say so;
       // if it failed, the error bar above has already said what happened, and the period
       // buttons stay live so trying again is one tap rather than a tab round-trip.
-      return `<section class="stack">
-        ${this.statsPeriods()}
-        ${this._statsLoading ? `<div class="empty">${t("app.loading")}</div>` : ""}
-      </section>`;
+      return this.shell(
+        this.statsPeriods(),
+        this._statsLoading ? `<div class="empty">${t("app.loading")}</div>` : "",
+      );
     }
 
     if (stats.empty) {
-      return `
-        <section class="stack">
-          ${this.statsPeriods()}
-          <div class="empty teach">
-            <h2>${t("stats.emptyTitle")}</h2>
-            <p>${t("stats.emptyBody")}</p>
-            <p class="muted small">${t("stats.emptyFoot")}</p>
-          </div>
-        </section>`;
+      return this.shell(
+        this.statsPeriods(),
+        `<div class="empty teach">
+          <h2>${t("stats.emptyTitle")}</h2>
+          <p>${t("stats.emptyBody")}</p>
+          <p class="muted small">${t("stats.emptyFoot")}</p>
+        </div>`,
+      );
     }
 
-    return `
-      <section class="stack">
-        ${this.statsPeriods()}
+    return this.shell(
+      this.statsPeriods(),
+      `<section class="stack">
         ${this.statsTotals(stats)}
         ${this.statsPrintTime(stats.print_time)}
         ${this.statsChart(t("stats.byColour"), this.statsColourRows(stats.by_colour))}
@@ -1694,7 +1766,8 @@ class FilamentLedgerPanel extends HTMLElement {
         ${this.statsOutcomes(stats)}
         ${this.statsTopPrints(stats.top_prints)}
         <p class="muted small">${t("stats.foot")}</p>
-      </section>`;
+      </section>`,
+    );
   }
 
   /** The three windows, as buttons rather than a select: nothing to lose focus on. */
@@ -1918,12 +1991,14 @@ class FilamentLedgerPanel extends HTMLElement {
   reviewView() {
     const t = this._t;
     if (!this._reviews.length) {
-      return `
-      <div class="empty teach">
-        <h2>${t("review.emptyTitle")}</h2>
-        <p>${t("review.emptyBody")}</p>
-        <p class="muted">${t("review.emptyFoot")}</p>
-      </div>`;
+      return this.shell(
+        "",
+        `<div class="empty teach">
+          <h2>${t("review.emptyTitle")}</h2>
+          <p>${t("review.emptyBody")}</p>
+          <p class="muted">${t("review.emptyFoot")}</p>
+        </div>`,
+      );
     }
 
     // Newest first (docs/06 §6.3): the backend serves oldest first, the card stack leads
@@ -1933,11 +2008,15 @@ class FilamentLedgerPanel extends HTMLElement {
       .sort((a, b) => String(b.opened_at).localeCompare(String(a.opened_at)))
       .map((review) => this.reviewCard(review))
       .join("");
-    return `
-      <section class="stack">
+    // The count is a caption, not a control, so it scrolls with the cards it counts. Each
+    // card carries its own Approve and Dismiss, beside the figures they commit.
+    return this.shell(
+      "",
+      `<section class="stack">
         <div class="muted">${t("review.pending", { count: this._reviews.length })}</div>
         ${cards}
-      </section>`;
+      </section>`,
+    );
   }
 
   reviewCard(review) {
@@ -2222,9 +2301,14 @@ class FilamentLedgerPanel extends HTMLElement {
       .join(" ")
       .replace(/^\+ /, "");
 
-    return `
-      <section class="stack">
-        <button class="link" data-action="back">${t("detail.back")}</button>
+    // Back is the whole action row, and deliberately only Back. The weigh/adjust/discard
+    // bar belongs under the hero card, where docs/06 §6.5 draws it and where it reads as
+    // acting on the spool above it; pinning it would move it above the spool it acts on.
+    // Back is already the topmost element, so pinning it reorders nothing and keeps the
+    // way out of a fifty-row history one tap away.
+    return this.shell(
+      `<button class="link" data-action="back">${t("detail.back")}</button>`,
+      `<section class="stack">
         <div class="card detail">
           <!-- Seen face-on: the winding, the core hole, and the figure in the middle. The
                card shows the same spool small; this is the same object, larger, not a
@@ -2288,7 +2372,8 @@ class FilamentLedgerPanel extends HTMLElement {
           <div class="checksum">${esc(sum)} = <b>${spool.balance_exact_g.toFixed(1)} g</b></div>
           <p class="muted small">${t("detail.foot")}</p>
         </div>
-      </section>`;
+      </section>`,
+    );
   }
 
   // -- trash -------------------------------------------------------------------------
@@ -2299,18 +2384,24 @@ class FilamentLedgerPanel extends HTMLElement {
     const spools = trash?.spools ?? [];
     const movements = trash?.movements ?? [];
     if (!spools.length && !movements.length) {
-      return `
-      <div class="empty teach">
-        <h2>${t("trash.emptyTitle")}</h2>
-        <p>${t("trash.emptyBody")}</p>
-      </div>`;
+      return this.shell(
+        "",
+        `<div class="empty teach">
+          <h2>${t("trash.emptyTitle")}</h2>
+          <p>${t("trash.emptyBody")}</p>
+        </div>`,
+      );
     }
 
-    return `
-      <section class="stack">
+    // No action row: restoring is per row, and there is deliberately no empty-the-trash
+    // button to offer (docs/adr/0007 — nothing here is awaiting destruction).
+    return this.shell(
+      "",
+      `<section class="stack">
         ${spools.length ? this.trashSpools(spools) : ""}
         ${movements.length ? this.trashMovements(movements) : ""}
-      </section>`;
+      </section>`,
+    );
   }
 
   trashSpools(spools) {
@@ -2406,30 +2497,36 @@ class FilamentLedgerPanel extends HTMLElement {
   printerView() {
     const t = this._t;
     if (this._printerLoading && !this._printer) {
-      return `<div class="empty">${t("app.loading")}</div>`;
+      return this.shell("", `<div class="empty">${t("app.loading")}</div>`);
     }
     const state = this._printer;
     if (!state || state.dormant) {
-      // The honest no-printer answer, in the voice the sync strip already speaks.
-      return `
-        <div class="empty teach">
+      // The honest no-printer answer, in the voice the sync strip already speaks. No
+      // action row with it: refreshing a printer that is not there is not an offer.
+      return this.shell(
+        "",
+        `<div class="empty teach">
           <h2>${t("printer.dormantTitle")}</h2>
           <p>${t("printer.dormantBody")}</p>
           <p class="muted small">${t("printer.dormantFoot")}</p>
-        </div>`;
+        </div>`,
+      );
     }
 
-    return `
-      <section class="stack">
-        <div class="bar">
-          <button data-action="refresh-printer" ${this._printerLoading ? "disabled" : ""}>${t("printer.refresh")}</button>
-        </div>
+    // A glance has a moment, and the moment is the user's (docs/14 §14.5) — so the one
+    // control that takes a fresh one stays where they left it.
+    return this.shell(
+      `<div class="bar">
+        <button data-action="refresh-printer" ${this._printerLoading ? "disabled" : ""}>${t("printer.refresh")}</button>
+      </div>`,
+      `<section class="stack">
         ${this.printerFacts(state)}
         ${this.printerError(state.error)}
         ${this.printerTrays(state.trays ?? [])}
         <p class="muted small">${t("printer.readOnly")}</p>
         <p class="muted small">${t("printer.pendingSensors")}</p>
-      </section>`;
+      </section>`,
+    );
   }
 
   printerFacts(state) {
@@ -2557,14 +2654,17 @@ class FilamentLedgerPanel extends HTMLElement {
   settingsView() {
     const t = this._t;
     if (this._settingsLoading && !this._settings) {
-      return `<div class="empty">${t("app.loading")}</div>`;
+      return this.shell("", `<div class="empty">${t("app.loading")}</div>`);
     }
     const admin = Boolean(this._hass?.user?.is_admin);
-    return `
-      <section class="stack">
+    // No action row: Save belongs to the form it submits, beside the fields it commits.
+    return this.shell(
+      "",
+      `<section class="stack">
         ${this._settings ? this.settingsForm(this._settings, admin) : ""}
         ${this.languageCard()}
-      </section>`;
+      </section>`,
+    );
   }
 
   settingsForm(settings, admin) {
@@ -3100,7 +3200,26 @@ export const STYLES = `
   color: var(--fl-ink);
 }
 * { box-sizing: border-box; }
-#root { min-height: 100%; color: var(--fl-ink); font-family: var(--fl-font-sans);
+
+/* ---- The layout shell (06 §6.1) -----------------------------------------------------
+   A flex column filling the host. The header, the tab strip and a view's action row are
+   rows of it and therefore cannot move; .view-scroll is the only thing in the panel that
+   scrolls vertically. (No backticks anywhere in these comments: STYLES is a template
+   literal and one would end the stylesheet — 16 §16.9.)
+
+   A definite height, not a minimum: the scroller's flex basis only resolves to a real box
+   if the column it sits in has one, and min-height leaves the column content-sized — the
+   whole panel would grow past the host again and the document would scroll as one, which
+   is what this replaces.
+
+   Home Assistant does supply one, measured rather than assumed: ha-panel-custom and
+   partial-panel-resolver carry no styles at all and are therefore display:inline, so they
+   are not block containers, and the host's own height:100% resolves past both of them
+   against ha-drawer — the viewport's height (16 §16.2). A host that ever stopped supplying
+   one degrades to the single-document scroll this replaced rather than to a broken panel,
+   which is the whole reason the header keeps a sticky rule it no longer needs here. */
+#root { height: 100%; display: flex; flex-direction: column;
+  color: var(--fl-ink); font-family: var(--fl-font-sans);
   background:
     radial-gradient(1100px 520px at 82% -8%, rgba(0, 224, 198, .07), transparent 60%),
     radial-gradient(900px 460px at -6% 4%, rgba(131, 35, 255, .06), transparent 58%),
@@ -3108,10 +3227,16 @@ export const STYLES = `
   background-attachment: fixed; }
 
 /* A hairline and a wash, not a coloured slab. The header used to be HA's app bar wearing
-   the theme's primary colour; it is now part of the same surface as everything under it. */
+   the theme's primary colour; it is now part of the same surface as everything under it.
+
+   The flex rule is what pins it; sticky is the fallback for a host that gives no definite
+   height, where the shell collapses back to one scrolling document — see #root. z-index
+   applies to a flex item whether or not it is positioned, and it is what keeps the strand
+   overhanging the header's bottom edge above the content beneath. */
 header { background: linear-gradient(180deg, rgba(11, 16, 22, .92), rgba(5, 7, 10, .72));
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  color: var(--fl-ink); padding: 16px 22px 0; position: sticky; top: 0; z-index: 5;
+  color: var(--fl-ink); padding: 16px 22px 0; flex: none;
+  position: sticky; top: 0; z-index: 5;
   border-bottom: 1px solid var(--fl-line-soft); }
 header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
 .head-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -3152,15 +3277,48 @@ nav .count { display: inline-grid; place-items: center; min-width: 18px; height:
   font-family: var(--fl-font-mono); font-size: 11px; font-weight: 700;
   box-shadow: 0 0 14px rgba(255, 84, 112, .35); }
 
-/* The safe-area insets ride on the base rule rather than a later override, so a container
+/* The centred column, and the only place its geometry is written down: the pinned action
+   row and the scrolling content are both inside it, so the two cannot drift out of
+   alignment when a tier changes the padding.
+
+   The safe-area insets ride on the base rule rather than a later override, so a container
    query can restate the padding without a trailing rule quietly winning back three sides.
-   The phone's notch is the panel's problem: its venue is somebody standing at a printer. */
-main { padding: 22px max(22px, env(safe-area-inset-right))
-    max(22px, env(safe-area-inset-bottom)) max(22px, env(safe-area-inset-left));
-  max-width: 1320px; margin: 0 auto; }
+   The phone's notch is the panel's problem: its venue is somebody standing at a printer.
+   The bottom inset is the exception and lives on .view-scroll — see there.
+
+   The width is stated explicitly, because as a flex item an auto cross-size with auto
+   margins resolves to fit-content and would shrink the column to its widest card. */
+main { padding: 22px max(22px, env(safe-area-inset-right)) 0 max(22px, env(safe-area-inset-left));
+  width: 100%; max-width: 1320px; margin: 0 auto;
+  flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* Only on arriving at a view. An update that lands while you are reading one must not
    replay it — see render(). */
 main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
+
+/* The gap is the one .stack already uses, so the pinned row sits the same distance from the
+   content as the content's own first two rows sit from each other and the seam does not
+   announce itself. A view with no actions emits no such row at all — see shell(). */
+.view-bar { flex: none; margin-bottom: 16px; }
+
+/* The zero minimum height is the declaration that makes this scroll: a flex item's
+   automatic minimum size is its content, so without it the item grows to fit the list and
+   overflows the column instead of scrolling inside it.
+
+   Containing the overscroll stops the end of the list chaining into Home Assistant's own
+   scrolling and pull-to-refresh, which on a phone reads as the panel being dragged away
+   mid-read.
+
+   A stable scrollbar gutter keeps the reserved width constant whether or not a list is long
+   enough to scroll, so registering one more spool cannot shift every card sideways. On a
+   phone, where scrollbars are overlays, it reserves nothing.
+
+   The bottom inset rides here rather than on main: inside the scroller it is scrolled *to*
+   rather than held beneath, so the last card clears the home indicator at the end of the
+   list and costs no height before it. */
+.view-scroll { flex: 1; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain; scrollbar-gutter: stable;
+  padding-bottom: max(22px, env(safe-area-inset-bottom)); }
+
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .card { background: linear-gradient(165deg, var(--fl-surface-raised), #0a0f14);
   border-radius: var(--fl-radius-l); box-shadow: var(--fl-shadow-1);
@@ -3631,8 +3789,11 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
    pinning and collapsing the sidebar reflow the panel with no reload and no JavaScript.
    =================================================================================== */
 @container panel (max-width: 600px) {
-  main { padding: 14px max(14px, env(safe-area-inset-right))
-    max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  main { padding: 14px max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left)); }
+  .view-scroll { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  /* Fixed chrome is paid for in the dimension a phone has least of, so the pinned row
+     keeps the tighter gap the rest of this tier uses. */
+  .view-bar { margin-bottom: 12px; }
   .detail { gap: 12px; }
   /* Tighter tabs, never fewer words. Icons in place of labels would buy a few pixels and
      cost the discoverability the whole strip exists for (docs/06 §6.1). */
@@ -3651,8 +3812,8 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
 }
 
 @container panel (min-width: 1000px) {
-  main { padding: 28px max(32px, env(safe-area-inset-right))
-    max(80px, env(safe-area-inset-bottom)) max(32px, env(safe-area-inset-left)); }
+  main { padding: 28px max(32px, env(safe-area-inset-right)) 0 max(32px, env(safe-area-inset-left)); }
+  .view-scroll { padding-bottom: max(80px, env(safe-area-inset-bottom)); }
 }
 `;
 

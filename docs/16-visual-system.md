@@ -32,7 +32,7 @@ selectors, and it contains **135 uses of 15 distinct Home Assistant theme variab
 
 ## 16.2 How this works inside Home Assistant
 
-Four facts about the host, and what each one obliges.
+Five facts about the host, and what each one obliges.
 
 ### The panel already has encapsulation
 
@@ -49,6 +49,42 @@ implements `set hass` and ignores the rest.
 `narrow` and `showMenu` are to be implemented, but they are **not** the responsive mechanism.
 They are the signal for decisions CSS cannot make — principally whether to draw a control that
 opens the sidebar when HA has collapsed it.
+
+### The host has a definite height, and that is what the layout shell stands on
+
+[06 §6.1](06-ui-spec.md#61-navigation) asks for chrome that stays put while the content
+scrolls under it. Inside a shadow root that needs one thing the panel cannot assume: a
+containing block with a **definite** height, so the content region's `flex: 1` resolves to a
+real box instead of to its own content.
+
+Home Assistant supplies one, and the mechanism is worth writing down because it is not
+obvious. Measured on a running instance:
+
+```
+body                      854px   definite
+  home-assistant                  display: inline   (no styles of its own)
+    home-assistant-main           display: inline
+      ha-drawer           854px   definite
+        partial-panel-resolver    display: inline
+          ha-panel-custom         display: inline
+            filament-ledger-panel         height: 100%  →  854px
+```
+
+The three elements between the panel and `ha-drawer` carry no CSS at all, so they are
+`display: inline` and are **not block containers** — a percentage height resolves against
+the nearest block container ancestor, which skips all three and lands on `ha-drawer`. So
+`:host { height: 100% }` is the viewport's height, and the shell is a flex column that
+fills it.
+
+**Do not swap that for `100vh`.** It is the same number today and the wrong one the moment
+Home Assistant puts anything above the panel, and on a phone `vh` is the wrong number
+whenever the URL bar is showing.
+
+**It degrades rather than breaks.** If a future host stops supplying a definite height, the
+column becomes content-sized, the content region stops being a scroller, and the panel scrolls
+as one document — which is what it did before the shell existed. The header keeps a
+`position: sticky` rule for exactly that case; it is inert in the shell and is the reason the
+fallback is merely worse rather than unusable.
 
 ### Responsiveness is a container query, never a viewport query
 
@@ -341,8 +377,17 @@ run it on the way to a deploy rather than after the last edit before one.
 
 **The panel repaints by replacing markup wholesale.** Every node is new after every paint, so
 anything measured, scrolled or focused must be re-applied after the paint and never once at
-startup. The tab strip already learned this ([06 §6.1](06-ui-spec.md#61-navigation)); any new
-component that measures itself inherits the same rule.
+startup. The tab strip already learned this ([06 §6.1](06-ui-spec.md#61-navigation)), and the
+content region's scroll position is the second thing to learn it; any new component that
+measures itself inherits the same rule.
+
+**`min-height: 100%` is not a definite height, and a flex scroller needs one.** A column laid
+out with `min-height` grows to fit its content, so the region meant to scroll simply gets
+taller and the whole panel overflows its host instead — the failure looks like the scroll
+container being ignored, and the missing declaration is three elements away. The same trap has
+a second half: a flex item's automatic minimum size is its content, so an item with
+`overflow-y: auto` and no `min-height: 0` refuses to shrink and never scrolls either. Both are
+needed, and neither produces an error.
 
 **Do not bump `manifest.json`.** Not in any of these pull requests. That is a release-time edit
 and [RELEASING](../RELEASING.md) owns it.
