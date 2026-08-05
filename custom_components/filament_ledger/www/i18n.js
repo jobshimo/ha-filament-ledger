@@ -220,6 +220,40 @@ const EN = {
   "history.reassignTitle": "Move this charge to another spool",
   "history.voidTitle": "Delete this entry and return the grams",
 
+  // -- the History filter row (docs/06 §6.6) -----------------------------------------
+  // Each label says what its control actually narrows, because a control that promises
+  // more than it does reads as broken rather than as narrow. The search box is the one
+  // that has to be careful: it matches stored text, so it cannot claim the entry labels
+  // this panel generates or the spool name the swatches beside it already cover.
+  "history.filterSearch": "Note or print",
+  "history.filterSearchPlaceholder": "Search…",
+  "history.filterSearchHelp":
+    "Matches the note written on an entry and the name of the print it came from. Not the " +
+    "spool's name — the colours narrow that — and not the entry's own label.",
+  "history.filterFrom": "From",
+  "history.filterTo": "To",
+  "history.filterAmount": "Grams moved",
+  "history.filterAmountHelp":
+    "How much filament moved, whichever way it went: a print that used 84 g matches at " +
+    "least 50 g, and so does a correction that gave 84 g back.",
+  "history.filterAtLeast": "at least",
+  "history.filterAtMost": "at most",
+  "history.filterColour": "Colour",
+  "history.filterColourHelp":
+    "Entries on spools of the colours you pick. Pick several — the blacks and the greys " +
+    "are one question, not two.",
+  "history.filterColourOne": "Filament [[colour]]",
+  "history.filterClear": "Clear filters",
+  "history.filterToggle": "Filters",
+  "history.filterActive": "Narrowed by [[count]] of these controls",
+  "history.noMatchTitle": "Nothing matches these filters.",
+  "history.noMatchBody":
+    "The ledger still holds every entry it held a moment ago; this slice of it is empty. " +
+    "Widen a date, drop a colour, or clear the filters to see all of it again.",
+  "history.footFiltered":
+    "[[count]] entries match these filters, newest first. The limit applies to what " +
+    "matched, so widening a filter can bring older entries back into view.",
+
   // -- statistics (docs/06 §6.7, docs/15 §15.6) --------------------------------------
   // Every figure on this tab is computed in the application layer and arrives finished:
   // the panel draws, it never aggregates. These strings are the labels on those figures
@@ -704,6 +738,39 @@ const ES = {
   "history.deleted": "eliminada",
   "history.reassignTitle": "Mover este cargo a otra bobina",
   "history.voidTitle": "Eliminar esta entrada y devolver los gramos",
+
+  // -- la fila de filtros del historial (docs/06 §6.6) -------------------------------
+  "history.filterSearch": "Nota o impresión",
+  "history.filterSearchPlaceholder": "Buscar…",
+  "history.filterSearchHelp":
+    "Busca en la nota escrita en una entrada y en el nombre de la impresión de la que " +
+    "proviene. No busca el nombre de la bobina —eso lo acotan los colores— ni la etiqueta " +
+    "de la propia entrada.",
+  "history.filterFrom": "Desde",
+  "history.filterTo": "Hasta",
+  "history.filterAmount": "Gramos movidos",
+  "history.filterAmountHelp":
+    "Cuánto filamento se movió, en cualquier sentido: una impresión que gastó 84 g cumple " +
+    "con al menos 50 g, y una corrección que devolvió 84 g también.",
+  "history.filterAtLeast": "al menos",
+  "history.filterAtMost": "como máximo",
+  "history.filterColour": "Color",
+  "history.filterColourHelp":
+    "Entradas de bobinas de los colores que elija. Puede elegir varios: los negros y los " +
+    "grises son una sola pregunta, no dos.",
+  "history.filterColourOne": "Filamento [[colour]]",
+  "history.filterClear": "Quitar filtros",
+  "history.filterToggle": "Filtros",
+  "history.filterActive": "Acotado por [[count]] de estos controles",
+  "history.noMatchTitle": "Nada coincide con estos filtros.",
+  "history.noMatchBody":
+    "El registro conserva todas las entradas que tenía hace un momento; lo que está vacío " +
+    "es esta porción. Amplíe una fecha, quite un color o quite los filtros para volver a " +
+    "verlo entero.",
+  "history.footFiltered":
+    "[[count]] entradas coinciden con estos filtros, de la más reciente a la más antigua. " +
+    "El límite se aplica a lo que coincidió, así que ampliar un filtro puede devolver a la " +
+    "vista entradas más antiguas.",
 
   // -- estadísticas (docs/06 §6.7, docs/15 §15.6) ------------------------------------
   "stats.periodLabel": "Período",

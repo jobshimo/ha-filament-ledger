@@ -377,9 +377,22 @@ run it on the way to a deploy rather than after the last edit before one.
 
 **The panel repaints by replacing markup wholesale.** Every node is new after every paint, so
 anything measured, scrolled or focused must be re-applied after the paint and never once at
-startup. The tab strip already learned this ([06 §6.1](06-ui-spec.md#61-navigation)), and the
-content region's scroll position is the second thing to learn it; any new component that
-measures itself inherits the same rule.
+startup. The tab strip already learned this ([06 §6.1](06-ui-spec.md#61-navigation)), the
+content region's scroll position learned it second — in both axes, not just the obvious one —
+and the History filter row learned it third, where "focused" stopped being hypothetical: a
+control rebuilt under a reader's fingers eats the word they were typing unless the focus and
+the caret are put back. Any new component that measures itself inherits the same rule.
+
+**`overflow-x: auto` makes a box scroll in both axes, and a sticky heading sticks to it.** A
+horizontal-scroll wrapper is not horizontal-only: CSS computes an `overflow` of `visible` to
+`auto` the moment the other axis is not `visible`, so the wrapper becomes the nearest
+scrollport and anything `position: sticky` inside it pins to a box whose vertical extent never
+moves. Nothing errors and nothing warns; the heading simply never sticks, and the declaration
+that would have worked is three elements away. The fix is structural rather than a property —
+remove the scroll container from between the sticky element and the scroller that actually
+moves ([06 §6.6](06-ui-spec.md)). Its second half: a **collapsed** border belongs to the table
+rather than to the cell, so it stays behind with the rows while a sticky heading travels, and
+the line under the headings detaches and scrolls away on its own.
 
 **`min-height: 100%` is not a definite height, and a flex scroller needs one.** A column laid
 out with `min-height` grows to fit its content, so the region meant to scroll simply gets
