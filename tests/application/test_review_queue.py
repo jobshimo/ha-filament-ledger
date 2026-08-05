@@ -296,6 +296,13 @@ class TestApprovingAReview:
         detail = await ledger.use_cases.queries.detail(spool_id)
         assert detail.summary.balance == Grams.of(929)
         assert detail.summary.confidence is Confidence.LOW
+        # And the badge can say which of the two routes to LOW was taken. 71 g is nowhere
+        # near the consumption rung, so only the estimate explains this one — and the card
+        # names the day it was approved rather than the day the spool was registered.
+        basis = detail.summary.confidence_basis
+        assert basis.estimates_since == 1
+        assert basis.latest_estimate_at == ledger.clock.now()
+        assert basis.consumed_since == Grams.of(71)
 
         review = await stored_review(ledger, review_id)
         assert review.state is ReviewState.APPROVED

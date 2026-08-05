@@ -157,10 +157,10 @@ class TestAutomaticDeduction:
     async def test_consumption_degrades_confidence_by_volume_not_by_kind(
         self, ledger: Ledger
     ) -> None:
-        """PRINT_CONSUMPTION is unattended, but confidence turns on the movement's type,
-        not its source: an automatic deduction never earns LOW — that is reserved for
-        estimates — it only drifts a balance toward MEDIUM once a fifth of the opening
-        weight has been drawn."""
+        """PRINT_CONSUMPTION is unattended, but confidence turns on how much left the spool
+        rather than on who authorised it: a measured deduction drifts a balance to MEDIUM
+        once a fifth of the opening weight has been drawn, and both spools here are inside
+        that band's ends."""
         lightly_used = await a_spool(ledger, label="lightly used")
         heavily_used = await a_spool(ledger, label="heavily used")
         await ledger.use_cases.mount_spool.execute(lightly_used, SLOT_1)

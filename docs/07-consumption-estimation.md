@@ -174,6 +174,36 @@ These figures are **deliberately unquantified**. Publishing a "±5%" before meas
 would be a fabricated number in a document about not fabricating numbers. They get filled in
 from real data during Phase 4 ([10 — Roadmap](10-roadmap.md)).
 
+### What has actually been measured: two observations
+
+**Sample size: two.** One instance, one printer, one operator. Every reconciliation on that
+instance was examined; every other one had **zero** consumption between anchors — back-to-back
+weighings — so it says nothing about drift and is not counted here.
+
+| Drawn since the previous anchor | Reconciliation delta | Delta as a share of what was drawn |
+|---|---|---|
+| 220.0 g (22.0% of the reel) | +50.0 g | 22.7% |
+| 916.9 g (91.7% of the reel) | −333.1 g | 36.3% |
+
+**Two points are not a curve, and this table is not the one above.** It records what two
+reconciliations happened to say on one machine; it is not an accuracy characterisation, it
+cannot be turned into one, and nothing here fills a cell in §7.5's table — those stay
+qualitative until there is a sample worth quantifying. Both observations sit in the
+*no G-code, linear estimator* row, so they say nothing at all about the G-code path.
+
+What two points can support is narrow, and it is the whole of what has been built on them:
+
+- the error is **larger than "flow-rate variance"** suggests — the first observation is already
+  22.7% of what was drawn, at a point where the ledger had only 22% of the reel to be wrong
+  about;
+- the error **keeps growing well past 20% drawn**, which is the point at which the confidence
+  ladder used to stop moving.
+
+The second claim is why [02 §2.6](02-domain-model.md) grew a rung above its 20% boundary, and
+the worse of these two rates is the bound that rung's position is derived from. That derivation
+is stated where the rung is, not here, and it is provisional in exactly the way a figure drawn
+from two observations has to be.
+
 ---
 
 ## 7.6 Purge accounting

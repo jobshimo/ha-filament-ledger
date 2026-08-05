@@ -68,6 +68,22 @@ const EN = {
   "conf.LOW": "Low",
   "conf.suffix": "[[level]] confidence",
 
+  // -- why the badge reads what it reads (docs/06 §6.5) ------------------------------
+  //
+  // Two self-contained lines rather than one sentence with a hole in the middle: the
+  // reason stands beside the chip, the anchor stands under it. Neither depends on the
+  // other's grammar, so a translation is free to order each as its language wants.
+  //
+  // `conf.anchor.*` is keyed by the anchor's movement type, and the two keys are the two
+  // different claims: *since you weighed it* and *since you registered it* are not the
+  // same promise, and a reader is owed the one that is actually being made.
+  "conf.why.estimate": "an estimate was approved [[when]]",
+  "conf.why.drawn": "[[grams]] g drawn, [[pct]]% of this spool",
+  "conf.why.nothing": "nothing drawn yet",
+  "conf.anchor.RECONCILIATION": "Counting since you weighed it, [[when]]",
+  "conf.anchor.OPENING_BALANCE": "Counting since you registered it, [[when]] · never weighed",
+  "conf.anchor.NONE": "Nothing confirmed to count from",
+
   // -- estimator provenance (docs/06 §6.3) -------------------------------------------
   "est.LINEAR_PROGRESS": "Estimated from progress · approximate",
   "est.NONE": "Reported by the printer · not an estimate",
@@ -637,6 +653,14 @@ const ES = {
   "conf.MEDIUM": "Media",
   "conf.LOW": "Baja",
   "conf.suffix": "confianza [[level]]",
+
+  // -- por qué la insignia dice lo que dice (docs/06 §6.5) ---------------------------
+  "conf.why.estimate": "se aprobó una estimación [[when]]",
+  "conf.why.drawn": "[[grams]] g consumidos, el [[pct]] % de esta bobina",
+  "conf.why.nothing": "todavía no se ha consumido nada",
+  "conf.anchor.RECONCILIATION": "Contando desde que la pesó, [[when]]",
+  "conf.anchor.OPENING_BALANCE": "Contando desde que la registró, [[when]] · nunca pesada",
+  "conf.anchor.NONE": "No hay ninguna medición confirmada desde la que contar",
 
   // -- procedencia de la estimación --------------------------------------------------
   "est.LINEAR_PROGRESS": "Estimado a partir del progreso · aproximado",
