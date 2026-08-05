@@ -226,7 +226,21 @@ Rules:
 - **Forward-only.** No down-migrations; a restored backup is the rollback path, and a
   half-applied reversal is worse than no reversal.
 
-`migrations/0001_initial.sql` is the schema above.
+`migrations/0001_initial.sql` is the schema above. Everything later lands with the feature
+that motivated it and is specified there rather than duplicated here.
+
+**A fact that stops being derivable gets a column.** The counterpart to the second rule,
+and the reason `migrations/0005_void_remembers_the_un_discard.sql` exists: whether a void
+had brought its spool back out of `DISCARDED` was read off the history — a whole-spool
+discard is the entry nothing follows — and the void appends its own reversal, so by the time
+the restore asks, the answer has been overwritten by the question. Deriving a fact twice is
+only safe while the first derivation cannot change what the second one reads
+([14 §14.4.1-2](14-corrections-and-trash.md)).
+
+A backfill states what the old rows *say*, never what would be convenient. Provenance that
+was never recorded backfills to the honest floor (0003's `tag_source` → `MANUAL`); a fact
+that cannot be recovered at all backfills to the reading whose mistake is the cheaper one
+(0005's `undiscarded_spool` → no, because the opposite would invent waste).
 
 `0004_review_charges.sql` rewrites `slot_resolution` from a map to a list of charges (§8.2).
 It is the one migration so far that reinterprets data rather than adding to it, and it is
