@@ -850,9 +850,22 @@ class FilamentLedgerPanel extends HTMLElement {
         this._dialog = { kind: "restore-movement", movement_id: id };
         this.render();
         break;
+      case "spool-actions":
+        // The collapsed rail (docs/16 §16.10). It carries the spool's id because the
+        // surfaces that offer it — an inventory card, an AMS tray — have no loaded detail
+        // to fall back on, and every body it opens resolves its subject from that id.
+        this._dialog = { kind: "spool-actions", spool_id: id };
+        this.render();
+        break;
+      case "spool-finish":
+        // One action for both densities, so the rail's expanded and collapsed renderings
+        // cannot drift into two ways of asking the same thing.
+        this._dialog = { kind: "finish", spool_id: id };
+        this.render();
+        break;
       case "spool-intent":
-        // The X on a spool asks what actually happened, and the two answers are
-        // different facts about the world (docs/14 §14.4.3).
+        // Retirement asks what actually happened, and the two answers are different facts
+        // about the world (docs/14 §14.4.3).
         this._dialog = { kind: "spool-intent", spool_id: id };
         this.render();
         break;
@@ -1169,6 +1182,28 @@ class FilamentLedgerPanel extends HTMLElement {
             measured_g: Number(data.measured_g),
             includes_core: data.includes_core === "on",
             note: data.note || null,
+          }),
+        );
+        break;
+      // Finishing a spool is a reconciliation to zero, and deliberately nothing else
+      // (docs/06 §6.5). A whole-spool discard would book the remainder as waste, which
+      // filament that was printed is not; a consumption would charge a print that never
+      // ran. What the user is asserting is a measurement — the reel is empty — so it goes
+      // through the measurement path, and the delta that falls out is the accumulated
+      // drift of every estimate since the last weighing, recorded where it can be read.
+      //
+      // `includes_core: false` for the same reason the edit dialog's absolute restatement
+      // sends it: zero net is not zero gross. Zero as a *scale reading* would have the
+      // reel subtracted from it and reconcile the spool to minus its own core.
+      case "finish":
+        this.guarded(() =>
+          this.call("spools/reconcile", {
+            spool_id: spoolId,
+            measured_g: 0,
+            includes_core: false,
+            // Written into the ledger, so it keeps the language of the panel that wrote
+            // it — the same rule the edit dialog's correction note follows.
+            note: this._t("dlg.finishNote"),
           }),
         );
         break;
@@ -1700,13 +1735,18 @@ class FilamentLedgerPanel extends HTMLElement {
   spoolCard(spool) {
     const t = this._t;
     const sealed = spool.state === "SEALED";
-    // A sealed spool is full by construction, so its ring is a closed circle and the word
-    // carries the fact instead of a percentage nobody needs to read.
+    const depleted = spool.state === "DEPLETED";
+    // A sealed spool is full by construction and a depleted one is empty by construction,
+    // so each gets the word instead of a percentage nobody needs to read. The middle case
+    // is the only one where the figure carries information.
     const gauge = sealed
       ? `<span class="chip">${t("inv.sealed")}</span>`
-      : `<span class="pct">${spool.percentage}%</span>`;
+      : depleted
+        ? `<span class="chip">${this.stateLabel(spool.state)}</span>`
+        : `<span class="pct">${spool.percentage}%</span>`;
     return `
-      <article class="card spool ${spool.has_anomaly ? "anomaly" : ""}" data-action="open" data-id="${esc(spool.id)}">
+      <article class="card spool ${spool.has_anomaly ? "anomaly" : ""} ${depleted ? "depleted" : ""}"
+        data-action="open" data-id="${esc(spool.id)}">
         <span class="shim" aria-hidden="true"></span>
         <div class="swatch" style="background:${esc(spool.colour)}"></div>
         <div class="spool-art">
@@ -1717,10 +1757,13 @@ class FilamentLedgerPanel extends HTMLElement {
           </div>
         </div>
         <div class="spool-body">
-          <button class="card-x" data-action="spool-intent" data-id="${esc(spool.id)}"
-            title="${t("inv.removeSpool")}">×</button>
-          <div class="name">${esc(spool.name)}</div>
-          <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
+          <div class="spool-head">
+            <div class="spool-id">
+              <div class="name">${esc(spool.name)}</div>
+              <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
+            </div>
+            ${this.spoolMenu(spool)}
+          </div>
           <div class="big">${spool.balance_g}<small> g</small></div>
           <div class="foot">
             ${gauge}
@@ -1730,6 +1773,37 @@ class FilamentLedgerPanel extends HTMLElement {
           ${spool.needs_weighing ? `<div class="cta">${t("inv.weighThis")}</div>` : ""}
         </div>
       </article>`;
+  }
+
+  /**
+   * The spool action rail, collapsed (docs/06 §6.5, docs/16 §16.10).
+   *
+   * One control, at the two sizes a spool is drawn small — the inventory card and an AMS
+   * tray. Neither has room for a labelled row and neither should be made to grow one, so
+   * the rail folds into the glyph docs/06 §6.5 has drawn since its first draft, and opens
+   * as a sheet listing exactly what the detail view lays out in full.
+   *
+   * It sits *in* the card's header row rather than over its corner. The floating glyph it
+   * replaces belonged to no grid, overlapped the name at narrow widths, and could not be
+   * given a tap target without covering the text it sat on.
+   */
+  spoolMenu(spool) {
+    const label = this._t("act.spoolActions");
+    return `<button class="spool-menu" data-action="spool-actions" data-id="${esc(spool.id)}"
+      title="${label}" aria-label="${label}" aria-haspopup="dialog">⋮</button>`;
+  }
+
+  /**
+   * Whether *mark as finished* is offered at all.
+   *
+   * It reconciles the spool to zero, so it needs something to reconcile away: a spool
+   * already at zero would be refused by the use case for recording nothing, and a retired
+   * one would be refused for being retired. The panel does not ask a question whose answer
+   * it already knows — the same rule `rowActions` follows.
+   */
+  _finishable(spool) {
+    if (!spool || spool.state === "DISCARDED" || spool.state === "DELETED") return false;
+    return Number(spool.balance_exact_g ?? 0) > 0;
   }
 
   /**
@@ -1760,8 +1834,13 @@ class FilamentLedgerPanel extends HTMLElement {
           <button data-action="mount-slot" data-slot="${slot}">${t("act.mount")}</button>
         </div>`;
       }
-      return `<div class="card tray">
-        <div class="n">${t("ams.slot", { slot })}</div>
+      // A tray keeps showing an empty spool: the reel is still physically loaded, and a
+      // slot that emptied itself on screen would be a lie about the machine (docs/06 §6.4).
+      return `<div class="card tray ${spool.state === "DEPLETED" ? "depleted" : ""}">
+        <div class="tray-head">
+          <div class="n">${t("ams.slot", { slot })}</div>
+          ${this.spoolMenu(spool)}
+        </div>
         <div class="tray-art">
           ${spoolRing("slot", spool.percentage, spool.colour)}
           <div class="ring-mid">
@@ -2719,6 +2798,12 @@ class FilamentLedgerPanel extends HTMLElement {
           </div>
         </div>
 
+        <!-- The spool action rail, expanded (docs/16 §16.10). Four corrective actions
+             first, then the two that end the spool's life, set apart at the end of the
+             row: correcting a number is a claim the history below has to justify, and
+             ending a spool is a statement about the object in the user's hand. The same
+             two are what an inventory card's collapsed rail offers, because they are the
+             two that need nothing but the spool. -->
         ${
           deleted
             ? `<div class="note">
@@ -2727,12 +2812,19 @@ class FilamentLedgerPanel extends HTMLElement {
                    <button class="primary" data-action="restore-spool" data-id="${esc(spool.id)}">${t("detail.restoreSpool")}</button>
                  </div>
                </div>`
-            : `<div class="bar">
+            : `<div class="bar sp-rail">
                  <button class="primary" data-action="dialog" data-id="weigh">${t("detail.weigh")}</button>
                  <button data-action="dialog" data-id="adjust">${t("detail.adjust")}</button>
                  <button data-action="dialog" data-id="discard">${t("act.discard")}</button>
                  <button data-action="dialog" data-id="edit-spool">${t("detail.edit")}</button>
-                 <button data-action="spool-intent" data-id="${esc(spool.id)}">${t("detail.remove")}</button>
+                 <span class="sp-life">
+                   ${
+                     this._finishable(spool)
+                       ? `<button data-action="spool-finish" data-id="${esc(spool.id)}">${t("detail.finish")}</button>`
+                       : ""
+                   }
+                   <button class="danger" data-action="spool-intent" data-id="${esc(spool.id)}">${t("detail.remove")}</button>
+                 </span>
                </div>`
         }
 
@@ -3126,6 +3218,7 @@ class FilamentLedgerPanel extends HTMLElement {
       "new-spool": () => this.newSpoolForm(),
       weigh: () => this.weighForm(),
       adjust: () => this.adjustForm(),
+      finish: () => this.finishForm(),
       discard: () => this.discardForm(),
       mount: () => this.mountForm(),
       "dismiss-review": () => this.dismissReviewForm(),
@@ -3133,6 +3226,7 @@ class FilamentLedgerPanel extends HTMLElement {
       reassign: () => this.reassignForm(),
       "void-movement": () => this.voidMovementForm(),
       "restore-movement": () => this.restoreMovementForm(),
+      "spool-actions": () => this.spoolActionsBody(),
       "spool-intent": () => this.spoolIntentBody(),
     };
     const body = bodies[this._dialog.kind];
@@ -3415,24 +3509,113 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * The X on a spool asks what actually happened (docs/14 §14.4.3). Two answers, two
+   * The spool a dialog is about, from whichever surface opened it.
+   *
+   * Resolved on every render rather than captured when the dialog opened, for the same
+   * reason `_movementSubject` is: a refresh landing underneath must change what the modal
+   * says, and a modal whose subject went away has to admit it rather than quote a figure
+   * that is no longer true. The overview is asked first because it is what an inventory
+   * card and an AMS tray were drawn from; the loaded detail answers for the one spool the
+   * overview omits — a deleted one, reached from the Trash.
+   */
+  _dialogSpool() {
+    const id = this._dialog?.spool_id;
+    if (id === undefined) return null;
+    return this._spools.find((s) => s.id === id) ?? (this._detail?.id === id ? this._detail : null);
+  }
+
+  /**
+   * The spool action rail as a sheet — the collapsed rendering's body (docs/16 §16.10).
+   *
+   * It carries the two actions that need nothing but the spool, which is why they are the
+   * two an inventory card and an AMS tray can offer at all: *this reel is empty* and *this
+   * spool is gone*. Weigh, Adjust and Edit are absent on purpose — each of them changes a
+   * number the movement history has to justify, so each belongs under that history in the
+   * detail view (docs/06 §6.1's rule, applied to a spool rather than to a view).
+   *
+   * Every row states its consequence in a line, exactly as the retirement modal does, so
+   * neither is picked by accident.
+   */
+  spoolActionsBody() {
+    const t = this._t;
+    const spool = this._dialogSpool();
+    if (!spool) return this.staleSubject();
+    const id = esc(spool.id);
+    // The state word is already a table result, so it is spliced through `fill` rather
+    // than passed as a parameter — the rule every other composed sentence here follows.
+    const summary = fill(
+      t("dlg.actionsBalance", { grams: spool.balance_g }),
+      "state",
+      this.stateLabel(spool.state),
+    );
+    // The heading is the spool itself, escaped as the data it is: the sheet's subject is
+    // the object in the user's hand, and the rows below already say what can be done to
+    // it. A key whose whole content is a placeholder would translate nothing.
+    return `
+      <h3>${esc(spool.name)}</h3>
+      <p class="muted">${summary}</p>
+      ${
+        this._finishable(spool)
+          ? `<div class="sp-act">
+               <button data-action="spool-finish" data-id="${id}">${t("detail.finish")}</button>
+               <small>${t("detail.finishHelp")}</small>
+             </div>`
+          : ""
+      }
+      <div class="sp-act">
+        <button class="danger" data-action="spool-intent" data-id="${id}">${t("detail.remove")}</button>
+        <small>${t("detail.removeHelp")}</small>
+      </div>
+      ${this.formActions(null)}`;
+  }
+
+  /**
+   * Mark a spool as finished — a reconciliation to zero, and it says so (docs/06 §6.5).
+   *
+   * **The drift is stated in grams before anything is sent.** The ledger still believes a
+   * balance the reel does not have, and the difference is exactly what this writes: a
+   * number that can be hundreds of grams, produced by every estimate since the last
+   * weighing. Recording a figure that large without showing it first is the one thing this
+   * ledger exists not to do — and it is the same promise the reassign and void modals make.
+   *
+   * The figures are the exact balance rather than the rounded one, to the decimal a single
+   * movement is known to (docs/06 §6.8): the whole-gram display belongs to a balance, and
+   * this sentence is about the movement.
+   */
+  finishForm() {
+    const t = this._t;
+    const spool = this._dialogSpool();
+    if (!spool) return this.staleSubject();
+    const remaining = Number(spool.balance_exact_g ?? 0);
+    return `
+      <form data-form="finish">
+        <h3>${t("dlg.finishTitle", { name: spool.name })}</h3>
+        <p class="cx-says">${t("dlg.finishSays", {
+          grams: remaining.toFixed(1),
+          delta: signed(-remaining),
+        })}</p>
+        <p class="muted small">${t("dlg.finishFoot")}</p>
+        ${this.formActions(t("dlg.finishConfirm"))}
+      </form>`;
+  }
+
+  /**
+   * Retiring a spool asks what actually happened (docs/14 §14.4.3). Two answers, two
    * different facts about the world, and one line each so neither is picked by accident.
    */
   spoolIntentBody() {
     const t = this._t;
-    const spool =
-      this._spools.find((s) => s.id === this._dialog.spool_id) ??
-      (this._detail?.id === this._dialog.spool_id ? this._detail : null);
+    const spool = this._dialogSpool();
     if (!spool) return this.staleSubject();
     const id = esc(spool.id);
     return `
       <h3>${t("dlg.intentTitle", { name: spool.name })}</h3>
       <p class="muted">${t("dlg.intentAsk")}</p>
-      <div class="intent">
+      <div class="sp-act">
         <button data-action="intent-discard" data-id="${id}">${t("dlg.intentThrewAway")}</button>
         <small>${t("dlg.intentThrewAwayHelp", { grams: spool.balance_g })}</small>
       </div>
-      <div class="intent">
+      <div class="sp-act">
         <button data-action="intent-delete" data-id="${id}">${t("dlg.intentMistake")}</button>
         <small>${t("dlg.intentMistakeHelp")}</small>
       </div>
@@ -3567,6 +3750,12 @@ export const STYLES = `
   --fl-radius-m: 12px;
   --fl-radius-l: 16px;
   --fl-radius-xl: 18px;
+
+  /* The floor for anything tappable (16 §16.6). A labelled button reaches it through its
+     padding and never has to say so; an icon-only control has no label to grow its box, so
+     the size has to be declared — and declaring it once is what stops the next one from
+     picking a number of its own. */
+  --fl-tap: 44px;
 
   --fl-shadow-1: 0 8px 24px rgba(0, 0, 0, .35);
   --fl-shadow-2: 0 14px 40px rgba(0, 0, 0, .4);
@@ -3813,6 +4002,10 @@ button.link:hover { color: var(--fl-accent-bright); }
   box-shadow: 0 0 20px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
   border: 2px solid var(--fl-surface); }
 .spool-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+/* The name and the rail's collapsed control share one row, so the control is part of the
+   card's grid rather than floating over its corner — see the rail's own block below. */
+.spool-head { display: flex; align-items: center; gap: 8px; }
+.spool-id { flex: 1; min-width: 0; }
 .name { font-weight: 600; letter-spacing: -.01em; }
 .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
 .big { font-family: var(--fl-font-mono); font-size: 30px; font-weight: 600;
@@ -3847,6 +4040,8 @@ button.link:hover { color: var(--fl-accent-bright); }
 
 .trays { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
 .tray { padding: 16px; display: flex; flex-direction: column; gap: 5px; }
+.tray-head { display: flex; align-items: center; gap: 8px; }
+.tray-head .n { flex: 1; min-width: 0; }
 .tray .n { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
   color: var(--fl-ink-faint); font-weight: 700; }
 .tray .reel { height: 48px; border-radius: var(--fl-radius-s); margin: 6px 0;
@@ -4061,14 +4256,57 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
   border-top: 1px solid var(--fl-line); }
 .ed-corr p { margin: 0; }
 
-/* Corrections — docs/14 §14.3, §14.4. */
-.spool-body { position: relative; }
-.card-x { position: absolute; top: -4px; right: -6px; border: 0; background: none;
-  color: var(--fl-ink-dim); font-size: 18px; line-height: 1; padding: 4px 7px;
-  border-radius: 8px; opacity: .55; }
-.card-x:hover { opacity: 1; color: var(--fl-bad);
+/* ---- The spool action rail (16 §16.10) ---------------------------------------------
+   One list of what a spool offers, at two densities. Expanded under the hero card in the
+   detail view; collapsed to a single control on an inventory card and an AMS tray, where
+   there is no room for a labelled row and none should be made.
+
+   It replaces a floating X that sat over a card's corner, outside the layout, and that
+   said "retire this spool" one view away from where the same glyph says "delete this
+   entry". Nothing here is positioned absolutely: the control is a flex item in the header
+   row it belongs to, and every value below is a token.
+
+   The glyph is the one docs/06 §6.5 has drawn since its first draft. It is optically much
+   smaller than its tap box, so the box stays transparent until it is wanted rather than
+   drawing a permanent button outline into a dense card.
+
+   The negative margins are how the target reaches --fl-tap without costing the height:
+   the box overlaps the card's own padding and its neighbours' leading, because a tap
+   target is a region of the screen rather than a block that has to reserve room. A tray
+   card is four-across on a desktop and would otherwise pay 30px of header for a glyph. */
+.spool-menu { flex: none; min-width: var(--fl-tap); min-height: var(--fl-tap); padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: -10px -9px -10px 0; border-color: transparent; background: transparent;
+  color: var(--fl-ink-faint); font-size: 19px; line-height: 1; }
+.spool-menu:hover { color: var(--fl-ink); border-color: var(--fl-line-strong);
   background: var(--fl-surface-sunken); }
 
+/* The two that end a spool's life sit at the far end of the expanded rail, apart from the
+   four that only correct a number. Auto margin rather than a rule or a gap: it needs no
+   element of its own, and it collapses to nothing when the row wraps. */
+.sp-life { display: flex; gap: 8px; margin-left: auto; }
+
+/* Destructive, and scoped to the two surfaces that offer it: a bare .danger would also
+   catch the history row's X, which is deliberately quiet until it is hovered. */
+.sp-rail .danger, .sp-act .danger { color: var(--fl-bad); border-color: var(--fl-bad-soft); }
+.sp-rail .danger:hover, .sp-act .danger:hover { border-color: var(--fl-bad);
+  background: var(--fl-bad-soft); }
+
+/* One action, with the sentence that says what it does. The rule above each is what makes
+   a sheet of these read as a list of decisions rather than as a row of buttons, and it is
+   why neither the retirement modal nor the collapsed rail can be answered by reflex. */
+.sp-act { display: flex; flex-direction: column; gap: 5px; padding: 11px 0;
+  border-top: 1px solid var(--fl-line); }
+.sp-act button { align-self: flex-start; }
+
+/* A spool at zero is still a real object (06 §6.2): it sinks to the end of the inventory
+   and dims, but it does not leave — and in the AMS view it must not, because the reel is
+   still physically in the tray. The swatch keeps full strength: colour is the identifier,
+   and an empty spool is the one most worth recognising before reaching for it. */
+.spool.depleted .spool-art, .tray.depleted .tray-art { opacity: .45; }
+.spool.depleted .big, .tray.depleted .big { color: var(--fl-ink-dim); }
+
+/* Corrections — docs/14 §14.3, §14.4. */
 table.ledger td.acts { text-align: right; white-space: nowrap; padding-left: 10px; }
 .rowact { padding: 3px 9px; font-size: 13px; line-height: 1.3; margin-left: 4px;
   color: var(--fl-ink-dim); }
@@ -4099,9 +4337,6 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 /* The sentence a correction modal commits to before anything is sent. */
 .cx-says { margin: 0; line-height: 1.6; padding: 11px 13px; border-radius: 8px;
   background: var(--fl-surface-sunken); font-size: 14px; }
-.intent { display: flex; flex-direction: column; gap: 5px; padding: 11px 0;
-  border-top: 1px solid var(--fl-line); }
-.intent button { align-self: flex-start; }
 
 /* Printer tab — docs/14 §14.5. A glance, not a printer UI. */
 .pr-h { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
@@ -4267,16 +4502,20 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
   .stat { flex-basis: calc(50% - 1px); padding: 15px 16px; }
   .stat .v { font-size: 24px; }
   .big { font-size: 26px; }
-  .tray-actions button, .trash-acts button, .rowact { min-height: 44px; }
-  /* 44px on the filter row too, and the search box takes the width it can: this row is
-     used one-handed, at a printer, by somebody typing the name of the part that failed.
-     Which is also why the row folds here and nowhere else — six controls at that size is
-     336px of chrome against a 373px scroller, and the ledger would be what gave way. */
-  .hf input, .hf-clear, .hf-toggle { min-height: 44px; }
+  .tray-actions button, .trash-acts button, .rowact { min-height: var(--fl-tap); }
+  /* The rail wraps at this width anyway, so the two that end a spool's life take a line of
+     their own rather than trailing whichever corrective button happened to end a row. */
+  .sp-life { flex-basis: 100%; margin-left: 0; }
+  /* The tap floor reaches the filter row too, and the search box takes the width it can:
+     this row is used one-handed, at a printer, by somebody typing the name of the part that
+     failed. Which is also why the row folds here and nowhere else — six controls at that
+     size is 336px of chrome against a 373px scroller, and the ledger would be what gave
+     way. */
+  .hf input, .hf-clear, .hf-toggle { min-height: var(--fl-tap); }
   .hf-toggle { display: inline-flex; }
   .hf.shut { display: none; }
   .hf { margin-top: 10px; }
-  .hf-dot { width: 44px; height: 44px; }
+  .hf-dot { width: var(--fl-tap); height: var(--fl-tap); }
   .hf-wide { flex-basis: 100%; max-width: none; }
   .modal { padding: 18px; }
 }

@@ -355,6 +355,18 @@ const SPECIMENS = [
     why: "Where the scale meets the ledger, and where the reconciliation difference is shown to one decimal.",
     render: () => rig({ _dialog: { kind: "weigh" }, _detail: DETAIL }).dialog() },
 
+  { id: "dialog-spool-actions", title: "Dialog — the spool action rail, collapsed",
+    why: "What an inventory card and an AMS tray offer, listed with the consequence of each. The same two actions the detail view lays out in full.",
+    render: () => rig({ _dialog: { kind: "spool-actions", spool_id: "s-1" } }).dialog() },
+
+  { id: "dialog-finish", title: "Dialog — mark a spool finished",
+    why: "A reconciliation to zero. The drift it is about to write is stated in grams before anything is sent — the whole reason this dialog exists rather than a button that just does it.",
+    render: () => rig({ _dialog: { kind: "finish", spool_id: "s-1" } }).dialog() },
+
+  { id: "dialog-intent", title: "Dialog — remove a spool",
+    why: "Two answers, two different facts about the world, and one line each so neither is picked by accident.",
+    render: () => rig({ _dialog: { kind: "spool-intent", spool_id: "s-1" } }).dialog() },
+
   { id: "dialog-discard", title: "Dialog — discard",
     why: "A destructive action, and the confirmation shape every destructive action uses.",
     render: () => rig({ _dialog: { kind: "discard" }, _detail: DETAIL }).dialog() },
