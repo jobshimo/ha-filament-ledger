@@ -115,7 +115,7 @@ The default landing view. Answers "what do I have?" without a click.
 │  [ All ▾ ]  [ Any material ▾ ]  [ Search…            ]  [ ⊞ | ☰ ]   │
 │                                                                      │
 │  ┌──────────────────────┐  ┌──────────────────────┐                 │
-│  │ ███  PLA Basic       │  │ ███  PLA Matte       │                 │
+│  │ ███  PLA Basic    ⋮  │  │ ███  PLA Matte    ⋮  │                 │
 │  │ ███  Black           │  │ ███  Ivory White     │                 │
 │  │      Bambu Lab       │  │      Bambu Lab       │                 │
 │  │                      │  │                      │                 │
@@ -148,14 +148,22 @@ The default landing view. Answers "what do I have?" without a click.
 - **Confidence dot** — 🟢 high, 🟡 medium, 🔴 low. When low, the card shows the call to
   action *"Weigh this spool"* directly. A warning with no adjacent remedy is just noise.
 - **Location** — `AMS · Slot n`, `Storage`, or `External spool`.
+- **Actions** — one ⋮ beside the name, opening the spool's action rail (§6.5). It sits
+  *in* the header row rather than over the card's corner: a glyph floating outside the
+  layout has no box a thumb can find, and at a narrow width it lands on the name it is
+  meant to sit beside.
 
 ### States
 
 - **Sealed** — a "Sealed" chip, no progress bar. A spool never opened has nothing to show a
   bar for.
 - **Anomaly** — amber left border and a ⚠ chip. Tapping goes straight to the explanation.
-- **Depleted** — greyed, moved to the end of the list, kept visible. It is still a real object
-  until discarded.
+- **Depleted** — the coil dims and the percentage is replaced by a *depleted* chip, exactly
+  as a sealed spool's is replaced by *Sealed*: 0% is a figure with nothing in it either
+  way. The card sinks to the end of the list and stays there — it is still a real object
+  until it is thrown away. In the AMS view it does not move at all (§6.4): the reel is
+  physically in the tray, and a slot that emptied itself on screen would be a lie about
+  the machine.
 - **Discarded** — hidden unless the *All* filter includes it.
 
 ### Filters
@@ -329,7 +337,7 @@ A physical mirror of the machine. Answers "what is loaded right now?" at a glanc
 │  AMS Lite                                    ● Connected             │
 │                                                                      │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐        │
-│  │  SLOT 1    │ │  SLOT 2    │ │  SLOT 3    │ │  SLOT 4    │        │
+│  │  SLOT 1  ⋮ │ │  SLOT 2  ⋮ │ │  SLOT 3  ⋮ │ │  SLOT 4    │        │
 │  │            │ │            │ │            │ │            │        │
 │  │  ████████  │ │  ████████  │ │  ████████  │ │            │        │
 │  │  ████████  │ │  ████████  │ │  ████████  │ │   empty    │        │
@@ -423,7 +431,7 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  ←  PLA Basic Black                                        [ ⋮ ]     │
+│  ←  PLA Basic Black                                                  │
 │                                                                      │
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │  ████████                                                      │  │
@@ -437,7 +445,8 @@ Reached by tapping any spool card. This view is what makes the ledger worth its 
 │  │     Last weighed 3 days ago                                    │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
-│  [ ⚖ Weigh ]  [ ✎ Adjust ]  [ 🗑 Discard ]  [ ✎ Edit details ]      │
+│  [ ⚖ Weigh ] [ ✎ Adjust ] [ 🗑 Discard ] [ ✎ Edit details ]          │
+│                              [ Mark as finished ]  [ Remove… ]      │
 │                                                                      │
 │  History ───────────────────────────────────────────────────────     │
 │                                                                      │
@@ -498,6 +507,35 @@ at the number in the header. A user who doubts the balance can follow it to its 
 is the entire justification for an append-only ledger; without this view, immutability is cost
 with no benefit.
 
+### Where a spool's actions live
+
+A spool has two kinds of action, and they are not interchangeable.
+
+**Corrective actions change a number** — *Weigh*, *Adjust*, *Discard*, *Edit details*.
+Each of them is a claim the movement history below has to justify, so each of them lives
+here, under that history. This is §6.1's rule about pinned controls applied one level
+down: a control belongs beside the thing it acts on.
+
+**Lifecycle actions state a fact about the object** — *Mark as finished* and *Remove…*.
+Neither needs the history, the core weight, or any arithmetic; each needs only the spool.
+So both are available wherever a spool is drawn: on an inventory card, on an AMS tray, and
+here.
+
+Both sets are **one list, declared once and rendered at two densities** — the spool action
+rail ([16 §16.10](16-visual-system.md)):
+
+- **Expanded**, here, as the row above the history: four corrective actions, then the two
+  lifecycle ones set apart at the end of the row.
+- **Collapsed**, on a card or a tray, into the ⋮ beside the spool's name. It opens the
+  lifecycle pair as a sheet, each with the line that says what it will do — the shape the
+  retirement modal already uses, so neither is picked by reflex.
+
+**There is deliberately no third home, and one of the two that existed has gone.** The
+panel used to float a ✕ over a spool card's corner, and the same glyph on a history row
+means *delete this entry*. Two glyphs, two meanings, one shape: the collision was half the
+reason a spool card read as untidy. Retirement is now a labelled row in the rail, and the ✕
+means exactly one thing everywhere — on the history row where it always belonged.
+
 ### Actions
 
 **⚖ Weigh** — the reconciliation dialog:
@@ -533,6 +571,59 @@ the specific operations should cover almost every case.
 
 **✎ Edit details** — label, vendor, colour, material, core weight. **Never the balance.** The
 form contains no balance field at all; that is not an omission but the point.
+
+**Mark as finished** — the reel came off the printer empty, and there is no number to type:
+
+```
+┌────────────────────────────────────────────┐
+│  Mark PLA Basic Black as finished?         │
+│                                            │
+│  The ledger still says 612.4 g remain.     │
+│  Recording an empty reel writes a          │
+│  reconciliation of − 612.4 g — the drift   │
+│  every estimate has accumulated since this │
+│  spool was last weighed.                   │
+│                                            │
+│  Nothing is counted as waste and nothing   │
+│  is charged to a print.                    │
+│                                            │
+│      [ Cancel ]  [ Record an empty spool ] │
+└────────────────────────────────────────────┘
+```
+
+This is the reconciliation above with a measured value of **zero**, and it is deliberately
+nothing else — no new movement type, no new use case.
+
+- **A whole-spool discard would be wrong.** It books the remainder as *waste*, and
+  filament that was printed is not waste. Every waste figure in §6.7 would inflate by the
+  drift of every spool ever finished.
+- **A consumption would be wrong.** It attaches a print's charge to no print.
+- **A reconciliation is exactly right.** The user is asserting a measured truth, and the
+  `delta` that falls out is the accumulated drift of every estimate since the last
+  weighing. When that drift is large the anomaly detector ([02 §2.5](02-domain-model.md))
+  raises `LARGE_RECONCILIATION_DELTA` — information the user wants, not noise.
+
+**The drift is stated in grams before the user commits.** It is the largest single
+correction this product can produce, routinely several hundred grams, and writing one from
+a button that says only *finished* is precisely what this ledger exists not to do. The
+figure is shown to one decimal, because it is a movement and not a balance (§6.8).
+
+**Zero net is not zero gross.** The value sent is the *filament*, not a scale reading, so
+it travels with `includes_core: false` — the same distinction the edit dialog's absolute
+restatement makes. Sent the other way, the empty reel would be subtracted from zero and
+the spool would reconcile to minus its own core: a quarter of a kilogram of error, written
+as a correction, with nothing on screen to say so.
+
+**A finished spool stays.** The balance reaches zero, `DEPLETED` derives itself
+([02 §2.2](02-domain-model.md)), and the card dims and sinks to the end of the inventory
+(§6.2) — but it does not leave, and in the AMS view it does not move at all, because the
+reel is still in the tray. Taking it out of the inventory is *Remove…*, and that is a
+separate decision about a different fact.
+
+**Remove…** — asks what actually happened, because *thrown away* and *registered by
+mistake* are two different facts about the world and only one of them is waste.
+[14 §14.4.3](14-corrections-and-trash.md) owns the two branches; what changed here is
+where the question is asked from, not what it asks.
 
 ---
 
