@@ -486,6 +486,51 @@ The grid dims, a banner reads *"Printer unreachable — showing last known state
 and every slot card is marked stale. Inventory operations remain fully available. Stale data
 is labelled, never disguised as live.
 
+### More than one machine (amended v2.0)
+
+**A section per machine, stacked, not a selector.** Each section is a heading naming the
+machine and the same four-slot grid under it, in the order the printer glance reports
+([14 §14.5](14-corrections-and-trash.md)).
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  00M09A351800000                                                     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                │
+│  │  SLOT 1  │ │  SLOT 2  │ │  SLOT 3  │ │  SLOT 4  │                │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                │
+│                                                                      │
+│  01P00A123456789                                                     │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                │
+│  │  SLOT 1  │ │  SLOT 2  │ │  SLOT 3  │ │  SLOT 4  │                │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+Decided on the person the panel is for — somebody standing at one of their printers with a
+failed part in their hand — and not on symmetry. A selector would make them identify their
+machine by a fifteen-character serial *before* it told them anything, then remember a choice,
+and a remembered choice is a wrong default the first time it matters. Sections scroll, and the
+other machine's answer is already on the screen when they walk over. Two machines is eight
+cards, which is one more row on a desktop and one more scroll on a phone; the density rule of
+§6.1 applies unchanged — labels are never traded for icons.
+
+**The heading appears only once there is more than one section.** A household with one machine
+sees the tab exactly as it always was, because nothing new is true of it. A spool's location
+is named the same way: *AMS slot 3* is a complete address in a one-printer household, and the
+serial joins it only when it stops being one.
+
+**A machine that holds spools but is not currently followed still gets its section**, marked,
+with a line saying nothing was moved automatically and asking the owner to mount each spool
+onto the right machine. That is what a ledger migrated from single-printer days looks like when
+a second machine appears: the rows name a printer nobody recorded, adoption refuses to guess
+which ([08 §8.4](08-data-model.md)), and hiding them would be an inventory system lying about
+where a reel is.
+
+Every mount button carries the machine of the section it was drawn in, so the command that
+leaves the panel names its tray in full. The panel never sends a bare slot, which is why the
+adapter's refusal of one ([05 §5.4](05-ha-integration.md)) is a statement about automations
+rather than about this view.
+
 ---
 
 ## 6.5 View 4 — Spool detail & history

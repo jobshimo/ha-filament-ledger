@@ -51,33 +51,40 @@ def _location_columns(location: Location) -> tuple[str, str | None, int | None, 
     match location:
         case AmsSlot(tray):
             return "AMS_SLOT", tray.printer.value, tray.ams.value, tray.slot.value
-        case ExternalSpool():
-            return "EXTERNAL_SPOOL", None, None, None
+        case ExternalSpool(printer):
+            # `location_printer` carries the machine for both mounted kinds since 0008, which
+            # is what lets one partial unique index per kind state *one spool per position*
+            # without either of them naming a printer column of its own.
+            return "EXTERNAL_SPOOL", printer.value, None, None
         case Storage():
             return "STORAGE", None, None, None
 
 
 def _location_from(kind: str, printer: str | None, ams: int | None, slot: int | None) -> Location:
-    """Rebuild the location, tolerating a tray row that names no printer.
+    """Rebuild the location, tolerating a mounted row that names no printer.
 
-    Migration 0007 backfills every mounted row with a printer and an AMS index, so a row
-    missing either should not exist. Should one turn up anyway — a backup restored from
-    between the ALTER and the UPDATE, a row inserted by hand — it hydrates exactly as the
-    migration would have written it, for the reason `_tag_from` tolerates the sentinel and
-    `_tag_source_from` defaults to MANUAL: one odd row must not fail every list and get,
-    and with them the coordinator and the whole entry.
+    Migrations 0007 and 0008 backfill every mounted row with a printer — and a tray row with
+    an AMS index besides — so a row missing either should not exist. Should one turn up
+    anyway — a backup restored from between the ALTER and the UPDATE, a row inserted by
+    hand — it hydrates exactly as the migration would have written it, for the reason
+    `_tag_from` tolerates the sentinel and `_tag_source_from` defaults to MANUAL: one odd row
+    must not fail every list and get, and with them the coordinator and the whole entry.
     """
     if kind == "AMS_SLOT" and slot is not None:
         return AmsSlot(
             TrayRef(
-                printer=PrinterSerial(printer) if printer else UNIDENTIFIED_PRINTER,
+                printer=_printer_from(printer),
                 ams=AmsIndex(ams if ams is not None else MIN_AMS_INDEX),
                 slot=SlotIndex(slot),
             )
         )
     if kind == "EXTERNAL_SPOOL":
-        return ExternalSpool()
+        return ExternalSpool(printer=_printer_from(printer))
     return Storage()
+
+
+def _printer_from(value: str | None) -> PrinterSerial:
+    return PrinterSerial(value) if value else UNIDENTIFIED_PRINTER
 
 
 def _tag_from(value: str | None) -> TagUid | None:

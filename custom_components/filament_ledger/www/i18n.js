@@ -136,8 +136,14 @@ const EN = {
   // rebuilds from the pair rather than printing the label, for the same reason it
   // rebuilds movement labels from `type`: a read model is data, and the sentence around
   // it has to be in the reader's language.
+  //
+  // The `_ON` pair names the machine, and the panel reaches for it only once more than one
+  // machine holds spools: *AMS slot 3* is a complete address in a one-printer household, and
+  // a serial beside it on every card would be fifteen characters the reader looks past.
   "loc.AMS_SLOT": "AMS slot [[slot]]",
+  "loc.AMS_SLOT_ON": "AMS slot [[slot]] on [[printer]]",
   "loc.EXTERNAL_SPOOL": "External spool",
+  "loc.EXTERNAL_SPOOL_ON": "External spool on [[printer]]",
   "loc.STORAGE": "Storage",
   "state.SEALED": "sealed",
   "state.ACTIVE": "active",
@@ -211,6 +217,14 @@ const EN = {
   "ams.note":
     "No printer is connected yet. Slots are assigned by hand — mounting records no " +
     "movement, because moving a spool consumes no filament.",
+  // The heading over a tray space whose machine the ledger never recorded a name for — a
+  // ledger migrated from single-printer days, before a second machine appeared. The spools
+  // are real and they are where the ledger last saw them; only the machine is nameless.
+  "ams.machineUnnamed": "Printer not identified",
+  "ams.machineStale":
+    "These spools are recorded on a machine this ledger is not currently following. " +
+    "Nothing was moved for you, because which printer they are in was never recorded. " +
+    "Mount each one onto the right machine when you next open its trays.",
 
   // -- global history ----------------------------------------------------------------
   "history.emptyTitle": "No movements yet.",
@@ -602,17 +616,17 @@ const EN = {
   "printer.noError": "No error reported.",
   "printer.hoursHeading": "Print time recorded here",
   "printer.hoursObserved":
-    "Measured across [[count]] prints this ledger has recorded since [[since]]. It is not " +
-    "the machine's lifetime counter — the printer reports no such figure — so the total " +
-    "starts the day Filament Ledger was installed, not the day the printer was.",
-  "printer.trackingHeading": "More than one printer found",
-  "printer.trackingFollowing": "This ledger is following printer [[serial]].",
-  "printer.trackingFollowingUnnamed":
-    "This ledger is following the one printer it resolved; that printer did not report a " +
-    "serial.",
-  "printer.trackingIgnored":
-    "Also found, and not tracked: [[serials]]. This version follows a single printer, so " +
-    "nothing from the others reaches the ledger — no trays, no prints, no consumption.",
+    "Measured across [[count]] prints this ledger has recorded since [[since]], on every " +
+    "machine it follows. It is not any machine's lifetime counter — no printer reports " +
+    "such a figure — so the total starts the day Filament Ledger was installed, not the " +
+    "day any of the printers were.",
+  "printer.trackingHeading": "Machines followed",
+  "printer.trackingFollowing": "This ledger is following [[serials]].",
+  "printer.trackingUnnamed":
+    "[[count]] further machine or machines were found without a readable serial, and are " +
+    "not followed. Two printers answering to one name would share a single set of trays, " +
+    "so a machine that cannot be told apart from another is left alone rather than guessed " +
+    "at. Please report this — every printer this project has seen reports its serial.",
   "printer.traysHeading": "Trays",
   "printer.trayLedger": "ledger: [[spool]]",
   "printer.trayLedgerEmpty": "ledger: nothing mounted",
@@ -718,7 +732,9 @@ const ES = {
 
   // -- ubicación y estado de una bobina ----------------------------------------------
   "loc.AMS_SLOT": "Bandeja [[slot]] del AMS",
+  "loc.AMS_SLOT_ON": "Bandeja [[slot]] del AMS en [[printer]]",
   "loc.EXTERNAL_SPOOL": "Bobina externa",
+  "loc.EXTERNAL_SPOOL_ON": "Bobina externa en [[printer]]",
   "loc.STORAGE": "Almacenamiento",
   "state.SEALED": "sellada",
   "state.ACTIVE": "activa",
@@ -794,6 +810,11 @@ const ES = {
   "ams.note":
     "Todavía no hay impresora conectada. Las bandejas se asignan a mano: montar no " +
     "registra ningún movimiento, porque mover una bobina no consume filamento.",
+  "ams.machineUnnamed": "Impresora sin identificar",
+  "ams.machineStale":
+    "Estas bobinas están registradas en una máquina que este registro no sigue ahora " +
+    "mismo. No se movió nada de forma automática, porque nunca se anotó en qué impresora " +
+    "estaban. Monte cada una en la máquina correcta la próxima vez que abra sus bandejas.",
 
   // -- historial global --------------------------------------------------------------
   "history.emptyTitle": "Todavía no hay movimientos.",
@@ -1189,19 +1210,18 @@ const ES = {
   "printer.noError": "No se informa de ningún error.",
   "printer.hoursHeading": "Tiempo de impresión registrado aquí",
   "printer.hoursObserved":
-    "Medido sobre [[count]] impresiones que este registro ha guardado desde el [[since]]. " +
-    "No es el contador de vida de la máquina: la impresora no informa esa cifra, así que " +
-    "el total empieza el día en que se instaló Filament Ledger, no el día en que se " +
-    "estrenó la impresora.",
-  "printer.trackingHeading": "Se encontró más de una impresora",
-  "printer.trackingFollowing": "Este registro sigue a la impresora [[serial]].",
-  "printer.trackingFollowingUnnamed":
-    "Este registro sigue a la única impresora que pudo resolver; esa impresora no informó " +
-    "de ningún número de serie.",
-  "printer.trackingIgnored":
-    "También se encontraron, y no se siguen: [[serials]]. Esta versión sigue a una sola " +
-    "impresora, así que nada de las demás llega al registro: ni bandejas, ni impresiones, " +
-    "ni consumo.",
+    "Medido sobre [[count]] impresiones que este registro ha guardado desde el [[since]], " +
+    "en todas las máquinas que sigue. No es el contador de vida de ninguna máquina: " +
+    "ninguna impresora informa esa cifra, así que el total empieza el día en que se " +
+    "instaló Filament Ledger, no el día en que se estrenó ninguna de las impresoras.",
+  "printer.trackingHeading": "Máquinas seguidas",
+  "printer.trackingFollowing": "Este registro sigue a [[serials]].",
+  "printer.trackingUnnamed":
+    "Se encontraron [[count]] máquinas más sin número de serie legible, y no se siguen. " +
+    "Dos impresoras con un mismo nombre compartirían un único juego de bandejas, así que " +
+    "una máquina que no puede distinguirse de otra se deja aparte en lugar de adivinarla. " +
+    "Le agradeceríamos que lo informara: toda impresora vista por este proyecto informa " +
+    "su número de serie.",
   "printer.traysHeading": "Bandejas",
   "printer.trayLedger": "registro: [[spool]]",
   "printer.trayLedgerEmpty": "registro: nada montado",

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from ..error import InvalidValueError
 from ..value.grams import Grams
-from ..value.identifiers import PrintJobId, TrayRef
+from ..value.identifiers import PrinterSerial, PrintJobId, TrayRef
 from ..value.percentage import Percentage
 from ..value.print_job_state import PrintJobState
 
@@ -65,6 +65,17 @@ class PrintJob:
     name: str
     state: PrintJobState
     started_at: datetime
+    # Which machine ran it, and **`None` is not a machine** — it is a row written before
+    # this ledger recorded the answer, which is every row that predates migration 0008.
+    # Backfilling those with a name would state something the ledger never knew, and
+    # docs/08 §8.4's rule for a backfill is that it says what the old rows say.
+    #
+    # The consequence is deliberate and is stated in `TrackPrintJob._running_job`: an
+    # ending correlates to a running row of *its own* machine, so a nameless row is
+    # correlated to by nobody. At most one such row can be RUNNING — the print that
+    # spanned the upgrade — and it stays verbatim and reclassifiable, exactly as every
+    # other ending that never arrived does.
+    printer: PrinterSerial | None = None
     ended_at: datetime | None = None
     layer_reached: int | None = None
     total_layers: int | None = None

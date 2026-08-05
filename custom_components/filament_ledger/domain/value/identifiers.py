@@ -99,6 +99,12 @@ class PrinterSerial:
 # printer, so every row carrying it belongs to the same one, and the uniqueness of a tray
 # holds under it exactly as it holds under a real serial. It is a name, not a gap.
 #
+# **That argument is why it names at most one live machine.** It is sound only while there
+# is one machine for it to mean, so discovery hands it to a printer whose serial it could
+# not read only when that printer is the only one there is; with several, an unnamed machine
+# is not followed, because two machines answering to one name is precisely the merge this
+# sentinel is safe from being (`bambu_gateway._resolve_names`).
+#
 # Public because the whole boundary shares the fact: the migration writes it, the gateway
 # replaces it once discovery resolves a real serial, and the panel falls back to it while
 # there is no printer to ask.
@@ -137,10 +143,12 @@ class TrayRef:
     second machine appears.
 
     Ordered, so that every reader — the deduction loop, the review card, the persisted
-    JSON — sees one canonical tray order without each imposing its own.
+    JSON — sees one canonical tray order without each imposing its own. Ordering by printer
+    first is what makes a listing of several machines' trays group itself.
 
-    **Representable is not supported.** This value lets the model hold several printers;
-    the gateway still resolves exactly one, and the ledger still follows exactly one.
+    **Supported since v2.0.** The gateway resolves every machine the registry describes and
+    keys each one's trays under its own serial (docs/05 §5.8), so two printers' trays live
+    in one mapping without colliding and nothing has to decide which machine a tray 1 is on.
     """
 
     printer: PrinterSerial

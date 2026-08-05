@@ -41,7 +41,7 @@ CREATE UNIQUE INDEX idx_spool_slot
     WHERE location_kind = 'AMS_SLOT' AND discarded_at IS NULL;
 
 CREATE UNIQUE INDEX idx_spool_external
-    ON spool(location_kind)
+    ON spool(location_kind, location_printer)
     WHERE location_kind = 'EXTERNAL_SPOOL' AND discarded_at IS NULL;
 ```
 
@@ -60,6 +60,12 @@ see [02 §2.8](02-domain-model.md).
 The two unique indexes enforce the physical facts that a tray holds one spool and the direct
 feed holds one spool. A cross-aggregate invariant that only lives in application code is one
 race condition away from being violated.
+
+**`idx_spool_external` covers the machine since migration 0008.** Each printer has exactly one
+direct feed, so an index unique on `location_kind` alone stated *the direct feed holds one
+spool ledger-wide* — which refused the second machine's reel to a ledger that could truthfully
+hold it. `location_printer` carries the machine for both mounted kinds, which is what lets one
+index per kind state *one spool per position* without either naming a column of its own.
 
 **`idx_spool_slot` covers the whole tray reference since migration 0007**, not `location_slot`
 alone. Two printers both have a tray 1, and an index over the number alone would have refused
@@ -137,11 +143,20 @@ CREATE TABLE print_job (
     reported_usage   TEXT,                       -- JSON [{printer, ams, slot, mg}]
     raw_gcode_state  TEXT,                       -- verbatim, see Q1
     raw_print_error  INTEGER,                    -- verbatim, see Q1
-    consumption_recorded INTEGER NOT NULL DEFAULT 0
+    consumption_recorded INTEGER NOT NULL DEFAULT 0,
+    printer          TEXT                        -- which machine ran it (0008); null before it
 );
 
 CREATE INDEX idx_job_state ON print_job(state, started_at);
 ```
+
+**`printer` is what an ending is correlated by, and NULL is not a machine.** An upstream
+lifecycle event carries no job id, so an ending is matched to the newest `RUNNING` row of the
+printer that reported it; matching on state alone was correct while one machine printed and
+became a coin toss the moment two could ([02 §2.3](02-domain-model.md)). NULL is what every
+row written before migration 0008 says, because the ledger did not record the answer — and a
+row that names no machine is returned for none, which is how a migrated row is left alone
+rather than claimed.
 
 `consumption_recorded` is the idempotency guard for UC-04. A print must never be deducted
 twice, and a duplicate ledger entry is indistinguishable from a real one after the fact.
@@ -302,6 +317,32 @@ lines are records of what was said at the time, and this ledger does not rewrite
 recorded ([ADR-0001](adr/0001-append-only-ledger.md)); nothing resolves a spool through those
 trays, so the placeholder there is both harmless and true — nobody knew the name when the row
 was written. The location is the one place the name is *used* rather than remembered.
+
+`0008_more_than_one_printer.sql` is the release that follows every machine rather than one,
+and it changes two facts the schema still stated in the singular: which machine ran a job, and
+which machine a direct feed belongs to (§8.1). **Neither is backfilled with a name the ledger
+never recorded**, which is the one difference from 0007 and the whole of what makes it honest.
+There the placeholder was forced — a location has to name a tray and a tray has to name a
+printer — and it was safe because a single-printer history cannot be ambiguous. Here
+`print_job.printer` is simply left NULL, which is what the old rows say; the one row the old
+external index allowed takes `UNIDENTIFIED` on 0007's own terms, because there can be at most
+one and it belongs to the one printer this ledger has ever fed directly.
+
+**Adoption adopts only when discovery names exactly one machine, and there is no third option
+that is honest.** The placeholder means *the one machine this ledger has always talked to*.
+With one machine discovered, that machine is it. With several, the ledger has no record of
+which — the config entry stores no serial, the rows store only the placeholder, and a device id
+is a random identifier rather than a name a printer answers to — so every rule that would pick
+one is a coin toss dressed as a heuristic, and losing it puts somebody's spools on a printer
+they are not in. The rows keep the placeholder, the AMS view shows them as their own section
+under a heading saying the machine was never named, and the owner moves each spool onto the
+right machine with the mount control they already have ([06 §6.4](06-ui-spec.md)).
+
+That case is narrower than it sounds. Adoption has run on every start since v1.4, so a ledger
+that ever saw one nameable printer already carries its serial and passes through doing nothing.
+What is left is the ledger that never resolved a printer at all until the day two appeared at
+once — and for that ledger the honest answer really is *I do not know which*, said where it can
+be read rather than guessed at where it cannot.
 
 ---
 

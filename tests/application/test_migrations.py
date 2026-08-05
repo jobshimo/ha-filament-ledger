@@ -54,7 +54,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
-from .conftest import A_PRINTER, a_tray
+from .conftest import A_PRINTER, ANOTHER_PRINTER, a_tray
 
 BROKEN_MIGRATION = """
 BEGIN;
@@ -656,16 +656,16 @@ def _stage_0004(staged: Path) -> None:
     (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def _stage_through_0007(staged: Path) -> None:
-    """Everything from 0005 to 0007, for the tests that read through the *current* mapper.
+def _stage_through_0008(staged: Path) -> None:
+    """Everything from 0005 to 0008, for the tests that read through the *current* mapper.
 
-    A repository read is a read of today's code, and today's code speaks the shape 0007
+    A repository read is a read of today's code, and today's code speaks the shape 0008
     left. Staging the rest of the chain keeps this suite's claim exactly where it was —
     data written in the pre-0004 shape, read back through the real mapper — rather than
     freezing an old mapper nobody ships. The tests that assert on the *column* stop at 4,
     because that is where 0004's own rewrite is visible.
     """
-    for pattern in ("0005_*.sql", "0006_*.sql", "0007_*.sql"):
+    for pattern in ("0005_*.sql", "0006_*.sql", "0007_*.sql", "0008_*.sql"):
         source = next(MIGRATIONS.glob(pattern))
         (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -698,8 +698,8 @@ class TestMigration0004TurnsTheResolutionIntoAListOfCharges:
 
             _stage_0004(staged)
             assert await database.migrate() == 4
-            _stage_through_0007(staged)
-            assert await database.migrate() == 7
+            _stage_through_0008(staged)
+            assert await database.migrate() == 8
 
             repository = SqliteReviewRepository(database)
             after = {}
@@ -755,8 +755,8 @@ class TestMigration0004TurnsTheResolutionIntoAListOfCharges:
             await _populate_in_the_old_shape(database)
             _stage_0004(staged)
             assert await database.migrate() == 4
-            _stage_through_0007(staged)
-            assert await database.migrate() == 7
+            _stage_through_0008(staged)
+            assert await database.migrate() == 8
 
             repository = SqliteReviewRepository(database)
             review = await repository.get(ReviewId("pending-resolved"))
@@ -1193,7 +1193,7 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             assert stored is not None
             assert external is not None
             assert stored.location == Storage()
-            assert external.location == ExternalSpool()
+            assert external.location == ExternalSpool(UNIDENTIFIED_PRINTER)
 
             rows = await database.fetch_all(
                 "SELECT id, location_printer, location_ams FROM spool "
@@ -1220,6 +1220,11 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             await _populate_pre_0007(database)
             _stage_0007(staged)
             assert await database.migrate() == 7
+            # And on to head before reading through today's job mapper, for the reason
+            # `_stage_through_0008` gives: a repository read is a read of shipping code,
+            # and shipping code expects 0008's column. 0007's rewrite is what is asserted.
+            _stage_0008(staged)
+            assert await database.migrate() == 8
 
             jobs = SqlitePrintJobRepository(database)
             figures = await jobs.get(PrintJobId("job-figures"))
@@ -1353,6 +1358,10 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             await _populate_pre_0007(database)
             _stage_0007(staged)
             assert await database.migrate() == 7
+            # On to head, for the reason above: the mappers under test are the ones that
+            # ship, and they read the column 0008 adds.
+            _stage_0008(staged)
+            assert await database.migrate() == 8
 
             spools = await SqliteSpoolRepository(database).list(SpoolFilter())
             assert [spool.id for spool in spools] == ["mounted", "stored", "external"]
@@ -1379,7 +1388,7 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             _stage_0007(staged)
             assert await database.migrate() == 7
 
-            await adopt_unidentified_trays(database, None)
+            await adopt_unidentified_trays(database, ())
 
             spools = SqliteSpoolRepository(database)
             occupant = await spools.find_by_location(
@@ -1410,8 +1419,12 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             await _populate_pre_0007(database)
             _stage_0007(staged)
             assert await database.migrate() == 7
+            # Adoption runs after the *whole* chain in production, and the job read below
+            # goes through the shipping mapper — so the fixture reaches head first.
+            _stage_0008(staged)
+            assert await database.migrate() == 8
 
-            await adopt_unidentified_trays(database, A_PRINTER)
+            await adopt_unidentified_trays(database, (A_PRINTER,))
 
             spools = SqliteSpoolRepository(database)
             occupant = await spools.find_by_location(AmsSlot(a_tray(3)))
@@ -1440,10 +1453,10 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             _stage_0007(staged)
             assert await database.migrate() == 7
 
-            await adopt_unidentified_trays(database, A_PRINTER)
+            await adopt_unidentified_trays(database, (A_PRINTER,))
             once = await database.fetch_all("SELECT id, location_printer FROM spool ORDER BY id")
-            await adopt_unidentified_trays(database, A_PRINTER)
-            await adopt_unidentified_trays(database, UNIDENTIFIED_PRINTER)
+            await adopt_unidentified_trays(database, (A_PRINTER,))
+            await adopt_unidentified_trays(database, (UNIDENTIFIED_PRINTER,))
             twice = await database.fetch_all("SELECT id, location_printer FROM spool ORDER BY id")
 
             assert [tuple(row) for row in twice] == [tuple(row) for row in once]
@@ -1478,5 +1491,235 @@ class TestMigration0007GivesEveryTrayItsPrinter:
         database = await Database.open(tmp_path / "ledger.db", run_inline)
         try:
             assert await database.migrate() >= 7
+        finally:
+            await database.close()
+
+
+def _stage_0008(staged: Path) -> None:
+    source = next(MIGRATIONS.glob("0008_*.sql"))
+    (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+async def _staged_at_version_seven(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Database, Path]:
+    """A database stopped at version 7 — where every 1.4.x install sits before 2.0.0."""
+    database, staged = await _staged_at_version_six(tmp_path, monkeypatch)
+    await _populate_pre_0007(database)
+    _stage_0007(staged)
+    assert await database.migrate() == 7
+    return database, staged
+
+
+class TestMigration0008FollowsMoreThanOnePrinter:
+    """docs/08 §8.1, §8.4 — the two facts the schema still stated in the singular.
+
+    0007 taught the schema to represent a second machine. This is the release that follows
+    one, and it changes exactly two things: which machine ran a job, and which machine a
+    direct feed belongs to. **Neither is backfilled with a name the ledger never recorded**,
+    which is the one difference from 0007 and the whole of what makes it honest — there the
+    placeholder was forced, because a location has to name a tray and a tray has to name a
+    printer.
+    """
+
+    async def test_a_job_that_predates_the_column_names_no_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NULL, not the sentinel. The ledger did not record which machine ran these jobs,
+        and a serial written in here would be the migration answering the very question the
+        column exists to stop being guessed at (docs/08 §8.4)."""
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            jobs = await SqlitePrintJobRepository(database).list_recent(10)
+            assert len(jobs) == len(PRE_0007_JOBS)
+            assert {job.printer for job in jobs} == {None}
+        finally:
+            await database.close()
+
+    async def test_a_nameless_job_is_not_returned_for_any_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The port's rule, at the adapter: naming a serial excludes every row that names
+        none. This is what makes `_running_job` refuse to correlate a migrated row rather
+        than guess which machine it belonged to."""
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            jobs = SqlitePrintJobRepository(database)
+            assert await jobs.list_recent(10, printer=A_PRINTER) == []
+            assert len(await jobs.list_recent(10)) == len(PRE_0007_JOBS)
+        finally:
+            await database.close()
+
+    async def test_the_direct_feed_belongs_to_a_machine_and_the_old_row_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The one row the old index allowed takes the sentinel, for 0007's reason: there
+        can be at most one, so it belongs to the one printer this ledger has ever fed."""
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            external = await SqliteSpoolRepository(database).get(SpoolId("external"))
+            assert external is not None
+            assert external.location == ExternalSpool(UNIDENTIFIED_PRINTER)
+        finally:
+            await database.close()
+
+    async def test_two_machines_can_each_be_fed_directly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bug the widened index removes, stated as the state it now permits.
+
+        `idx_spool_external` used to be unique on `location_kind` alone — one spool on *the*
+        direct feed, ledger-wide — so a second machine's reel was refused by a rule that was
+        only ever about one machine's hardware.
+        """
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            spools = SqliteSpoolRepository(database)
+            here = await spools.get(SpoolId("external"))
+            stored = await spools.get(SpoolId("stored"))
+            assert here is not None
+            assert stored is not None
+            await spools.save(here.mounted_externally(A_PRINTER))
+
+            await spools.save(stored.mounted_externally(ANOTHER_PRINTER))
+
+            locations = {
+                str(spool.id): spool.location for spool in await spools.list(SpoolFilter())
+            }
+            assert locations["external"] == ExternalSpool(A_PRINTER)
+            assert locations["stored"] == ExternalSpool(ANOTHER_PRINTER)
+        finally:
+            await database.close()
+
+    async def test_one_machine_still_holds_one_reel_on_its_direct_feed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The invariant the index exists for, kept: widening it per machine must not turn
+        it off. Two spools on *one* printer's feed is still a physical impossibility."""
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            spools = SqliteSpoolRepository(database)
+            first = await spools.get(SpoolId("external"))
+            second = await spools.get(SpoolId("stored"))
+            assert first is not None
+            assert second is not None
+            await spools.save(first.mounted_externally(A_PRINTER))
+
+            with pytest.raises(sqlite3.IntegrityError):
+                await spools.save(second.mounted_externally(A_PRINTER))
+        finally:
+            await database.close()
+
+    async def test_adoption_names_the_direct_feed_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One statement covers both mounted kinds, because both keep the machine in
+        `location_printer` — so a ledger with one discovered printer adopts its tray and its
+        direct feed in the same pass."""
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            await adopt_unidentified_trays(database, (A_PRINTER,))
+
+            spools = SqliteSpoolRepository(database)
+            external = await spools.get(SpoolId("external"))
+            mounted = await spools.get(SpoolId("mounted"))
+            assert external is not None
+            assert mounted is not None
+            assert external.location == ExternalSpool(A_PRINTER)
+            assert mounted.location == AmsSlot(a_tray(3))
+        finally:
+            await database.close()
+
+    async def test_several_printers_adopt_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The judgement this release had to make, as a test.
+
+        The placeholder means *the one machine this ledger has always talked to*, and with
+        two machines discovered there is no record of which. Every rule that would pick one
+        is a coin toss with somebody's spools on the other end, so the rows keep the
+        placeholder and the AMS tab shows them under a heading that says so.
+        """
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            await adopt_unidentified_trays(database, (A_PRINTER, ANOTHER_PRINTER))
+
+            spools = SqliteSpoolRepository(database)
+            occupant = await spools.find_by_location(
+                AmsSlot(a_tray(3, printer=UNIDENTIFIED_PRINTER))
+            )
+            assert occupant is not None
+            assert occupant.id == "mounted"
+            assert await spools.find_by_location(AmsSlot(a_tray(3))) is None
+        finally:
+            await database.close()
+
+    async def test_the_whole_ledger_still_hydrates_after_the_upgrade(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every migrated row through the mappers that ship. A column translated correctly
+        and a mapper that cannot read it back is the same failure as a bad translation, and
+        it fails on every start."""
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+
+            spools = await SqliteSpoolRepository(database).list(SpoolFilter())
+            assert [spool.id for spool in spools] == ["mounted", "stored", "external"]
+            assert len(await SqlitePrintJobRepository(database).list_recent(10)) == len(
+                PRE_0007_JOBS
+            )
+            pending = await SqliteReviewRepository(database).list_pending()
+            assert [review.id for review in pending] == ["review-pending"]
+        finally:
+            await database.close()
+
+    async def test_running_the_runner_again_changes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+        try:
+            _stage_0008(staged)
+            assert await database.migrate() == 8
+            once = await database.fetch_all("SELECT id, location_printer FROM spool ORDER BY id")
+
+            assert await database.migrate() == 8
+            assert await database.migrate() == 8
+
+            twice = await database.fetch_all("SELECT id, location_printer FROM spool ORDER BY id")
+            assert [tuple(row) for row in twice] == [tuple(row) for row in once]
+            versions = await database.fetch_all(
+                "SELECT version FROM schema_version ORDER BY version"
+            )
+            assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8]
+        finally:
+            await database.close()
+
+    async def test_it_applies_cleanly_to_an_empty_database(self, tmp_path: Path) -> None:
+        database = await Database.open(tmp_path / "ledger.db", run_inline)
+        try:
+            assert await database.migrate() >= 8
         finally:
             await database.close()

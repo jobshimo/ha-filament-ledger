@@ -49,7 +49,7 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from .conftest import EPOCH, Ledger, a_tray
+from .conftest import A_PRINTER, EPOCH, Ledger, a_tray
 
 TRAY_1 = a_tray(1)
 TRAY_2 = a_tray(2)
@@ -72,6 +72,7 @@ def finished(reported_usage: dict[TrayRef, Grams] | None = None) -> PrintEnded:
     return PrintEnded(
         outcome=PrintJobState.FINISHED,
         name="bracket_v3.gcode.3mf",
+        printer=A_PRINTER,
         layer_reached=209,
         total_layers=209,
         progress=Percentage.of(100),
@@ -85,7 +86,7 @@ async def ran_to_completion(
 ) -> PrintJob:
     """One whole lifecycle through the seam as wired: a start, then the FINISHED ending."""
     await ledger.use_cases.track_print_job.execute(
-        PrintStarted(name="bracket_v3.gcode.3mf", plan=None)
+        PrintStarted(name="bracket_v3.gcode.3mf", printer=A_PRINTER, plan=None)
     )
     ledger.clock.advance(minutes=42)
     job_id = await ledger.use_cases.track_print_job.execute(finished(reported_usage))
@@ -172,7 +173,9 @@ class TestAutomaticDeduction:
         a_year_late = EPOCH + timedelta(days=365)
 
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=a_year_late)
+            PrintStarted(
+                name="bracket_v3.gcode.3mf", printer=A_PRINTER, printer_started_at=a_year_late
+            )
         )
         ledger.clock.advance(minutes=42)
         job_id = await ledger.use_cases.track_print_job.execute(
@@ -213,7 +216,9 @@ class TestAutomaticDeduction:
         a_year_early = EPOCH - timedelta(days=365)
 
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=a_year_early)
+            PrintStarted(
+                name="bracket_v3.gcode.3mf", printer=A_PRINTER, printer_started_at=a_year_early
+            )
         )
         await ledger.use_cases.track_print_job.execute(
             replace(
@@ -272,7 +277,7 @@ class TestIdempotency:
         spool_id = await a_spool(ledger)
         await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", plan=None)
+            PrintStarted(name="bracket_v3.gcode.3mf", printer=A_PRINTER, plan=None)
         )
         event = finished({TRAY_1: Grams.of("38.2")})
 

@@ -65,9 +65,11 @@ from .runtime import LedgerRuntime, runtimes
 # here as well as in the domain so a typo becomes a message rather than a stack trace.
 #
 # `printer` and `ams` are optional and their absence names the tray space this ledger
-# follows, so an automation written against v1 keeps working unchanged — the ledger still
-# follows exactly one printer, and naming a serial for the only machine in the house would
-# be ceremony rather than precision.
+# follows, so an automation written against v1 keeps working unchanged **while there is one
+# machine for it to mean** — naming a serial for the only printer in the house would be
+# ceremony rather than precision. With several followed the absence is refused rather than
+# resolved, and the automation gets a message naming the machines it could have meant
+# (`LedgerRuntime.tray_printer`, docs/05 §5.4).
 _TRAY = vol.Schema(
     {
         vol.Optional("printer"): vol.Any(cv.string, None),

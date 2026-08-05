@@ -19,7 +19,14 @@ from ..error import (
 )
 from ..value.colour import Colour
 from ..value.grams import Grams
-from ..value.identifiers import SpoolId, TagSource, TagUid, TrayRef, new_spool_id
+from ..value.identifiers import (
+    PrinterSerial,
+    SpoolId,
+    TagSource,
+    TagUid,
+    TrayRef,
+    new_spool_id,
+)
 from ..value.location import AmsSlot, ExternalSpool, Location, Storage
 from ..value.material import Material
 from ..value.percentage import Percentage
@@ -164,8 +171,9 @@ class Spool:
     def mounted_in(self, tray: TrayRef) -> Spool:
         return self.moved_to(AmsSlot(tray))
 
-    def mounted_externally(self) -> Spool:
-        return self.moved_to(ExternalSpool())
+    def mounted_externally(self, printer: PrinterSerial) -> Spool:
+        """On the direct feed of the machine named — one feed per printer (docs/02 §2.2)."""
+        return self.moved_to(ExternalSpool(printer))
 
     def unmounted(self) -> Spool:
         return self.moved_to(Storage())

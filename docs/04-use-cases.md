@@ -51,7 +51,9 @@ without a tag.
 **Input** — `SpoolId` (manual) or `TagUid` (automatic), plus the `TrayRef` the spool goes
 into — printer, AMS unit and tray ([02 §2.3](02-domain-model.md)). A caller that names only
 the tray number means the tray space this ledger follows, which is resolved at the adapter
-([05 §5.4](05-ha-integration.md)) and never guessed inside the use case.
+([05 §5.4](05-ha-integration.md)) and never guessed inside the use case. **With more than one
+machine followed there is no such space**, and the adapter refuses the call naming the
+machines it could have meant rather than picking one.
 
 **Preconditions**
 - Spool is not `DISCARDED`.
@@ -109,6 +111,13 @@ system.**
 **Trigger** — `PrinterGateway` reports a job reaching `FINISHED`.
 
 **Input** — `PrintJobId`, per-tray reported usage keyed by `TrayRef`.
+
+The job this deducts against is the one the ending correlated to, and correlation is **per
+machine**: an upstream ending carries no job id, so it is matched to the newest `RUNNING` row
+of the printer that reported it. Matching on state alone was correct while one machine printed
+and became a coin toss the moment two could — and the figures ride with the match, so a wrong
+one deducts one printer's grams from the spools in the other printer's trays
+([02 §2.3](02-domain-model.md), [05 §5.8](05-ha-integration.md)).
 
 **Preconditions**
 - Job is `FINISHED`, not cancelled or failed.

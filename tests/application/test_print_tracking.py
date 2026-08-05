@@ -21,6 +21,8 @@ from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    PrinterSerial,
+    PrintJobId,
     SpoolId,
     TrayRef,
 )
@@ -36,7 +38,7 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from .conftest import EPOCH, Ledger, a_tray
+from .conftest import A_PRINTER, ANOTHER_PRINTER, EPOCH, Ledger, a_tray
 
 TRAY_1 = a_tray(1)
 TRAY_2 = a_tray(2)
@@ -54,8 +56,10 @@ async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
     return await ledger.use_cases.register_spool.execute(command)
 
 
-def started(plan: dict[TrayRef, Grams] | None = None) -> PrintStarted:
-    return PrintStarted(name="bracket_v3.gcode.3mf", plan=plan)
+def started(
+    plan: dict[TrayRef, Grams] | None = None, *, printer: PrinterSerial = A_PRINTER
+) -> PrintStarted:
+    return PrintStarted(name="bracket_v3.gcode.3mf", printer=printer, plan=plan)
 
 
 def ended(
@@ -67,10 +71,12 @@ def ended(
     raw_print_error: int | None = None,
     printer_started_at: datetime | None = None,
     printer_ended_at: datetime | None = None,
+    printer: PrinterSerial = A_PRINTER,
 ) -> PrintEnded:
     return PrintEnded(
         outcome=outcome,
         name="bracket_v3.gcode.3mf",
+        printer=printer,
         layer_reached=layer_reached,
         total_layers=total_layers,
         progress=Percentage.of(34),
@@ -207,7 +213,9 @@ class TestAnInterruptedPrint:
         machine_start = datetime(2026, 8, 4, 9, 12, tzinfo=UTC)
         machine_end = datetime(2026, 8, 4, 11, 47, tzinfo=UTC)
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=machine_start)
+            PrintStarted(
+                name="bracket_v3.gcode.3mf", printer=A_PRINTER, printer_started_at=machine_start
+            )
         )
         ledger.clock.advance(minutes=42)
 
@@ -229,7 +237,9 @@ class TestAnInterruptedPrint:
         for the next job would otherwise take this print's start down with it."""
         machine_start = datetime(2026, 8, 4, 9, 12, tzinfo=UTC)
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=machine_start)
+            PrintStarted(
+                name="bracket_v3.gcode.3mf", printer=A_PRINTER, printer_started_at=machine_start
+            )
         )
 
         await ledger.use_cases.track_print_job.execute(
@@ -249,7 +259,9 @@ class TestAnInterruptedPrint:
         machine_start = datetime(2026, 8, 4, 9, 12, tzinfo=UTC)
         would_have_finished = datetime(2026, 8, 4, 14, 30, tzinfo=UTC)
         await ledger.use_cases.track_print_job.execute(
-            PrintStarted(name="bracket_v3.gcode.3mf", printer_started_at=machine_start)
+            PrintStarted(
+                name="bracket_v3.gcode.3mf", printer=A_PRINTER, printer_started_at=machine_start
+            )
         )
         ledger.clock.advance(minutes=42)
 
@@ -289,6 +301,140 @@ class TestAnInterruptedPrint:
         by_id = {job.id: job for job in await stored_jobs(ledger)}
         assert by_id[current].state is PrintJobState.CANCELLED
         assert by_id[stale].state is PrintJobState.RUNNING
+
+
+class TestCorrelationAcrossPrinters:
+    """Two machines printing at once, which is the whole of what v2.0 had to get right.
+
+    Correlation by state alone would hand each ending to whichever job started last, and
+    the ending's per-tray figures ride with it — so UC-04 would deduct one printer's grams
+    from the spools in the other printer's trays.
+    """
+
+    async def test_each_ending_closes_its_own_machines_job(self, ledger: Ledger) -> None:
+        """The newest RUNNING row belongs to the *second* machine; the first machine's
+        ending must reach past it to the job that is actually its own."""
+        first = await ledger.use_cases.track_print_job.execute(started(printer=A_PRINTER))
+        ledger.clock.advance(minutes=10)
+        second = await ledger.use_cases.track_print_job.execute(started(printer=ANOTHER_PRINTER))
+        ledger.clock.advance(minutes=10)
+
+        ended_id = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, printer=A_PRINTER)
+        )
+
+        assert ended_id == first
+        by_id = {job.id: job for job in await stored_jobs(ledger)}
+        assert by_id[first].state is PrintJobState.FINISHED
+        assert by_id[second].state is PrintJobState.RUNNING
+
+    async def test_a_machines_grams_are_deducted_from_its_own_trays(self, ledger: Ledger) -> None:
+        """The consequence, spelled out in balances rather than in states.
+
+        One spool in each machine's tray 1. Both machines print; the first finishes and
+        reports 38.2 g. Mis-correlation would put those grams on the job whose trays belong
+        to the other machine, and UC-04 would deduct them from the wrong reel — visible here
+        as the second spool losing filament it never printed.
+        """
+        here = a_tray(1, printer=A_PRINTER)
+        there = a_tray(1, printer=ANOTHER_PRINTER)
+        mine = await a_spool(ledger, label="on the first machine")
+        yours = await a_spool(ledger, label="on the second machine")
+        await ledger.use_cases.mount_spool.execute(mine, here)
+        await ledger.use_cases.mount_spool.execute(yours, there)
+        await ledger.use_cases.track_print_job.execute(started(printer=A_PRINTER))
+        ledger.clock.advance(minutes=5)
+        await ledger.use_cases.track_print_job.execute(started(printer=ANOTHER_PRINTER))
+        ledger.clock.advance(minutes=5)
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(
+                PrintJobState.FINISHED,
+                printer=A_PRINTER,
+                reported_usage={here: Grams.of("38.2")},
+            )
+        )
+
+        assert (await ledger.use_cases.queries.detail(mine)).summary.balance == Grams.of("961.8")
+        assert (await ledger.use_cases.queries.detail(yours)).summary.balance == Grams.of(1000)
+
+    async def test_a_review_opens_against_the_machine_that_was_cancelled(
+        self, ledger: Ledger
+    ) -> None:
+        """A cancellation on one machine must not freeze the other machine's plan into a
+        decision item the owner is then asked to approve."""
+        here = a_tray(1, printer=A_PRINTER)
+        there = a_tray(1, printer=ANOTHER_PRINTER)
+        await ledger.use_cases.track_print_job.execute(
+            started({here: Grams.of(209)}, printer=A_PRINTER)
+        )
+        await ledger.use_cases.track_print_job.execute(
+            started({there: Grams.of(500)}, printer=ANOTHER_PRINTER)
+        )
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.CANCELLED, printer=A_PRINTER)
+        )
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        # 71 of 209 layers of the *first* machine's 209 g plan.
+        assert review.estimated_usage == {here: Grams.of(71)}
+
+    async def test_a_long_job_stays_correlatable_behind_another_machines_burst(
+        self, ledger: Ledger
+    ) -> None:
+        """Why the correlation window is counted per printer.
+
+        One machine runs a long print while the other runs a dozen short ones. A window of
+        ten shared across the ledger would have pushed the long job out of view, and its
+        ending would have opened a duplicate row instead of closing the job it belongs to.
+        """
+        long_job = await ledger.use_cases.track_print_job.execute(started(printer=A_PRINTER))
+        for _ in range(12):
+            ledger.clock.advance(minutes=20)
+            await ledger.use_cases.track_print_job.execute(started(printer=ANOTHER_PRINTER))
+            ledger.clock.advance(minutes=1)
+            await ledger.use_cases.track_print_job.execute(
+                ended(PrintJobState.FINISHED, printer=ANOTHER_PRINTER)
+            )
+        ledger.clock.advance(hours=1)
+
+        ended_id = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, printer=A_PRINTER)
+        )
+
+        assert ended_id == long_job
+
+    async def test_a_job_that_names_no_machine_is_correlated_to_by_nobody(
+        self, ledger: Ledger
+    ) -> None:
+        """The migrated row, and the price of refusing to guess about it.
+
+        A print that spanned the upgrade to migration 0008 leaves a RUNNING row naming no
+        machine. Its ending arrives naming one, finds nothing of its own, and opens a fresh
+        row — the same shape a restart already produced. The stale row stays verbatim and
+        reclassifiable; letting it match would be inventing which machine it belonged to.
+        """
+        jobs = SqlitePrintJobRepository(ledger.database)
+        await jobs.save(
+            PrintJob(
+                id=PrintJobId("job-from-before-0008"),
+                name="bracket_v3.gcode.3mf",
+                state=PrintJobState.RUNNING,
+                started_at=EPOCH,
+            )
+        )
+        ledger.clock.advance(minutes=42)
+
+        ended_id = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.CANCELLED, printer=A_PRINTER)
+        )
+
+        assert ended_id != PrintJobId("job-from-before-0008")
+        by_id = {job.id: job for job in await stored_jobs(ledger)}
+        assert by_id[PrintJobId("job-from-before-0008")].state is PrintJobState.RUNNING
+        assert by_id[ended_id].state is PrintJobState.CANCELLED
+        assert by_id[ended_id].printer == A_PRINTER
 
 
 class TestAFinishedPrint:
