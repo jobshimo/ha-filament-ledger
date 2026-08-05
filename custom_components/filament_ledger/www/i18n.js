@@ -149,6 +149,7 @@ const EN = {
   "act.optional": "optional",
   "act.why": "why",
   "act.and": " and ",
+  "act.spoolActions": "Spool actions",
 
   // -- inventory ---------------------------------------------------------------------
   "inv.emptyTitle": "No spools yet.",
@@ -163,7 +164,6 @@ const EN = {
   "inv.newSpool": "+ New spool",
   "inv.sync": "⟳ Sync with printer",
   "inv.sealed": "Sealed",
-  "inv.removeSpool": "Remove this spool",
   "inv.weighThis": "Weigh this spool",
 
   // -- the sync strip ----------------------------------------------------------------
@@ -219,6 +219,40 @@ const EN = {
   "history.deleted": "deleted",
   "history.reassignTitle": "Move this charge to another spool",
   "history.voidTitle": "Delete this entry and return the grams",
+
+  // -- the History filter row (docs/06 §6.6) -----------------------------------------
+  // Each label says what its control actually narrows, because a control that promises
+  // more than it does reads as broken rather than as narrow. The search box is the one
+  // that has to be careful: it matches stored text, so it cannot claim the entry labels
+  // this panel generates or the spool name the swatches beside it already cover.
+  "history.filterSearch": "Note or print",
+  "history.filterSearchPlaceholder": "Search…",
+  "history.filterSearchHelp":
+    "Matches the note written on an entry and the name of the print it came from. Not the " +
+    "spool's name — the colours narrow that — and not the entry's own label.",
+  "history.filterFrom": "From",
+  "history.filterTo": "To",
+  "history.filterAmount": "Grams moved",
+  "history.filterAmountHelp":
+    "How much filament moved, whichever way it went: a print that used 84 g matches at " +
+    "least 50 g, and so does a correction that gave 84 g back.",
+  "history.filterAtLeast": "at least",
+  "history.filterAtMost": "at most",
+  "history.filterColour": "Colour",
+  "history.filterColourHelp":
+    "Entries on spools of the colours you pick. Pick several — the blacks and the greys " +
+    "are one question, not two.",
+  "history.filterColourOne": "Filament [[colour]]",
+  "history.filterClear": "Clear filters",
+  "history.filterToggle": "Filters",
+  "history.filterActive": "Narrowed by [[count]] of these controls",
+  "history.noMatchTitle": "Nothing matches these filters.",
+  "history.noMatchBody":
+    "The ledger still holds every entry it held a moment ago; this slice of it is empty. " +
+    "Widen a date, drop a colour, or clear the filters to see all of it again.",
+  "history.footFiltered":
+    "[[count]] entries match these filters, newest first. The limit applies to what " +
+    "matched, so widening a filter can bring older entries back into view.",
 
   // -- statistics (docs/06 §6.7, docs/15 §15.6) --------------------------------------
   // Every figure on this tab is computed in the application layer and arrives finished:
@@ -310,7 +344,14 @@ const EN = {
   "detail.weigh": "Weigh",
   "detail.adjust": "Adjust",
   "detail.edit": "Edit",
+  "detail.finish": "Mark as finished",
+  "detail.finishHelp":
+    "The reel came off the printer empty. The balance is set to 0 g and the difference is " +
+    "recorded as a reconciliation, so the drift is visible rather than lost.",
   "detail.remove": "Remove…",
+  "detail.removeHelp":
+    "Thrown away, or registered by mistake? The next step asks which, because the two are " +
+    "different facts about the world.",
   "detail.heading": "Movement history",
   "detail.foot":
     "Read bottom-up it is a derivation, not an assertion. Nothing above can be edited — a " +
@@ -397,6 +438,29 @@ const EN = {
   "dlg.measured": "Measured weight (g)",
   "dlg.includesCore": "Includes the reel ([[core]] g)",
   "dlg.weighFoot": "This is recorded as a correction. Nothing in your history changes.",
+
+  // -- dialog: mark a spool finished -------------------------------------------------
+  // A reconciliation to zero, and the wording says so rather than inventing a vocabulary
+  // for it: the user is asserting a measurement, and the delta that falls out is the
+  // system's own error signal (docs/06 §6.5, UC-08).
+  "dlg.finishTitle": "Mark [[name]] as finished?",
+  "dlg.finishSays":
+    "The ledger still says <b>[[grams]] g</b> remain. Recording an empty reel writes a " +
+    "reconciliation of <b>[[delta]] g</b> — the drift every estimate has accumulated since " +
+    "this spool was last weighed.",
+  "dlg.finishFoot":
+    "Nothing is counted as waste and nothing is charged to a print: you are stating a " +
+    "measurement, and the difference is the system's own error, recorded where it can be " +
+    "read. The spool stays in your inventory at 0 g until you remove it.",
+  "dlg.finishConfirm": "Record an empty spool",
+  // Written into the ledger as the movement's note, so it keeps the language of the panel
+  // that wrote it — the same rule the edit dialog's correction note follows.
+  "dlg.finishNote": "Marked as finished — the reel came off empty",
+
+  // -- dialog: the spool action rail, collapsed --------------------------------------
+  // The heading is the spool's own name, which is data rather than a string, so it is
+  // escaped at the call site instead of living here. This is the line under it.
+  "dlg.actionsBalance": "[[grams]] g remaining · [[state]]",
 
   // -- dialog: adjust ----------------------------------------------------------------
   "dlg.adjustTitle": "Adjust",
@@ -631,6 +695,7 @@ const ES = {
   "act.optional": "opcional",
   "act.why": "por qué",
   "act.and": " y ",
+  "act.spoolActions": "Acciones de la bobina",
 
   // -- inventario --------------------------------------------------------------------
   "inv.emptyTitle": "Todavía no hay bobinas.",
@@ -646,7 +711,6 @@ const ES = {
   "inv.newSpool": "+ Nueva bobina",
   "inv.sync": "⟳ Sincronizar con la impresora",
   "inv.sealed": "Sellada",
-  "inv.removeSpool": "Quitar esta bobina",
   "inv.weighThis": "Pese esta bobina",
 
   // -- tira de sincronización --------------------------------------------------------
@@ -704,6 +768,39 @@ const ES = {
   "history.deleted": "eliminada",
   "history.reassignTitle": "Mover este cargo a otra bobina",
   "history.voidTitle": "Eliminar esta entrada y devolver los gramos",
+
+  // -- la fila de filtros del historial (docs/06 §6.6) -------------------------------
+  "history.filterSearch": "Nota o impresión",
+  "history.filterSearchPlaceholder": "Buscar…",
+  "history.filterSearchHelp":
+    "Busca en la nota escrita en una entrada y en el nombre de la impresión de la que " +
+    "proviene. No busca el nombre de la bobina —eso lo acotan los colores— ni la etiqueta " +
+    "de la propia entrada.",
+  "history.filterFrom": "Desde",
+  "history.filterTo": "Hasta",
+  "history.filterAmount": "Gramos movidos",
+  "history.filterAmountHelp":
+    "Cuánto filamento se movió, en cualquier sentido: una impresión que gastó 84 g cumple " +
+    "con al menos 50 g, y una corrección que devolvió 84 g también.",
+  "history.filterAtLeast": "al menos",
+  "history.filterAtMost": "como máximo",
+  "history.filterColour": "Color",
+  "history.filterColourHelp":
+    "Entradas de bobinas de los colores que elija. Puede elegir varios: los negros y los " +
+    "grises son una sola pregunta, no dos.",
+  "history.filterColourOne": "Filamento [[colour]]",
+  "history.filterClear": "Quitar filtros",
+  "history.filterToggle": "Filtros",
+  "history.filterActive": "Acotado por [[count]] de estos controles",
+  "history.noMatchTitle": "Nada coincide con estos filtros.",
+  "history.noMatchBody":
+    "El registro conserva todas las entradas que tenía hace un momento; lo que está vacío " +
+    "es esta porción. Amplíe una fecha, quite un color o quite los filtros para volver a " +
+    "verlo entero.",
+  "history.footFiltered":
+    "[[count]] entradas coinciden con estos filtros, de la más reciente a la más antigua. " +
+    "El límite se aplica a lo que coincidió, así que ampliar un filtro puede devolver a la " +
+    "vista entradas más antiguas.",
 
   // -- estadísticas (docs/06 §6.7, docs/15 §15.6) ------------------------------------
   "stats.periodLabel": "Período",
@@ -797,7 +894,15 @@ const ES = {
   "detail.weigh": "Pesar",
   "detail.adjust": "Ajustar",
   "detail.edit": "Editar",
+  "detail.finish": "Marcar como acabada",
+  "detail.finishHelp":
+    "El carrete salió vacío de la impresora. El saldo se fija en 0 g y la diferencia se " +
+    "registra como una conciliación, de modo que la desviación queda a la vista en lugar " +
+    "de perderse.",
   "detail.remove": "Quitar…",
+  "detail.removeHelp":
+    "¿La tiró a la basura o se registró por error? El paso siguiente pregunta cuál de las " +
+    "dos, porque son hechos distintos.",
   "detail.heading": "Historial de movimientos",
   "detail.foot":
     "Leído de abajo arriba es una derivación, no una afirmación. Nada de lo anterior puede " +
@@ -888,6 +993,22 @@ const ES = {
   "dlg.measured": "Peso medido (g)",
   "dlg.includesCore": "Incluye el carrete ([[core]] g)",
   "dlg.weighFoot": "Esto se registra como una corrección. Nada de su historial cambia.",
+
+  // -- diálogo: marcar una bobina como acabada ---------------------------------------
+  "dlg.finishTitle": "¿Marcar [[name]] como acabada?",
+  "dlg.finishSays":
+    "El registro todavía dice que quedan <b>[[grams]] g</b>. Registrar el carrete vacío " +
+    "escribe una conciliación de <b>[[delta]] g</b>: la desviación que han acumulado todas " +
+    "las estimaciones desde la última vez que se pesó esta bobina.",
+  "dlg.finishFoot":
+    "Nada se cuenta como desperdicio y nada se carga a una impresión: usted está " +
+    "declarando una medición, y la diferencia es el propio error del sistema, registrado " +
+    "donde puede leerse. La bobina permanece en el inventario con 0 g hasta que la quite.",
+  "dlg.finishConfirm": "Registrar bobina vacía",
+  "dlg.finishNote": "Marcada como acabada — el carrete salió vacío",
+
+  // -- diálogo: acciones de la bobina ------------------------------------------------
+  "dlg.actionsBalance": "quedan [[grams]] g · [[state]]",
 
   // -- diálogo: ajustar --------------------------------------------------------------
   "dlg.adjustTitle": "Ajustar",
