@@ -65,7 +65,7 @@ impossible had to go, and did.
 
 ---
 
-## Release 1.3.0 — attribution
+## Release 1.3.0 — attribution — **SHIPPED**
 
 The release that makes the situation this whole review started from recordable: a spool empties
 mid-print and is replaced in the same tray.
@@ -82,7 +82,7 @@ mid-print and is replaced in the same tray.
 
 ---
 
-## Release 1.4.0 — the printer, and a confidence that means something
+## Release 1.4.0 — the printer, and a confidence that means something — **SHIPPED**
 
 1. **Remaining time and real job duration** (request 7a). `remaining_time`, `start_time` and
    `end_time` exist upstream. The keys are read off a real entity registry before they are frozen,
@@ -98,7 +98,7 @@ mid-print and is replaced in the same tray.
 
 ---
 
-## Release 2.0.0 — more than one printer
+## Release 2.0.0 — more than one printer — **SHIPPED**
 
 Request 7c. A tray stops being a bare index and becomes printer + AMS + tray. Touches the domain
 value, the schema's unique index, the gateway's discovery and the AMS view together. Migration is
@@ -121,3 +121,37 @@ Full autonomy has an edge, and it is worth naming rather than discovering:
   rather than extending it. The documents are the contract.
 - A confidence scale chosen without the measurement, because that is replacing one guess with
   another and the current one is at least documented as provisional.
+
+---
+
+## What actually shipped
+
+Five releases, `v1.1.1` through `v2.0.0`, each tagged from `main` and published by `release.yml`
+on its own. The suite went from 907 to **1109**.
+
+Three things are worth carrying forward, because they were not in the plan and each cost
+something to learn:
+
+**A reproduction beats a passing test.** Every defect in `REVIEW-FINDINGS.md` was replayed against
+its own fix rather than accepted on the strength of a test written by whoever wrote the fix. Twice
+that caught a fix that did not fix, and once it caught an artefact in the reproduction itself —
+a frozen `FakeClock` giving two events the same timestamp, which is not a thing two people do.
+
+**Migrations were replayed against real databases**, not only against fixtures that start empty.
+Every one of 0004 through 0008 was run over populated ledgers from the reference instance, and
+0004's migration of an already-approved review is the case that mattered: it carries the confirmed
+amount, not the estimate, and the estimate would have misreported a movement already in the
+ledger by 71.94 g. The instruction that said otherwise was mine, and was wrong.
+
+**`node --check` does not catch a backtick inside a CSS comment.** It ends the `STYLES` template
+literal and passes. A real ESM `import()` under a stubbed DOM does catch it, and did — three
+times, once on a change that would otherwise have shipped a blank panel.
+
+## What is owed
+
+- **A phone-width pass on a real device.** Marked honestly as not exercised on four of the panel
+  changes. No browser existed in the environments that made them.
+- **The HACS custom-repository registration**, which is a human's click: HACS 2.x exposes neither
+  a service nor a websocket command, and its own interface is not something to drive blind.
+- **Confidence, revisited when there is a sample.** The third rung is derived from two
+  observations and an existing constant. Two points are not a curve, and `docs/07 §7.5` says so.
