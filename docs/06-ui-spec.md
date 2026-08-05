@@ -50,6 +50,54 @@ after *every* paint because the nodes are new every time:
 Labels are never traded for icons. Density is worth less than knowing what a tab is before
 tapping it; the padding tightens on narrow screens instead.
 
+### The shell: what is fixed, and what scrolls
+
+Every tab is built from one layout shell, and the shell is what decides that **the content
+scrolls under the chrome rather than the whole panel scrolling as one document.** Four
+regions, top to bottom:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Filament Ledger                                        Martín  ADMIN│  1  fixed
+│  │ Inventory │ History │ Stats │ Review ⑵ │ AMS │ Printer   …        │  2  fixed
+├──────────────────────────────────────────────────────────────────────┤
+│  [ + New spool ]  [ Sync with printer ]                              │  3  fixed
+├──────────────────────────────────────────────────────────────────────┤
+│  ┌────────────────┐  ┌────────────────┐                            ▲ │
+│  │  PLA Basic     │  │  PLA Matte     │                            │ │  4  scrolls
+│  └────────────────┘  └────────────────┘                            ▼ │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+1. **The panel header** — the product and the account line.
+2. **The tab strip**, which scrolls *horizontally* within itself on a narrow screen exactly
+   as above, while staying vertically pinned.
+3. **The view's actions** — the row of controls that acts on the tab as a whole. Inventory
+   has *+ New spool* and *Sync with printer*; Stats has its period selector; Printer has
+   *Refresh*; the spool detail has *Back*. Several tabs have none.
+4. **The content** — the spool cards, the ledger rows, the review stack. **This is the only
+   region in the panel that scrolls vertically.**
+
+Three rules make it worth having.
+
+**A tab with no actions renders no region 3 at all**, rather than an empty one. Fixed chrome
+is paid for in the dimension a phone has least of, so a region nothing occupies must not cost
+its margin on the tabs that leave it empty.
+
+**Only whole-view controls are pinned.** A control that acts on one row belongs beside that
+row and scrolls with it: a review card keeps its own Approve, a trash row keeps its own
+Restore, and the spool detail keeps *Weigh* and *Adjust* under the spool they weigh and
+adjust (§6.5) rather than hoisting them above it. Region 3 is for what acts on everything
+below it, which is also the test for what belongs in it later.
+
+**The content region keeps its scroll position across a repaint.** The panel repaints by
+replacing its markup wholesale ([ADR-0006](adr/0006-vanilla-panel.md)), so the scroller is a
+new element after every paint and starts at the top unless it is put back. A push from the
+backend — a print finishing while somebody is reading row forty — must not throw them to the
+top; a live panel that does that is worse than one that never updates. Arriving somewhere is
+the exception and not an exception to the rule: a change of view opens at its top, which is
+the same distinction that decides whether the entry animation runs (§6.8).
+
 ---
 
 ## 6.2 View 1 — Inventory
@@ -118,9 +166,13 @@ confidence.
 
 ### Sync with printer
 
-A **⟳ Sync with printer** button sits beside *+ New spool*. It runs the same reconciliation
-pass startup runs — every tray the printer currently reports, through the same detection
-rules — and renders a transient per-slot outcome strip: mounted spools by name, unknown tags
+A **⟳ Sync with printer** button sits beside *+ New spool*. The pair is this tab's fixed
+action row (§6.1) and leads the view: the summary card below them is a figure to read, not a
+control to reach, so it scrolls away with the spools while the two buttons do not.
+
+It runs the same reconciliation pass startup runs — every tray the printer currently reports,
+through the same detection rules — and renders a transient per-slot outcome strip: mounted
+spools by name, unknown tags
 with a **Register…** action that opens the new-spool form pre-filled from the tray's hints
 (§6.4), ambiguous tags left for the user because the system does not pick, unreadable tags
 named as such. With no printer connected the strip says so honestly — *"No printer connected —
@@ -691,7 +743,14 @@ smaller wrong than a number that ate what somebody was typing into it.
 
 **Arriving at a view is animated; being updated in one is not.** The entry transition runs on a
 change of view and nowhere else — replaying it on every update is what a live panel looks like
-when it flickers.
+when it flickers. The same distinction governs the scroll position: arriving opens at the top,
+being updated keeps the reader's place (§6.1).
+
+**One shell, and one scroller.** Every tab is the same four regions, and only the last of them
+moves (§6.1). A tab that wants a row of controls declares it and the shell pins it; a tab that
+does not, does not pay for one. The rule exists so that the next surface needing fixed chrome —
+the History filters this document still owes §6.6 — is a line in an existing shell rather than
+a second mechanism beside it.
 
 **Confidence is never hidden.** Any surface showing a balance shows its confidence alongside.
 A number presented without its reliability invites false trust.
