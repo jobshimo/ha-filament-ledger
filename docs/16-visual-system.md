@@ -173,9 +173,18 @@ hex code.
 | Radius | `--fl-radius-s`, `--fl-radius-m`, `--fl-radius-l` |
 | Elevation | `--fl-shadow-1`, `--fl-shadow-2` |
 | Motion | `--fl-ease`, `--fl-dur-fast`, `--fl-dur-base`, `--fl-dur-slow` |
+| Target | `--fl-tap` |
 
 Semantic names, not literal ones: `--fl-bad`, never `--fl-red`. The day a warning stops being
 amber, one line changes and nothing reads as a lie.
+
+`--fl-tap` is the 44 px floor §16.6 sets for anything tappable, and it earns a token for a
+reason worth stating. A labelled button reaches that floor through its own padding and never
+has to mention it; an **icon-only** control has no label to grow its box, so the size has to
+be declared — and a number declared in one place is a number the next icon-only control will
+otherwise guess at. The spool action rail (§16.10) is the first such control in the panel and
+the reason the token exists; the phone tier, which used to write `44px` out by hand, reads it
+too.
 
 ---
 
@@ -391,3 +400,82 @@ needed, and neither produces an error.
 
 **Do not bump `manifest.json`.** Not in any of these pull requests. That is a release-time edit
 and [RELEASING](../RELEASING.md) owns it.
+
+---
+
+## 16.10 The spool action rail
+
+A spool is drawn at three sizes — `card` on the inventory grid, `slot` on an AMS tray,
+`hero` in the detail view (§16.7, step 5) — and the design gave none of them a place to
+put an action. So the one action a spool had was bolted on afterwards: a ✕ floating over a
+card's top-right corner, `position: absolute`, outside the layout, sized by nothing.
+
+It was untidy for reasons worth naming, because each of them is a rule:
+
+- **It belonged to no grid.** Absolute against `.spool-body`, with negative offsets tuned
+  by eye. Nothing else in the panel is placed that way, so nothing else moved with it when
+  a card's padding changed.
+- **It could not be given a target.** Growing it to the 44 px floor §16.6 sets would have
+  covered the spool's name, because it was sitting on top of it rather than beside it.
+- **It said one thing while meaning another.** The same ✕ on a history row means *delete
+  this entry*. On a card it meant *retire this spool*. One shape, two meanings, two views
+  apart — and the reader has no way to know which one they are looking at.
+
+### What replaces it
+
+**One list of what a spool offers, declared once, rendered at two densities.** The list
+itself is specified by [06 §6.5](06-ui-spec.md): four corrective actions, then the two
+that end a spool's life.
+
+| Size | Rendering |
+| --- | --- |
+| `hero` — the detail view | **Expanded.** The labelled row [06 §6.5](06-ui-spec.md) has always drawn, with the lifecycle pair pushed to the far end by an auto margin. On the phone tier the pair takes a line of its own rather than trailing whichever corrective button happened to end a row. |
+| `card` — an inventory card | **Collapsed.** A single ⋮ in the card's header row, beside the name, opening the lifecycle pair as a sheet. |
+| `slot` — an AMS tray | **Collapsed.** The same ⋮, in the tray's slot line. |
+
+The glyph is the ⋮ [06 §6.5](06-ui-spec.md) has drawn since its first draft, in the spool
+detail's header. It has moved to the two sizes where a spool is actually small enough to
+need it, and the detail — which has room for words — carries the labelled row instead.
+
+The collapsed control is a flex item in a header row, not an overlay: it takes its space
+from the row and the name shrinks around it, so there is no width at which the two
+overlap. Its box is `--fl-tap` square and transparent until hovered — the glyph is
+optically far smaller than its target, and drawing a permanent button outline around it
+would put a second bordered rectangle into a card that already has one. The box reaches
+that size through negative margins rather than height: it overlaps the card's own padding,
+because a tap target is a region of the screen and not a block that has to reserve room.
+Four tray cards across a desktop would otherwise pay 30 px of header each, for a glyph.
+
+The sheet is the modal shell the panel already has, and each row is the action plus the
+line that says what it will do — the shape the retirement modal was already using. That
+component is now shared rather than duplicated: one class, two sheets, and a third one
+costs nothing.
+
+### Why it splits the way it does
+
+The rail carries every action in the detail view and only two of them on a card, and the
+split is by **what an action needs in order to be honest**.
+
+*Weigh*, *Adjust*, *Discard* and *Edit details* each change a number, and each is a claim
+the movement history has to justify — so each belongs under that history. *Mark as
+finished* and *Remove…* state a fact about the physical object and need nothing but the
+spool, so they are available wherever a spool is drawn. That is [06 §6.1](06-ui-spec.md)'s
+rule about pinned controls, applied one level down.
+
+**There is no third home.** Two floating glyphs in two places is how this got untidy, and
+the fix is one fewer place, not one more: retirement is now a labelled row inside the
+rail, and the ✕ means exactly one thing in the whole panel — *delete this entry* — on the
+history row where it always belonged.
+
+### What the rail does not decide
+
+**It is not a popover.** No anchored positioning, no outside-click layer, no focus trap of
+its own. The panel repaints by replacing markup wholesale
+([ADR-0006](adr/0006-vanilla-panel.md)), so a positioned menu would have to be re-measured
+and re-anchored after every paint — the trap §16.9 already names, paid for a second time.
+The sheet is the modal the panel has, and it inherits the scrim, the escape route and the
+Cancel that were verified once.
+
+**It adds no state.** The collapsed rendering holds nothing open across a repaint: it is a
+dialog kind like every other, resolved from the spool's id on every render, and a subject
+that went away underneath it says so rather than quoting a figure that is no longer true.
