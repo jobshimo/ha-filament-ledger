@@ -101,7 +101,8 @@
       "fields": {
         "review_id": { "name": "Revisión", "description": "Qué revisión pendiente." },
         "amounts": { "name": "Cantidades corregidas", "description": "Gramos indexados por número de bandeja; por ejemplo, la bandeja 1 con 28,4. Sustituye la estimación en las bandejas que se indiquen." },
-        "assign": { "name": "Asignación de bobinas", "description": "Identificador de bobina indexado por número de bandeja; por ejemplo, la bandeja 3 con un identificador de bobina. Resuelve una bandeja que la revisión registró sin bobina." },
+        "assign": { "name": "Asignación de bobinas", "description": "Identificador de bobina indexado por número de bandeja; por ejemplo, la bandeja 3 con un identificador de bobina. Carga la bandeja entera a una sola bobina, que es lo que resuelve una bandeja que la revisión registró sin ninguna." },
+        "charges": { "name": "Reparto entre bobinas", "description": "Para una bandeja que consumió de más de una bobina: una lista de identificador de bobina y gramos, indexada por número de bandeja. Los cargos de cada bandeja deben sumar lo que esa bandeja confirma. Use esto o la asignación para una misma bandeja, nunca ambos." },
         "note": { "name": "Nota", "description": "Cualquier cosa que valga la pena recordar sobre la decisión." }
       }
     },

@@ -381,10 +381,10 @@ class TestRefusalsBecomeHomeAssistantErrors:
     async def test_an_unresolved_slot_blocks_approval_with_a_message(
         self, services: ServiceGateway, harness: Harness
     ) -> None:
-        """Nothing was mounted when the review froze, so the non-zero line has no spool —
-        the domain refuses, and the refusal crosses the service as a readable message."""
+        """Nothing was mounted when the review froze, so the non-zero tray charges nothing
+        — the domain refuses, and the refusal crosses the service as a readable message."""
         review_id = await a_review(harness)
-        with pytest.raises(HomeAssistantError, match="no spool"):
+        with pytest.raises(HomeAssistantError, match="must add up"):
             await services.call(SERVICE_APPROVE_REVIEW, review_id=review_id)
 
     async def test_without_a_set_up_ledger_every_service_refuses(

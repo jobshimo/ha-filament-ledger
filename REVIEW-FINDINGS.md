@@ -177,7 +177,15 @@ as evidence — at which point the tolerance stops being free.
 
 ---
 
-## F4 · Partial reassignment does not exist — **OPEN**
+## F4 · Partial reassignment does not exist — **FIXED, awaiting merge**
+
+Fixed on `feat/review-charges-and-partial-reassignment`, together with the model change
+[FEATURE-REQUESTS.md item 6](FEATURE-REQUESTS.md) asks for — the two halves of one situation,
+and this section already said they were. `ReassignMovementCommand` gained the optional
+`amount`; `PendingReview` gained per-tray charges, so the review path can now split the figure
+*before* it becomes a movement as well. Documented in
+[docs/14 §14.3](docs/14-corrections-and-trash.md) and [docs/06 §6.3](docs/06-ui-spec.md).
+
 
 **Severity: medium.** A missing capability rather than a defect, but it makes a real situation
 unrecordable.

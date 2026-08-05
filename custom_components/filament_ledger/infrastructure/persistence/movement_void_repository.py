@@ -17,7 +17,8 @@ from ...domain.value.identifiers import MovementId
 from .database import Database
 
 COLUMNS = (
-    "movement_id, voided_at, reason, reversal_movement_id, reinstated_at, reinstatement_movement_id"
+    "movement_id, voided_at, reason, reversal_movement_id, reinstated_at, "
+    "reinstatement_movement_id, undiscarded_spool"
 )
 
 
@@ -47,6 +48,7 @@ def _to_void(row: sqlite3.Row) -> MovementVoid:
             if row["reinstatement_movement_id"]
             else None
         ),
+        undiscarded_spool=bool(row["undiscarded_spool"]),
     )
 
 
@@ -63,7 +65,7 @@ class SqliteMovementVoidRepository:
         the layer that makes the sentence true.
         """
         await self.database.execute(
-            f"INSERT INTO movement_void ({COLUMNS}) VALUES (?,?,?,?,?,?)",
+            f"INSERT INTO movement_void ({COLUMNS}) VALUES (?,?,?,?,?,?,?)",
             (
                 void.movement_id,
                 _iso(void.voided_at),
@@ -71,6 +73,7 @@ class SqliteMovementVoidRepository:
                 void.reversal_movement_id,
                 _iso(void.reinstated_at) if void.reinstated_at else None,
                 void.reinstatement_movement_id,
+                int(void.undiscarded_spool),
             ),
         )
 

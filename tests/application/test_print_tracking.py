@@ -15,6 +15,7 @@ import pytest
 
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
 from custom_components.filament_ledger.domain.event import ReviewOpened
+from custom_components.filament_ledger.domain.model.pending_review import ReviewCharge
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
@@ -139,7 +140,7 @@ class TestAnInterruptedPrint:
         assert review.reason is ReviewReason.CANCELLED
         # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool.
         assert review.estimated_usage == {SLOT_1: Grams.of(71)}
-        assert review.slot_resolution == {SLOT_1: spool_id}
+        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.of(71)))]
         assert review.estimator_used is EstimatorKind.LINEAR_PROGRESS
         assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == Grams.of(1000)
 

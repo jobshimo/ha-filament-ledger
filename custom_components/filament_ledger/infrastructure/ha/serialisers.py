@@ -404,9 +404,14 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
     websocket into a JavaScript double, which would corrupt the code before the panel
     could format it. The database keeps the verbatim integer; only the wire
     representation changes. Formatting it into the searchable HMS quad is the card's
-    display work, not a fact about the job. A line's `spool_id` is the *frozen*
-    resolution — `null` says no spool was mounted when the review opened, which is the
-    row the approval flow asks the user to complete.
+    display work, not a fact about the job.
+
+    A line is one **tray**: its estimate, and the charges that attribute it. `charges` is
+    the *frozen* attribution — empty says no spool was mounted when the review opened,
+    which is the row the approval flow asks the user to complete, and more than one entry
+    says the tray fed from more than one spool. It is a list rather than a single spool
+    because the card has to be able to render the split, and a wire shape that could only
+    carry one spool would put the panel back where the model was.
     """
     review = detail.review
     job = detail.job
@@ -428,7 +433,10 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
             {
                 "slot": line.slot.value,
                 "estimated_g": grams(line.estimated),
-                "spool_id": line.spool_id,
+                "charges": [
+                    {"spool_id": charge.spool_id, "amount_g": grams(charge.amount)}
+                    for charge in line.charges
+                ],
             }
             for line in review.lines
         ],

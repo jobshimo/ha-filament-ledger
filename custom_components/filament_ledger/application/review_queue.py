@@ -27,7 +27,7 @@ from ..domain.event import (
     SpoolDepleted,
 )
 from ..domain.model.movement import record
-from ..domain.model.pending_review import ReviewLine, open_review
+from ..domain.model.pending_review import ReviewCharge, ReviewLine, open_review
 from ..domain.model.print_job import PrintJob
 from ..domain.model.spool import Spool
 from ..domain.port.clock import Clock
@@ -72,9 +72,19 @@ class OpenPendingReviewCommand:
 
 @dataclass(frozen=True, slots=True)
 class ApproveReviewCommand:
+    """`assignments` and `charges` are the two ways to answer *which spool fed this tray*.
+
+    An assignment names one spool and gives it the tray whole — the answer the queue asks
+    for most, and the one that needs no arithmetic from the caller. `charges` states the
+    split for a tray that fed from more than one spool, which is what happens when a spool
+    empties mid-print and is replaced in the same tray. A tray may appear in one of them,
+    never in both; the entity refuses the contradiction rather than picking a winner.
+    """
+
     review_id: ReviewId
     amounts: dict[SlotIndex, Grams] | None = None
     assignments: dict[SlotIndex, SpoolId] | None = None
+    charges: dict[SlotIndex, tuple[ReviewCharge, ...]] | None = None
     note: str | None = None
 
 
@@ -141,10 +151,12 @@ class OpenPendingReview:
             msg = f"job {command.job.id} already has a pending review"
             raise ReviewAlreadyPendingError(msg)
 
-        # Freeze slot→spool now. A review may sit for days while spools are swapped;
-        # resolving at approval time would deduct a cancelled Tuesday print from
-        # whatever happens to be in the slot on Friday. No mounted spool freezes as
-        # None — a fact worth recording, not an error.
+        # Freeze the attribution now. A review may sit for days while spools are swapped;
+        # resolving at approval time would deduct a cancelled Tuesday print from whatever
+        # happens to be in the slot on Friday. The mounted spool freezes as one charge for
+        # the whole estimate, which is the honest proposal for a tray nobody has told us
+        # was shared. No mounted spool freezes as no charge at all — a fact worth
+        # recording, not an error.
         lines: list[ReviewLine] = []
         for slot in sorted(estimates):
             mounted = await self.spools.find_by_location(AmsSlot(slot))
@@ -152,7 +164,11 @@ class OpenPendingReview:
                 ReviewLine(
                     slot=slot,
                     estimated=estimates[slot],
-                    spool_id=mounted.id if mounted is not None else None,
+                    charges=(
+                        (ReviewCharge(spool_id=mounted.id, amount=estimates[slot]),)
+                        if mounted is not None
+                        else ()
+                    ),
                 )
             )
         review = open_review(
@@ -209,16 +225,18 @@ class ApproveReview:
             if review is None:
                 raise ReviewNotFoundError(command.review_id)
             now = self.clock.now()
-            # The entity enforces its own rules here: idempotency, override validity,
-            # and the non-zero-amount-needs-a-spool refusal — all before anything writes.
+            # The entity enforces its own rules here: idempotency, override validity, and
+            # the sum invariant — every tray's charges add up to what it confirms — all
+            # before anything writes.
             approved = review.approved(
                 at=now,
                 amounts=command.amounts,
                 assignments=command.assignments,
+                charges=command.charges,
                 note=command.note,
             )
 
-            # Load every charged spool before the first append, so a bad resolution
+            # Load every charged spool before the first append, so a bad attribution
             # rejects the approval with nothing written.
             charged: dict[SpoolId, Spool] = {}
             for _slot, _amount, spool_id in approved.confirmed_charges:
