@@ -19,6 +19,8 @@ from ..model.movement_void import MovementVoid
 from ..model.pending_review import PendingReview
 from ..model.print_job import PrintJob
 from ..model.spool import Spool
+from ..value.colour import Colour
+from ..value.grams import Grams
 from ..value.identifiers import MovementId, PrintJobId, ReviewId, SpoolId, TagUid
 from ..value.location import Location
 
@@ -83,6 +85,45 @@ class SpoolRepository(Protocol):
     async def save(self, spool: Spool) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class MovementFilter:
+    """Query criteria for the global history. All fields optional; all combine with AND.
+
+    One value object rather than a parameter list per question, for the reason `SpoolFilter`
+    is one: a filtered read grows by gaining a field here, not by every layer between the
+    panel and the SQL growing an argument.
+    """
+
+    # Both bounds inclusive and independent — a lone `since` is "everything from then on",
+    # a lone `until` is "everything up to then". An arbitrary instant rather than one of
+    # `StatisticsPeriod`'s three windows: the statistics page compares like with like and
+    # needs coarse periods, while the history answers *what happened on the day the part
+    # came out wrong?* and needs the day.
+    since: datetime | None = None
+    until: datetime | None = None
+    # The colour of the **spool the entry belongs to** — a movement carries no colour of
+    # its own, so this is a join. A set rather than a single value, because "the blacks and
+    # the greys" is one question a user asks rather than two.
+    colours: frozenset[Colour] = frozenset()
+    # **Magnitude, never the stored sign.** A print consumption is written as −84.1 g, and
+    # a user asking for entries over 50 g means that one: they are thinking of how much
+    # filament moved, not which way. Named for the comparison rather than for the column so
+    # that a later refactor cannot quietly start comparing signed amounts and still read
+    # correctly.
+    min_magnitude: Grams | None = None
+    max_magnitude: Grams | None = None
+    # Free text over the entry's own name. Which columns that is, and why, is settled in
+    # `Queries.movement_history` — it is not one column.
+    search: str | None = None
+
+
+#: The unfiltered history. *Clear every filter* is this value rather than a flag, which is
+#: what keeps it from being a special case anywhere: it is the natural empty state of the
+#: object that carries the filters, and the statement it builds is the one the history has
+#: always run.
+NO_FILTERS = MovementFilter()
+
+
 class MovementRepository(Protocol):
     """Deliberately exposes no `update` and no `delete`.
 
@@ -106,12 +147,20 @@ class MovementRepository(Protocol):
         """Every movement for a spool, oldest first."""
         ...
 
-    async def list_recent(self, limit: int) -> list[Movement]:
-        """The newest `limit` movements across every spool, newest first.
+    async def list_recent(
+        self, limit: int, criteria: MovementFilter = NO_FILTERS
+    ) -> list[Movement]:
+        """The newest `limit` movements matching `criteria`, across every spool, newest first.
 
         Newest first because that is the only order the global history view reads: the
         per-spool queries stay oldest-first, the order a running balance is derived in,
         and no balance is derivable from a cross-spool slice anyway.
+
+        **The criteria are the adapter's work, not the caller's.** A ledger's history grows
+        without bound, so a read that fetched everything and discarded most of it in Python
+        would work for a year and then stop working; the limit must apply to the *filtered*
+        slice, and only the database can do that. `NO_FILTERS` is the whole history, which
+        is what every caller asked for before there were any.
         """
         ...
 

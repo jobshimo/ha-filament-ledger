@@ -77,6 +77,16 @@ CREATE INDEX idx_movement_spool ON movement(spool_id, occurred_at);
 CREATE INDEX idx_movement_job   ON movement(job_id) WHERE job_id IS NOT NULL;
 ```
 
+**Neither index serves the global history, and none of its filters is covered by one.** That
+is a reading of the schema rather than an oversight. `movements` orders the whole table by
+`occurred_at DESC` and there is no index on that column alone, so the read has always been a
+scan and a sort; the filters of [04 UC-12](04-use-cases.md) add tests to rows the query was
+visiting anyway. A weight bound is an expression over `amount_mg`, a colour is a subquery over
+the small `spool` table, and `LIKE '%…%'` can never use a B-tree at all. At a household
+ledger's size — thousands of rows, not millions — that costs single-digit milliseconds. Should
+it stop being true, the answer is an index on `occurred_at`, and free text is the last
+predicate to reach for.
+
 **Amounts are integer milligrams.** Floating point across thousands of accumulated movements
 drifts, and a ledger that drifts is a ledger nobody trusts. Integers make addition exact.
 
