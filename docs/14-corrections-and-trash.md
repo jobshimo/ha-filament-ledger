@@ -251,7 +251,7 @@ actually fed it*, with the job's accounting following the material.
 New use case **`ReassignMovement`** — one class, one public method, one transaction
 boundary, the [04](04-use-cases.md) format:
 
-**Input** — `movement_id`, `to_spool_id`, optional note.
+**Input** — `movement_id`, `to_spool_id`, optional amount, optional note.
 
 **Preconditions**
 - The movement exists, is **DECREASE-direction** (`MovementType.direction`,
@@ -261,12 +261,17 @@ boundary, the [04](04-use-cases.md) format:
   longer anywhere.
 - The target spool exists, is in inventory (not `DISCARDED`, not `DELETED`), and differs
   from the movement's spool.
+- If an amount is named, `0 < amount ≤ |movement.amount|`. A magnitude of nothing writes a
+  pair that cancels out and explains nothing — the same emptiness a reassignment to the
+  source itself is refused for. A magnitude larger than the charge moves grams the charge
+  never held: the target debited for material it never received, the source credited for
+  material it never lost, which is the ledger inventing filament.
 
 **Flow** (one unit of work; events after commit, per the invariant every use case in
 `application/` states)
 1. Load and validate movement and both spools.
-2. Append a `REASSIGNMENT` movement of **+X** on the wrongly charged spool, where
-   `X = |movement.amount|`.
+2. Append a `REASSIGNMENT` movement of **+X** on the wrongly charged spool, where `X` is the
+   named amount, or `|movement.amount|` when none was named.
 3. Append a `REASSIGNMENT` movement of **−X** on the target spool.
 4. Both carry `reassigns_movement_id = movement_id`, and both **inherit the original's
    `job_id` and `review_id`** — per-print accounting follows the material, which is what
@@ -284,8 +289,16 @@ boundary, the [04](04-use-cases.md) format:
 legs traceable to the movement they correct.
 
 **Failures** — movement not found; movement not DECREASE; movement voided; target
-missing, discarded, deleted, or identical to the source. All domain/application errors,
-all surfaced through `guarded`.
+missing, discarded, deleted, or identical to the source; an amount of zero or less, or one
+larger than the charge. All domain/application errors, all surfaced through `guarded`.
+
+**Part of a charge may move.** A spool that emptied mid-print and was replaced in the same
+tray leaves one charge belonging to two spools, and the pair for a named magnitude corrects
+exactly that — the source keeps the grams it really gave. It is the review queue's split
+([06 §6.3](06-ui-spec.md)), reached after the charge has landed rather than before, and the
+ledger cannot tell the two apart afterwards because both are the same compensating pair.
+Both are wanted, because the discovery comes at both times: sometimes while approving the
+review, sometimes a week later looking at History.
 
 `MovementType` gains `REASSIGNMENT` with direction `EITHER` (`movement_type.py:71-81`):
 one type for both legs, distinguished by sign, because the pair is one correction and
@@ -299,9 +312,13 @@ reassignable again. Chains are legal and honest, and each link is recorded.
 
 ```
 filament_ledger/movements/reassign
-  → { movement_id: str, to_spool_id: str, note?: str | null }
-  ← { ok: true }
+  → { movement_id: str, to_spool_id: str, amount_g?: number, note?: str | null }
+  ← { ok: true, moved_g: number }
 ```
+
+`amount_g` is omitted to move the whole charge, which is what a reassignment has always
+done — and omitting it is what lets the backend move the entry's own magnitude at full
+precision rather than the tenth the panel displays.
 
 The note is optional, unlike UC-10's mandatory reason, and the difference is principled:
 an adjustment without a reason is inexplicable, but a reassignment explains itself
@@ -326,6 +343,11 @@ grammar cannot reference usably; the curated service list
 
   Spool picker excludes discarded and deleted spools, the same filter the review card's
   picker applies (`www/filament-ledger-panel.js:730-735`). Optional note field.
+- A **How much to move** field, seeded with the whole charge and capped at it. Typing less
+  is the partial reassignment above, and the sentence follows the field as it is typed: a
+  promise about the grams that does not track what is about to be sent is worse than no
+  promise. Left at the whole charge, the field is omitted from the message entirely, so the
+  backend moves the entry's own magnitude rather than the tenth the field displays.
 - After success: standard `guarded` refresh. Both legs appear in History labelled
   **Reassigned** (`HISTORY_LABELS` gains the key, lines 45-53), each row's detail naming
   the counterpart spool.
@@ -344,6 +366,9 @@ grammar cannot reference usably; the curated service list
    near its anomaly threshold raises the event).
 6. Reassigning a reassignment debit leg works and chains the linkage.
 7. The modal's stated gram figures match what lands in the ledger, to one decimal.
+8. A named amount moves exactly that magnitude and leaves the remainder on the source, with
+   both legs inheriting `job_id` and `review_id` exactly as the whole-charge path does; zero,
+   a negative, and more than the charge holds are each refused with nothing written.
 
 ### Test obligations
 
@@ -371,8 +396,9 @@ nothing in this section updates or deletes a movement row.
 `VOID_REVERSAL` movement returns the grams:
 
 - `movement_void` row: `movement_id` (PK/FK), `voided_at`, optional `reason`,
-  `reversal_movement_id` (FK). The `movement` table and its immutability triggers are
-  **untouched** — the void row plus the reversal *are* the record.
+  `reversal_movement_id` (FK), and `undiscarded_spool` (migration 0005 — see the special
+  case below). The `movement` table and its immutability triggers are **untouched** — the
+  void row plus the reversal *are* the record.
 - The reversal is the exact negation of the voided entry, type `VOID_REVERSAL`
   (direction `EITHER` — voiding a +6.2 g reconciliation must produce −6.2 g), source
   `USER_CONFIRMED`, inheriting the original's `job_id` and `review_id` so per-print
@@ -421,6 +447,17 @@ all — `application/adjust_spool.py:75-80` — so there is nothing to void and 
 cannot return this way. Known, accepted, rare: the spool held nothing.) Voiding a
 *partial* `DISCARD` changes no state.
 
+Which kind a `DISCARD` was is **derived**: a whole-spool discard is the entry that retired
+the spool, and after it no use case appends to that spool again, so it is a `DISCARD`, on a
+discarded spool, with nothing after it. The derivation is sound exactly once. The void
+appends its own reversal, which lands after the discard, so asking the same question a
+second time reads a history where the discard is no longer last and answers *no*. So the
+void **writes the answer down**: `movement_void.undiscarded_spool` (migration 0005), set in
+the same transaction, read by the restore of §14.4.2 and never rewritten. A row may claim
+the un-discard only if it has a reversal — a void that returned nothing stranded nothing
+outside inventory, so it can never have brought a spool back — and that rule is a `CHECK`
+in 0005 as well as a guard on the entity.
+
 ### 14.4.2 Restore a movement from the Trash
 
 > **"Restoring asks the symmetric question: 'Deduct X g from [spool] again?'"**
@@ -436,6 +473,20 @@ movements it points at remain immutable.
 the void had restitution (`reversal_movement_id IS NOT NULL` — see §14.4.1 for why the
 other kind is terminal); the spool is in inventory (if it is `DELETED`, restore the
 spool first — the symmetric rule to voiding).
+
+**The un-discard is undone too.** Restoring a void whose `undiscarded_spool` is set sets
+`discarded_at` again, in the same transaction as the reinstatement — §14.4.1's argument run
+backwards, and the flag is what carries it, because by now the derivation cannot be
+repeated. The reinstatement takes the entire balance back out, so a spool left in inventory
+would answer *I threw it away* with **it is empty**: the reel would rejoin the stock list as
+an ordinary depleted spool and leave the waste figures. The re-discard uses the ordinary
+transition, so it frees the slot exactly as §14.4.3's discard does.
+
+That spool is then retired again, and retired means retired: `DISCARDED` is the one state
+nothing leaves, its single narrow exit is voiding the whole-spool `DISCARD`, and a movement
+is voidable **once** (§14.4.1). So voiding the reinstatement in turn is refused for having
+nowhere to return the grams, like any other entry on a discarded spool. One undo per
+discard — stated here so it is a decision rather than a surprise.
 
 **Chains are legal and honest.** Void m₁ (reversal m₂) → restore (reinstatement m₃) →
 void m₃ (reversal m₄) → … Each step is one new movement plus one new void row keyed by a
@@ -622,6 +673,9 @@ and the link fields needed for the chips.
    of offering the button.
 8. Voiding a whole-spool `DISCARD` returns the balance and returns the spool to
    inventory in one transaction; voiding a partial `DISCARD` changes no spool state.
+   Restoring that void deducts the balance again **and discards the spool again**, in one
+   transaction — the spool ends `DISCARDED` at zero, never `DEPLETED` and in inventory;
+   restoring the void of a partial `DISCARD` still changes no spool state.
 9. Deleting a mounted spool frees its slot immediately (another spool can mount there),
    sets `deleted_at`, writes no movement.
 10. A deleted spool is absent from inventory, stock, needs-weighing and the global
@@ -978,6 +1032,26 @@ schema change (`movement.type` is free `TEXT`); they join `_DIRECTION`
 (`movement_type.py:71-81`), all three as `EITHER` with the per-type sign rules stated in
 §14.3/§14.4, and they join the label maps: `_MOVEMENT_LABELS` (`query.py:268-276`) and
 the panel's `HISTORY_LABELS` via the string table of §14.6.1.
+
+**Follow-up — migration 0005: the void row remembers the un-discard.** 0003 shipped the
+un-discard of §14.4.1 without the fact that undoes it, because at the time the fact looked
+derivable. It is not: the void's own reversal lands after the discard, so the derivation
+answers *no* on the very history it has just answered *yes* on, and the restore of §14.4.2
+appended its reinstatement and left the spool in inventory. One flag on the status record,
+defaulted, cross-checked, and nothing in the file touches `movement`:
+
+```sql
+ALTER TABLE movement_void ADD COLUMN undiscarded_spool INTEGER NOT NULL DEFAULT 0
+    CHECK (undiscarded_spool = 0 OR reversal_movement_id IS NOT NULL);
+```
+
+Existing rows backfill to **no**, deliberately. Nothing recorded the fact and it cannot be
+recovered — a partial `DISCARD` voided on a spool that was never retired leaves the same
+traces as a whole-spool one — and the two mistakes are not symmetric: a wrong `0` makes an
+open chapter restore the way every restore behaved before, which is the behaviour that
+install already has, while a wrong `1` would throw away a spool nobody threw away and count
+it as waste. SQLite validates a new column's `CHECK` against the rows already present, so
+the clause above also proves the backfill consistent rather than merely asserting it.
 
 ---
 

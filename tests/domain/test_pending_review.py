@@ -15,14 +15,19 @@ from custom_components.filament_ledger.domain.error import (
     ReviewAlreadyResolvedError,
     UnresolvedSlotError,
 )
-from custom_components.filament_ledger.domain.model.pending_review import PendingReview
+from custom_components.filament_ledger.domain.model.pending_review import (
+    PendingReview,
+    ReviewCharge,
+    ReviewLine,
+)
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId
 from custom_components.filament_ledger.domain.value.review import ReviewState
 
-from .conftest import A_SPOOL_ID, a_line, a_pending_review, at
+from .conftest import A_SPOOL_ID, a_charge, a_line, a_pending_review, at
 
 ANOTHER_SPOOL = SpoolId("the-spool-assigned-at-approval")
+REPLACEMENT = SpoolId("the-spool-that-replaced-it-mid-print")
 
 
 class TestOpening:
@@ -51,7 +56,31 @@ class TestOpening:
     def test_an_unresolved_slot_is_a_recordable_fact(self) -> None:
         """No spool mounted is the case the queue exists for — never an error at open."""
         review = a_pending_review(a_line(3, 12.1, spool_id=None))
-        assert review.slot_resolution == {SlotIndex(3): None}
+        assert review.charges == []
+
+    def test_a_mounted_spool_freezes_as_one_charge_for_the_whole_estimate(self) -> None:
+        review = a_pending_review(a_line(1, 28.4))
+        assert review.charges == [(SlotIndex(1), ReviewCharge(A_SPOOL_ID, Grams.of(28.4)))]
+
+    def test_a_tray_cannot_charge_the_same_spool_twice(self) -> None:
+        """One figure per spool per tray. The same spool twice is one answer written as
+        two, and every reader that maps the list back by spool keeps only the last."""
+        with pytest.raises(InvalidValueError):
+            ReviewLine(
+                slot=SlotIndex(1),
+                estimated=Grams.of(300),
+                charges=(a_charge(10), a_charge(290)),
+            )
+
+    def test_a_negative_charge_cannot_exist(self) -> None:
+        with pytest.raises(InvalidValueError):
+            ReviewCharge(spool_id=A_SPOOL_ID, amount=Grams.of(-1))
+
+    def test_a_zero_charge_is_legal(self) -> None:
+        """The no-data card's row: the spool is known, the figure never arrived. Refusing
+        it would make that row unrepresentable (docs/06 §6.3)."""
+        line = ReviewLine(slot=SlotIndex(1), estimated=Grams.zero(), charges=(a_charge(0),))
+        assert line.attributed == Grams.zero()
 
 
 class TestContradictions:
@@ -86,11 +115,13 @@ class TestApproval:
         assert approved.estimated_usage == {SlotIndex(1): Grams.of(28.4)}
 
     def test_an_assignment_resolves_a_frozen_unresolved_slot(self) -> None:
+        """The one-spool shorthand: the named spool takes the tray whole, so the caller
+        supplies a spool rather than restating arithmetic."""
         review = a_pending_review(a_line(3, 12.1, spool_id=None))
 
         approved = review.approved(at=at(days=1), assignments={SlotIndex(3): ANOTHER_SPOOL})
 
-        assert approved.slot_resolution == {SlotIndex(3): ANOTHER_SPOOL}
+        assert approved.charges == [(SlotIndex(3), ReviewCharge(ANOTHER_SPOOL, Grams.of(12.1)))]
         assert approved.confirmed_charges == [(SlotIndex(3), Grams.of(12.1), ANOTHER_SPOOL)]
 
     def test_a_nonzero_amount_without_a_spool_blocks_the_whole_approval(self) -> None:
@@ -140,6 +171,85 @@ class TestApproval:
             (SlotIndex(1), Grams.of(28.4), A_SPOOL_ID),
             (SlotIndex(3), Grams.of(6.1), ANOTHER_SPOOL),
         ]
+
+
+class TestATrayThatFedFromTwoSpools:
+    """The situation the entity exists to be able to hold: a spool empties mid-print and
+    is replaced in the same tray. The printer reports one figure for that tray, and it
+    belongs to two spools (docs/02 §2.3)."""
+
+    def test_charges_split_one_trays_amount_across_two_spools(self) -> None:
+        review = a_pending_review(a_line(1, 300))
+
+        approved = review.approved(
+            at=at(days=1),
+            charges={SlotIndex(1): (a_charge(10), a_charge(290, REPLACEMENT))},
+        )
+
+        assert approved.confirmed_usage == {SlotIndex(1): Grams.of(300)}
+        assert approved.confirmed_charges == [
+            (SlotIndex(1), Grams.of(10), A_SPOOL_ID),
+            (SlotIndex(1), Grams.of(290), REPLACEMENT),
+        ]
+
+    def test_a_split_that_does_not_add_up_is_refused_and_says_by_how_much(self) -> None:
+        """*Load the rest* is a subtraction precisely because this is refused: the other
+        290 g came off something, and accepting the shortfall would lose them silently."""
+        review = a_pending_review(a_line(1, 300))
+
+        with pytest.raises(UnresolvedSlotError, match=r"confirms 300\.0 g and charges 10\.0 g"):
+            review.approved(at=at(days=1), charges={SlotIndex(1): (a_charge(10),)})
+
+    def test_a_split_that_overshoots_is_refused_the_same_way(self) -> None:
+        review = a_pending_review(a_line(1, 300))
+
+        with pytest.raises(UnresolvedSlotError):
+            review.approved(
+                at=at(days=1),
+                charges={SlotIndex(1): (a_charge(200), a_charge(200, REPLACEMENT))},
+            )
+
+    def test_the_split_follows_a_corrected_amount(self) -> None:
+        """The user weighed the waste and split what they weighed, in one decision."""
+        review = a_pending_review(a_line(1, 300))
+
+        approved = review.approved(
+            at=at(days=1),
+            amounts={SlotIndex(1): Grams.of(250)},
+            charges={SlotIndex(1): (a_charge(60), a_charge(190, REPLACEMENT))},
+        )
+
+        assert approved.confirmed_usage == {SlotIndex(1): Grams.of(250)}
+
+    def test_a_tray_cannot_carry_an_assignment_and_a_split_at_once(self) -> None:
+        """Two answers to one question. Letting one win silently is how a user's second
+        thought gets discarded."""
+        review = a_pending_review(a_line(1, 300))
+
+        with pytest.raises(InvalidValueError, match="two answers to one question"):
+            review.approved(
+                at=at(days=1),
+                assignments={SlotIndex(1): REPLACEMENT},
+                charges={SlotIndex(1): (a_charge(300),)},
+            )
+
+    def test_a_charge_list_for_an_uncovered_slot_is_a_caller_bug(self) -> None:
+        review = a_pending_review(a_line(1, 28.4))
+        with pytest.raises(InvalidValueError):
+            review.approved(at=at(days=1), charges={SlotIndex(4): (a_charge(5),)})
+
+    def test_an_amount_alone_cannot_rescale_a_split_somebody_else_decided(self) -> None:
+        """With one charge the invariant admits exactly one split, so the charge follows.
+        With two it admits many, and choosing one would be the system deciding."""
+        split = ReviewLine(
+            slot=SlotIndex(1),
+            estimated=Grams.of(300),
+            charges=(a_charge(10), a_charge(290, REPLACEMENT)),
+        )
+        review = a_pending_review(split)
+
+        with pytest.raises(UnresolvedSlotError):
+            review.approved(at=at(days=1), amounts={SlotIndex(1): Grams.of(250)})
 
 
 class TestDismissal:

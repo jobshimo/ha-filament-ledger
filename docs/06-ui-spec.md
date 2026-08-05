@@ -223,8 +223,12 @@ and nothing leaves without a decision.
 │  │                                                                │  │
 │  │    Estimated from G-code · layer-accurate                      │  │
 │  │                                                                │  │
-│  │    ███ PLA Basic Black    Slot 1     [  28.4 ] g               │  │
-│  │    ███ PLA Matte Ivory    Slot 2     [   6.1 ] g               │  │
+│  │    Slot 1                            [  28.4 ] g               │  │
+│  │      ███ PLA Basic Black                                       │  │
+│  │      [ + Add spool ]                                           │  │
+│  │    Slot 2                            [   6.1 ] g               │  │
+│  │      ███ PLA Matte Ivory                                       │  │
+│  │      [ + Add spool ]                                           │  │
 │  │                                        ─────────               │  │
 │  │                                total    34.5  g                │  │
 │  │                                                                │  │
@@ -243,7 +247,9 @@ and nothing leaves without a decision.
 │  │                                                                │  │
 │  │    Estimated from progress · approximate  ⓘ                    │  │
 │  │                                                                │  │
-│  │    ███ PLA Basic Black    Slot 1     [   1.9 ] g               │  │
+│  │    Slot 1                            [   1.9 ] g               │  │
+│  │      ███ PLA Basic Black                                       │  │
+│  │      [ + Add spool ]                                           │  │
 │  │                                                                │  │
 │  │    ⚖ I weighed the waste:  [        ] g                        │  │
 │  │                                                                │  │
@@ -257,13 +263,19 @@ and nothing leaves without a decision.
 **Every gram field is editable.** The estimate is a starting value, never a fixed one. The
 user's number always wins.
 
+**The tray's figure and the spools it is charged to are separate rows**, because they are
+separate facts: the printer reports one figure per tray and can report nothing else, while a
+tray may have fed from more than one spool ([02 §2.3](02-domain-model.md)). With one spool the
+tray shows a swatch and a name and no second number — with one charge the two figures are the
+same figure, and showing it twice invites them to disagree.
+
 **The estimator is named on every card.** *"Estimated from G-code · layer-accurate"* versus
 *"Estimated from progress · approximate"* tells the user how much to trust the figure before
 deciding. Hiding provenance is how a guess gets mistaken for a measurement.
 
-**Weighing is first-class.** The ⚖ field takes a single measured total. With one spool it
+**Weighing is first-class.** The ⚖ field takes a single measured total. With one tray it
 replaces the value outright. With several, **[ Distribute ]** splits the measured total across
-spools *in the same proportion as the estimate* — a click, not arithmetic.
+trays *in the same proportion as the estimate* — a click, not arithmetic.
 
 **Failures show the raw error code.** HMS codes are searchable. A user diagnosing a failure
 needs the real string, not a friendly paraphrase of it.
@@ -275,9 +287,12 @@ the queue is deliberate confirmation; a reflex approval is worse than no queue a
 system could not attribute renders with a spool picker in place of the swatch:
 
 ```
-│    ███ PLA Basic Black    Slot 1     [  28.4 ] g               │
-│    ⚠  no spool recorded   Slot 3     [  12.1 ] g               │
-│        which spool was in this slot?  [ Choose spool ▾ ]       │
+│    Slot 1                            [  28.4 ] g               │
+│      ███ PLA Basic Black                                       │
+│      [ + Add spool ]                                           │
+│    Slot 3                            [  12.1 ] g               │
+│      ⚠ which spool was in this tray?  [ Choose spool ▾ ]       │
+│      [ + Add spool ]                                           │
 │                                                                │
 │                          [ Dismiss ]        [ ✓ Approve ]      │
 │                            Approve is disabled until slot 3    │
@@ -294,6 +309,39 @@ The alternative designs both lose information: hiding the row discards a real co
 silently attributing it to whatever is in the slot *now* deducts from the wrong spool. The
 user knows which spool it was. Ask them.
 
+**A tray that fed from more than one spool.** A spool empties mid-print and is replaced in the
+same tray. The printer reports one figure for that tray, and it belongs to two spools:
+
+```
+│    Slot 1                            [ 300.0 ] g               │
+│      ███ PLA Basic Black     [  10.0 ] g  Load the rest   ×    │
+│      ███ PLA Basic Black #2  [ 290.0 ] g  Load the rest   ×    │
+│      [ + Add spool ]                            0.0 g left     │
+```
+
+**[ + Add spool ]** turns a tray into a split: the existing spool keeps the tray's figure as
+its share, a second row appears empty, and the per-spool fields and buttons come with it.
+**×** takes a spool back off; the last row never leaves, because a tray with no row at all
+would have nowhere to say which spool it was.
+
+**The running remainder is the whole of it.** Each tray's charges must add up to what that
+tray confirms ([02 §2.3](02-domain-model.md)), so *what is left to charge* is a subtraction —
+the tray's amount minus what is charged so far — recomputed on every keystroke and shown
+beside **[ + Add spool ]**. Charging more than the tray used says so in the same place rather
+than clamping silently. **Approve stays disabled** while any tray is short or over, for the
+same reason it stays disabled on an unattributed row: the button and the domain rule must
+never disagree about what is legal.
+
+**[ Load the rest ]** performs that subtraction on one row. It is **[ Distribute ]**'s
+sibling, and they are one idea rather than two mechanisms: the panel does the arithmetic the
+user would otherwise do standing at the printer. Distribute divides one measured total across
+*trays* by proportion; Load the rest divides one tray's amount across its *spools* by
+subtraction. Neither invents a figure — both only redistribute one the user supplied. Type
+10 g on the first spool of a 300 g tray, press Load the rest on the second, and it takes 290.
+
+Correcting the same situation *after* the charge has landed is [14 §14.3](14-corrections-and-trash.md)'s
+partial reassignment. Both are wanted, because the discovery comes at both times.
+
 **The opposite case — nothing is known.** When a print reaches `FINISHED` but its per-tray
 figure never arrived at all ([UC-04](04-use-cases.md) step 2), there is no amount to render:
 
@@ -304,8 +352,12 @@ figure never arrived at all ([UC-04](04-use-cases.md) step 2), there is no amoun
 │    ⛔ No consumption data — the printer never reported it       │
 │       Nothing has been deducted for this print.                │
 │                                                                │
-│    ███ PLA Basic Black    Slot 1     [   0.0 ] g               │
-│    ███ PLA Matte Ivory    Slot 2     [   0.0 ] g               │
+│    Slot 1                            [   0.0 ] g               │
+│      ███ PLA Basic Black                                       │
+│      [ + Add spool ]                                           │
+│    Slot 2                            [   0.0 ] g               │
+│      ███ PLA Matte Ivory                                       │
+│      [ + Add spool ]                                           │
 │                                                                │
 │    ⚖ I weighed the spools:  [        ] g   [ Distribute ]      │
 ```

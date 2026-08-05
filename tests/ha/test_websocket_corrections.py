@@ -106,6 +106,39 @@ class TestReassign:
         }
         assert balances == {wrong: 1000, right: 916}
 
+    async def test_a_named_amount_moves_only_that_part(self, ws: WsClient) -> None:
+        """The same split the review card offers before the charge lands, offered after."""
+        emptied = await a_created_spool(ws, label="Emptied mid-print")
+        replacement = await a_created_spool(ws, label="Loaded in its place")
+        charge = await a_charge(ws, emptied)
+
+        assert await ws.result_dict(
+            REASSIGN, movement_id=charge, to_spool_id=replacement, amount_g=60
+        ) == {"ok": True, "moved_g": 60.0}
+
+        balances = {
+            cast(str, s["id"]): cast(int, s["balance_g"]) for s in await ws.result_list(LIST)
+        }
+        assert balances == {emptied: 976, replacement: 940}
+
+    async def test_more_than_the_charge_holds_is_an_error_reply(self, ws: WsClient) -> None:
+        wrong = await a_created_spool(ws)
+        right = await a_created_spool(ws)
+        charge = await a_charge(ws, wrong)
+
+        code, message = await ws.error(
+            REASSIGN, movement_id=charge, to_spool_id=right, amount_g=100
+        )
+
+        assert code == "InvalidValueError"
+        assert "cannot give up" in message
+
+    async def test_a_zero_amount_never_reaches_the_handler(self, ws: WsClient) -> None:
+        """Bounded at the schema as well as in the use case: a pair that cancels out
+        explains nothing, and the adapter says so before a unit of work is opened."""
+        with pytest.raises(Exception, match="value must be higher than 0"):
+            ws.parse(REASSIGN, movement_id="m", to_spool_id="s", amount_g=0)
+
     async def test_the_note_is_optional(self, ws: WsClient) -> None:
         wrong = await a_created_spool(ws)
         right = await a_created_spool(ws)

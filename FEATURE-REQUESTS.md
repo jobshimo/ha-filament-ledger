@@ -191,7 +191,17 @@ than discovered later.
 
 ---
 
-## 6 · Reviews must split a print across several spools
+## 6 · Reviews must split a print across several spools — **BUILT, awaiting merge**
+
+Built on `feat/review-charges-and-partial-reassignment` with migration 0004, together with
+[F4](REVIEW-FINDINGS.md)'s partial reassignment. Both questions below were answered as this
+section recommended: the split lives on the review *and* — through F4 — as a correction after
+the fact, because the discovery comes at both times; and **[ Load the rest ]** means the
+remainder relative to the tray's own total, recomputed live, which is what the sum invariant
+in [docs/02 §2.3](docs/02-domain-model.md) makes it. The specification now lives in
+[docs/02 §2.3](docs/02-domain-model.md), [docs/04 UC-06](docs/04-use-cases.md),
+[docs/06 §6.3](docs/06-ui-spec.md) and [docs/08 §8.2](docs/08-data-model.md).
+
 
 **Asked for:** select more than one spool, put 10 g on one, and have a control that loads the
 remaining 290 g onto the next. Fast, not fiddly.

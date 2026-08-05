@@ -40,11 +40,17 @@ class MovementVoid:
     reversal_movement_id: MovementId | None = None
     reinstated_at: datetime | None = None
     reinstatement_movement_id: MovementId | None = None
+    # Whether this void brought its spool back out of `DISCARDED` (docs/14 §14.4.1). The
+    # one fact here that is *not* derivable afterwards: the discriminator reads the
+    # history — a whole-spool discard is the entry nothing follows — and the void's own
+    # reversal follows it, so by the time a restore asks, the answer has been overwritten
+    # by the question. Stored at insert, read once, never rewritten (migration 0005).
+    undiscarded_spool: bool = False
 
     def __post_init__(self) -> None:
-        # The same two rules migration 0003 spells as CHECK clauses. Stated here as well
-        # because a constraint name is not an answer a user can act on, and because the
-        # entity is what the use cases reason about.
+        # The same three rules migrations 0003 and 0005 spell as CHECK clauses. Stated
+        # here as well because a constraint name is not an answer a user can act on, and
+        # because the entity is what the use cases reason about.
         if (self.reinstated_at is None) != (self.reinstatement_movement_id is None):
             msg = "a chapter is closed by both reinstatement facts together or by neither"
             raise InvalidValueError(msg)
@@ -56,6 +62,12 @@ class MovementVoid:
             raise InvalidValueError(msg)
         if self.reversal_movement_id is None and not (self.reason or "").strip():
             msg = "a void without restitution needs a reason — it must say why nothing came back"
+            raise InvalidValueError(msg)
+        if self.undiscarded_spool and self.reversal_movement_id is None:
+            msg = (
+                "a void without restitution returned no balance, so nothing would have "
+                "been stranded outside inventory: it can never have un-discarded a spool"
+            )
             raise InvalidValueError(msg)
 
     @property

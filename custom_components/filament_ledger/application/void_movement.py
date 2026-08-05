@@ -9,9 +9,16 @@ returns the grams. Restoring appends a `REINSTATEMENT` equal to the original and
 chapter. The `movement` table and its immutability triggers are untouched throughout; the
 void row plus the reversal *are* the record (docs/adr/0007, docs/14 §14.4.1-2).
 
+The one operation here that touches a spool as well as the ledger is the whole-spool
+`DISCARD`, in both directions: voiding it brings the spool back out of `DISCARDED`, and
+restoring that void throws it away again. Each half is one transaction, and the void row
+carries the fact between them because it cannot be derived twice (migration 0005).
+
 Chains are legal and honest. Void m₁ (reversal m₂) → restore (reinstatement m₃) → void m₃
 (reversal m₄) → … Each step is one new movement plus one new void row keyed by a *different*
-movement id, so `movement_void`'s primary key never has to bend.
+movement id, so `movement_void`'s primary key never has to bend. A re-discarded spool is
+where the chain stops, by the ordinary rule rather than a new one: it is out of inventory
+again, so the next void has nowhere to return the grams.
 """
 
 from __future__ import annotations
@@ -157,6 +164,11 @@ class VoidMovement:
                         voided_at=now,
                         reason=(command.reason or "").strip() or None,
                         reversal_movement_id=reversal.id,
+                        # Recorded because the restore cannot re-derive it: the reversal
+                        # this branch has just appended is now the last entry, so the
+                        # discriminator below would answer no on the very history it has
+                        # only just answered yes on (migration 0005, docs/14 §14.4.2).
+                        undiscarded_spool=undiscards,
                     )
                 )
                 returned = reversal.amount
@@ -241,12 +253,19 @@ class VoidMovement:
         discard *is* the restore — one recorded operation, one transaction. Voiding a
         *partial* discard changes no spool state.
 
-        **Nothing stores which kind a `DISCARD` was**, so the discriminator is derived, and
-        this is the derivation: a whole-spool discard is the entry that retired the spool,
-        and after it no use case appends to that spool again — every one of them refuses a
-        discarded spool. So it is a `DISCARD`, on a discarded spool, with nothing after it.
-        A partial discard *followed* by the whole-spool one is therefore not last and is
-        correctly left alone; the reverse order cannot occur.
+        **Nothing has stored which kind a `DISCARD` was** by the time this is first asked,
+        so the discriminator is derived, and this is the derivation: a whole-spool discard
+        is the entry that retired the spool, and after it no use case appends to that spool
+        again — every one of them refuses a discarded spool. So it is a `DISCARD`, on a
+        discarded spool, with nothing after it. A partial discard *followed* by the
+        whole-spool one is therefore not last and is correctly left alone; the reverse
+        order cannot occur.
+
+        The answer is asked once and then **written down**, on the void row this method's
+        caller appends. It has to be: the void's own reversal lands after the discard, so
+        running this derivation again — which is what `RestoreMovement` would have to do —
+        reads a history where the discard is no longer last and answers no (migration
+        0005).
 
         (A whole-spool discard executed at zero balance wrote no movement at all —
         `adjust_spool.py` returns early — so there is nothing to void and such a spool
@@ -260,7 +279,12 @@ class VoidMovement:
 
 @dataclass(frozen=True, slots=True)
 class RestoreMovement:
-    """UC-15 — the symmetric question: *deduct X g from [spool] again?*"""
+    """UC-15 — the symmetric question: *deduct X g from [spool] again?*
+
+    Symmetric to the letter, including the un-discard: a void that brought its spool back
+    out of `DISCARDED` is undone by throwing that spool away again, in the same unit of
+    work as the reinstatement that takes its grams (docs/14 §14.4.2).
+    """
 
     spools: SpoolRepository
     movements: MovementRepository
@@ -314,6 +338,22 @@ class RestoreMovement:
             )
             await self.movements.append(reinstatement)
             await self.voids.record_reinstatement(movement.id, reinstatement.id, now)
+            if chapter.undiscarded_spool:
+                # The mirror image of the un-discard, and the same argument run backwards
+                # (docs/14 §14.4.2). That void returned the entire balance and had to bring
+                # the spool back, because grams stranded outside inventory are grams nobody
+                # can see. This reinstatement takes the entire balance out again, so
+                # leaving the spool in inventory would answer *I threw it away* with *it is
+                # empty* — the reel would rejoin the stock list as an ordinary depleted
+                # spool and quietly leave the waste figures. One recorded operation, one
+                # transaction, exactly as the un-discard was.
+                #
+                # No counterpart to the void's `SpoolRestored` is published: this product
+                # has never announced a discard — UC-09 writes the movement and says
+                # nothing else — and minting an event for the redo alone would give one
+                # operation two vocabularies.
+                spool = spool.discarded(now)
+                await self.spools.save(spool)
             new_balance = balance(await self.movements.list_for_spool(movement.spool_id))
 
         # Published after the commit — never for a write that could still roll back.

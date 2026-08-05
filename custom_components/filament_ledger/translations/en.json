@@ -101,7 +101,8 @@
       "fields": {
         "review_id": { "name": "Review", "description": "Which pending review." },
         "amounts": { "name": "Corrected amounts", "description": "Grams keyed by slot number — for example, slot 1 to 28.4. Overrides the estimate for the slots you name." },
-        "assign": { "name": "Spool assignments", "description": "Spool id keyed by slot number — for example, slot 3 to a spool id. Resolves a slot the review recorded without a spool." },
+        "assign": { "name": "Spool assignments", "description": "Spool id keyed by slot number — for example, slot 3 to a spool id. Gives the whole tray to one spool, which is what resolves a slot the review recorded without one." },
+        "charges": { "name": "Split across spools", "description": "For a tray that fed from more than one spool: a list of spool id and grams, keyed by slot number. Each tray's charges must add up to what that tray confirms. Use this or the assignment for a given tray, never both." },
         "note": { "name": "Note", "description": "Anything worth remembering about the decision." }
       }
     },

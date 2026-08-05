@@ -1,17 +1,19 @@
 """SQLite implementation of `ReviewRepository`.
 
-The entity's per-slot lines split across two JSON columns — `estimated_usage` and
-`slot_resolution` — exactly as migration 0001 lays them out. Both are written from the
-same lines, so their key sets are identical by construction and hydration re-joins them
-by slot without a reconciliation step.
+The entity's lines split across two JSON columns, and the split follows the two facts a
+line holds. `estimated_usage` is the per-tray figure, a map keyed by slot, because the
+printer reports one figure per tray. `slot_resolution` is the attribution, a *list* of
+`{slot, spool_id, mg}` since migration 0004, because one tray's figure may belong to more
+than one spool. Hydration re-joins them by slot; a tray with no entry in the list is a tray
+that froze without a spool, which is the fact the queue exists to ask about.
 
-The upsert deliberately updates only what resolution changes. `job_id`, `reason`,
+The upsert deliberately updates only what a decision changes. `job_id`, `reason`,
 `estimated_usage`, `estimator_used` and `opened_at` are facts about the moment the review
 opened; no entity transition touches them, and leaving them out of the UPDATE keeps this
 adapter unable to express a rewrite of history even by accident. (`slot_resolution` *is*
-updated: UC-06 records the resolutions actually used, which is a decision, not a rewrite.) The one-pending-per-job rule is the partial
-unique index's to enforce at this layer — UC-05 says it first, in the language of the
-problem.
+updated: UC-06 records the attribution actually used, which is a decision, not a rewrite.)
+The one-pending-per-job rule is the partial unique index's to enforce at this layer —
+UC-05 says it first, in the language of the problem.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from ...domain.model.pending_review import PendingReview, ReviewLine
+from ...domain.model.pending_review import PendingReview, ReviewCharge, ReviewLine
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import PrintJobId, ReviewId, SlotIndex, SpoolId
 from ...domain.value.review import EstimatorKind, ReviewReason, ReviewState
@@ -43,18 +45,33 @@ def _parse(value: str | None) -> datetime | None:
 
 def _lines_to_columns(lines: tuple[ReviewLine, ...]) -> tuple[str, str]:
     estimated = {str(line.slot.value): line.estimated.milligrams for line in lines}
-    resolution = {str(line.slot.value): line.spool_id for line in lines}
-    return json.dumps(estimated), json.dumps(resolution)
+    charges = [
+        {"slot": line.slot.value, "spool_id": charge.spool_id, "mg": charge.amount.milligrams}
+        for line in lines
+        for charge in line.charges
+    ]
+    return json.dumps(estimated), json.dumps(charges)
 
 
-def _lines_from_columns(estimated_json: str, resolution_json: str) -> tuple[ReviewLine, ...]:
+def _lines_from_columns(estimated_json: str, charges_json: str) -> tuple[ReviewLine, ...]:
+    """Re-join the two columns by slot.
+
+    The estimate map is what decides which lines exist: a charge names a tray the estimate
+    already covers, and the entity refuses a line for a tray nobody estimated. So a stray
+    entry pointing at an unknown slot is dropped rather than resurrected as a line with no
+    figure behind it.
+    """
     estimated = json.loads(estimated_json)
-    resolution = json.loads(resolution_json)
+    charges: dict[int, list[ReviewCharge]] = {}
+    for entry in json.loads(charges_json):
+        charges.setdefault(int(entry["slot"]), []).append(
+            ReviewCharge(spool_id=SpoolId(entry["spool_id"]), amount=Grams(int(entry["mg"])))
+        )
     return tuple(
         ReviewLine(
             slot=SlotIndex(int(slot)),
             estimated=Grams(int(mg)),
-            spool_id=SpoolId(resolution[slot]) if resolution.get(slot) is not None else None,
+            charges=tuple(charges.get(int(slot), ())),
         )
         for slot, mg in sorted(estimated.items(), key=lambda item: int(item[0]))
     )
@@ -125,7 +142,7 @@ class SqliteReviewRepository:
         return [_to_review(row) for row in rows]
 
     async def save(self, review: PendingReview) -> None:
-        estimated, resolution = _lines_to_columns(review.lines)
+        estimated, charges = _lines_to_columns(review.lines)
         await self.database.execute(
             f"""
             INSERT INTO pending_review ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -142,7 +159,7 @@ class SqliteReviewRepository:
                 review.reason.value,
                 estimated,
                 _confirmed_to_json(review.confirmed_usage),
-                resolution,
+                charges,
                 review.estimator_used.value,
                 review.state.value,
                 _iso(review.opened_at),

@@ -46,6 +46,7 @@ from ...const import (
     DOMAIN,
 )
 from ...domain.error import DomainError
+from ...domain.model.pending_review import ReviewCharge
 from ...domain.port.repositories import MovementFilter
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
@@ -88,8 +89,26 @@ _SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLO
 #: rather than as a sentence the panel can show.
 _MAX_FILTER_COLOURS: Final = 64
 
+#: One entry of a tray's attribution on the wire (docs/05 §5.4). Bounded non-negative here
+#: as well as in the domain: a charge of minus five grams has no physical reading, and the
+#: adapter is where a typo becomes a message rather than a stack trace.
+_CHARGE = vol.Schema(
+    {
+        vol.Required("spool_id"): str,
+        vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+    }
+)
+
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _charges(entries: list[dict[str, Any]]) -> tuple[ReviewCharge, ...]:
+    """One tray's attribution, off the wire. The schema has already bounded every field."""
+    return tuple(
+        ReviewCharge(spool_id=SpoolId(entry["spool_id"]), amount=Grams.of(entry["amount_g"]))
+        for entry in entries
+    )
 
 
 def _moment(value: object) -> datetime:
@@ -518,12 +537,14 @@ async def handle_reviews_list(
     {
         vol.Required("type"): f"{DOMAIN}/reviews/approve",
         vol.Required("review_id"): str,
-        # Both maps are keyed by slot index, matching docs/02 §2.3: `amounts` overrides
-        # the frozen estimates, `assign` resolves slots the review froze without a spool.
-        # Amounts are bounded non-negative here as well as in the domain — a negative
-        # confirmation has no physical reading.
+        # All three maps are keyed by slot index, matching docs/02 §2.3: `amounts`
+        # overrides the frozen estimates, `assign` gives one tray to one spool whole, and
+        # `charges` states the split for a tray that fed from more than one. Amounts are
+        # bounded non-negative here as well as in the domain — a negative confirmation has
+        # no physical reading.
         vol.Optional("amounts"): {_SLOT_KEY: vol.All(vol.Coerce(float), vol.Range(min=0))},
         vol.Optional("assign"): {_SLOT_KEY: str},
+        vol.Optional("charges"): {_SLOT_KEY: [_CHARGE]},
         vol.Optional("note"): vol.Any(str, None),
     }
 )
@@ -535,6 +556,7 @@ async def handle_reviews_approve(
     runtime = _runtime(hass)
     amounts = msg.get("amounts")
     assign = msg.get("assign")
+    charges = msg.get("charges")
     await runtime.use_cases.approve_review.execute(
         ApproveReviewCommand(
             review_id=ReviewId(msg["review_id"]),
@@ -546,6 +568,11 @@ async def handle_reviews_approve(
             assignments=(
                 {SlotIndex(slot): SpoolId(spool_id) for slot, spool_id in assign.items()}
                 if assign is not None
+                else None
+            ),
+            charges=(
+                {SlotIndex(slot): _charges(entries) for slot, entries in charges.items()}
+                if charges is not None
                 else None
             ),
             note=msg.get("note") or None,
@@ -644,6 +671,11 @@ async def handle_movements(
         vol.Required("type"): f"{DOMAIN}/movements/reassign",
         vol.Required("movement_id"): str,
         vol.Required("to_spool_id"): str,
+        # Absent means the whole charge, which is what a reassignment has always moved.
+        # A magnitude of nothing is refused at the schema as well as in the use case: the
+        # pair it would write cancels out and explains nothing (docs/14 §14.3). The upper
+        # bound is the charge's own size, which only the use case can see.
+        vol.Optional("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0, min_included=False)),
         # Optional, unlike UC-10's mandatory reason, and the difference is principled: a
         # reassignment explains itself structurally — the link names the entry it corrects
         # and the pair names both spools (docs/14 §14.3).
@@ -662,10 +694,12 @@ async def handle_movements_reassign(
     only when an automation story exists (docs/14 §14.3).
     """
     runtime = _runtime(hass)
+    amount = msg.get("amount_g")
     moved = await runtime.use_cases.reassign_movement.execute(
         ReassignMovementCommand(
             movement_id=MovementId(msg["movement_id"]),
             to_spool_id=SpoolId(msg["to_spool_id"]),
+            amount=Grams.of(amount) if amount is not None else None,
             note=msg.get("note") or None,
         )
     )

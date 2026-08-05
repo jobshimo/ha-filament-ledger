@@ -40,6 +40,7 @@ from ...const import (
     SERVICE_UNMOUNT_SPOOL,
 )
 from ...domain.error import DomainError
+from ...domain.model.pending_review import ReviewCharge
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
@@ -57,6 +58,15 @@ from .runtime import LedgerRuntime, runtimes
 # selector gives strings; `Coerce(int)` reads both, and the range is bounded here as
 # well as in the domain so a typo becomes a message rather than a stack trace.
 _SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
+
+# One entry of a tray's attribution (docs/05 §5.4). Non-negative for the same reason
+# `amounts` is: a charge of minus five grams has no physical reading.
+_CHARGE = vol.Schema(
+    {
+        vol.Required("spool_id"): cv.string,
+        vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+    }
+)
 
 REGISTER_SCHEMA = vol.Schema(
     {
@@ -113,10 +123,12 @@ APPROVE_REVIEW_SCHEMA = vol.Schema(
     {
         vol.Required("review_id"): cv.string,
         # Keyed by slot index, matching docs/05 §5.4: `amounts` overrides the frozen
-        # estimates, `assign` resolves slots the review froze without a spool. A negative
-        # confirmation has no physical reading, so it is refused at the schema too.
+        # estimates, `assign` gives one tray to one spool whole, and `charges` states the
+        # split for a tray that fed from more than one. A negative confirmation has no
+        # physical reading, so it is refused at the schema too.
         vol.Optional("amounts"): {_SLOT_KEY: vol.All(vol.Coerce(float), vol.Range(min=0))},
         vol.Optional("assign"): {_SLOT_KEY: cv.string},
+        vol.Optional("charges"): {_SLOT_KEY: [_CHARGE]},
         vol.Optional("note"): cv.string,
     }
 )
@@ -137,6 +149,14 @@ def _runtime(hass: HomeAssistant) -> LedgerRuntime:
         msg = "Filament Ledger is not set up"
         raise HomeAssistantError(msg)
     return ledgers[0]
+
+
+def _charges(entries: list[dict[str, Any]]) -> tuple[ReviewCharge, ...]:
+    """One tray's attribution, off the service call. The schema bounded every field."""
+    return tuple(
+        ReviewCharge(spool_id=SpoolId(entry["spool_id"]), amount=Grams.of(entry["amount_g"]))
+        for entry in entries
+    )
 
 
 def _material(data: dict[str, Any]) -> Material:
@@ -228,6 +248,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         runtime = _runtime(hass)
         amounts = call.data.get("amounts")
         assign = call.data.get("assign")
+        charges = call.data.get("charges")
         async with _translated_errors():
             await runtime.use_cases.approve_review.execute(
                 ApproveReviewCommand(
@@ -240,6 +261,11 @@ def async_register_services(hass: HomeAssistant) -> None:
                     assignments=(
                         {SlotIndex(slot): SpoolId(spool_id) for slot, spool_id in assign.items()}
                         if assign is not None
+                        else None
+                    ),
+                    charges=(
+                        {SlotIndex(slot): _charges(entries) for slot, entries in charges.items()}
+                        if charges is not None
                         else None
                     ),
                     note=call.data.get("note"),

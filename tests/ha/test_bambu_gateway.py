@@ -30,6 +30,7 @@ from custom_components.filament_ledger.domain.event import (
     SpoolMounted,
     UnknownSpoolDetected,
 )
+from custom_components.filament_ledger.domain.model.pending_review import ReviewCharge
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId, TagUid
@@ -741,7 +742,7 @@ class TestPrintLifecycleEndToEnd:
         [review] = await SqliteReviewRepository(harness.ledger.database).list_pending()
         assert review.reason is ReviewReason.CANCELLED
         assert review.estimated_usage == {SlotIndex(1): Grams.of(71)}
-        assert review.slot_resolution == {SlotIndex(1): spool_id}
+        assert review.charges == [(SlotIndex(1), ReviewCharge(spool_id, Grams.of(71)))]
         [event] = harness.ledger.events.of(ReviewOpened)
         assert isinstance(event, ReviewOpened)
         assert event.job_name == JOB_NAME
