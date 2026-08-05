@@ -206,6 +206,21 @@ const typedGrams = (raw) => {
 };
 
 /**
+ * The tray one review row is about, read back off the element that rendered it.
+ *
+ * The three parts travel together because a tray takes all three to name — the review
+ * card renders exactly what the backend froze, and the approval sends exactly that back.
+ * `ams` and `slot` are numbers on the wire and come out of `dataset` as strings, so they
+ * go back as numbers; the schema would coerce them, but a payload that reads as the data
+ * it describes is worth the two calls.
+ */
+const trayRef = (element) => ({
+  printer: element.dataset.printer,
+  ams: Number(element.dataset.ams),
+  slot: Number(element.dataset.slot),
+});
+
+/**
  * One end of the history's date filter, as the instant the reader means.
  *
  * Two traps, both silent, and this is the only place either is paid for.
@@ -504,6 +519,24 @@ class FilamentLedgerPanel extends HTMLElement {
     const key = `loc.${location?.kind}`;
     const label = this._t(key, { slot: location?.slot });
     return label === key ? esc(location?.label ?? "") : label;
+  }
+
+  /**
+   * The tray space this panel acts in: the printer the ledger follows, and its AMS unit.
+   *
+   * Read off the printer glance, which the subscription pushes on connect, so every tab
+   * has it whether or not the Printer tab has been opened. Either half is **omitted** when
+   * the glance has not arrived or named nobody: the backend reads an absent half as *the
+   * tray space this ledger follows*, which is the same answer decided in the one place
+   * that owns the sentinel (`websocket_api._TRAY`). Inventing a name here would be the
+   * panel deciding what an unidentified printer is called.
+   */
+  _traySpace() {
+    const tracking = this._printer?.tracking;
+    const space = {};
+    if (tracking?.printer) space.printer = tracking.printer;
+    if (tracking?.ams) space.ams = tracking.ams;
+    return space;
   }
 
   /** *active*, *sealed*, *discarded*, *deleted* — the derived state, in words. */
@@ -1265,7 +1298,11 @@ class FilamentLedgerPanel extends HTMLElement {
         break;
       case "mount":
         this.guarded(() =>
-          this.call("spools/mount", { spool_id: data.spool_id, slot: this._dialog.slot }),
+          this.call("spools/mount", {
+            spool_id: data.spool_id,
+            ...this._traySpace(),
+            slot: this._dialog.slot,
+          }),
         );
         break;
       case "dismiss-review":
@@ -1918,10 +1955,17 @@ class FilamentLedgerPanel extends HTMLElement {
 
   amsView() {
     const t = this._t;
+    // The trays of the printer this ledger follows. A location now names its printer, so
+    // the match names it too — otherwise a spool an automation mounted into another
+    // machine's tray 3 would appear here as though it were in this one's. When no printer
+    // was identified there is nothing to compare against and every mounted spool is on the
+    // one machine by definition, so the clause stands down rather than matching nothing.
+    const space = this._traySpace();
+    const here = (location) =>
+      location.kind === "AMS_SLOT" &&
+      (space.printer === undefined || location.printer === space.printer);
     const slots = [1, 2, 3, 4].map((slot) => {
-      const spool = this._spools.find(
-        (s) => s.location.kind === "AMS_SLOT" && s.location.slot === slot,
-      );
+      const spool = this._spools.find((s) => here(s.location) && s.location.slot === slot);
       if (!spool) {
         return `<div class="card tray empty-tray">
           <div class="n">${t("ams.slot", { slot })}</div>
@@ -2693,7 +2737,8 @@ class FilamentLedgerPanel extends HTMLElement {
         [{ spool_id: "", amount: "" }];
 
     return `
-      <div class="rv-tray" data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}"
+      <div class="rv-tray" data-printer="${esc(line.printer)}" data-ams="${esc(line.ams)}"
+        data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}"
         data-frozen="${esc(frozen)}">
         <div class="rv-row">
           <span class="rv-slot">${t("ams.slot", { slot: line.slot })}</span>
@@ -2982,31 +3027,37 @@ class FilamentLedgerPanel extends HTMLElement {
    */
   _approveReview(card, reviewId) {
     const payload = { review_id: reviewId };
-    const amounts = {};
-    const assign = {};
-    const charges = {};
+    // Lists of per-tray entries, not objects keyed by slot: a tray takes three parts to
+    // name and a JSON key holds one. Each entry repeats the tray the card rendered, read
+    // straight back off the element the review's own line built.
+    const amounts = [];
+    const assign = [];
+    const charges = [];
     for (const tray of card.querySelectorAll(".rv-tray")) {
-      const slot = tray.dataset.slot;
+      const ref = trayRef(tray);
       const value = typedGrams(tray.querySelector(".rv-amt").value);
       const seeded = Number(Number(tray.dataset.orig).toFixed(1));
       const rows = this._trayCharges(tray);
       const split = rows.length > 1;
-      if (value !== null && (value !== seeded || split)) amounts[slot] = value;
+      if (value !== null && (value !== seeded || split)) amounts.push({ ...ref, amount_g: value });
 
       if (split) {
-        charges[slot] = rows
-          .filter((charge) => charge.spool_id)
-          .map((charge) => ({
-            spool_id: charge.spool_id,
-            amount_g: typedGrams(charge.amount) ?? 0,
-          }));
+        charges.push({
+          ...ref,
+          charges: rows
+            .filter((charge) => charge.spool_id)
+            .map((charge) => ({
+              spool_id: charge.spool_id,
+              amount_g: typedGrams(charge.amount) ?? 0,
+            })),
+        });
       } else if (rows[0].spool_id && rows[0].spool_id !== tray.dataset.frozen) {
-        assign[slot] = rows[0].spool_id;
+        assign.push({ ...ref, spool_id: rows[0].spool_id });
       }
     }
-    if (Object.keys(amounts).length) payload.amounts = amounts;
-    if (Object.keys(assign).length) payload.assign = assign;
-    if (Object.keys(charges).length) payload.charges = charges;
+    if (amounts.length) payload.amounts = amounts;
+    if (assign.length) payload.assign = assign;
+    if (charges.length) payload.charges = charges;
     const note = card.querySelector(".rv-note").value.trim();
     if (note) payload.note = note;
     this.guarded(() => this.call("reviews/approve", payload));
@@ -3280,6 +3331,7 @@ class FilamentLedgerPanel extends HTMLElement {
       </div>`,
       `<section class="stack">
         ${this.printerFacts(state)}
+        ${this.printerTracking(state.tracking)}
         ${this.printerError(state.error)}
         ${this.printerHours(state.observed_print_time)}
         ${this.printerTrays(state.trays ?? [])}
@@ -3331,6 +3383,32 @@ class FilamentLedgerPanel extends HTMLElement {
 
   printerFact(key, value) {
     return `<div class="pr-fact"><div class="k">${key}</div><div class="v">${value}</div></div>`;
+  }
+
+  /**
+   * The printers this ledger found and is not following.
+   *
+   * **Rendered only when there is something to say.** A household with one machine sees
+   * nothing new, because there is nothing new to tell it; a household with two has been
+   * losing one of them silently, and *silently* is the part worth fixing before the rest.
+   * The warning existed already — in a log, which is not a place anybody looks.
+   *
+   * This is a statement about today's behaviour, not a setting: there is nothing to press,
+   * because following the second machine is not something this version can do.
+   */
+  printerTracking(tracking) {
+    const t = this._t;
+    const ignored = tracking?.ignored ?? [];
+    if (!ignored.length) return "";
+    const following = tracking.printer
+      ? t("printer.trackingFollowing", { serial: tracking.printer })
+      : t("printer.trackingFollowingUnnamed");
+    return `
+      <div class="card pr-tracking">
+        <h3 class="pr-h">${t("printer.trackingHeading")}</h3>
+        <p>${following}</p>
+        <p class="muted small">${t("printer.trackingIgnored", { serials: ignored.join(", ") })}</p>
+      </div>`;
   }
 
   /**
@@ -4736,6 +4814,12 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 .pr-hours { padding: 15px 18px 16px; }
 .pr-hours .v { font-size: 26px; font-variant-numeric: tabular-nums; }
 .pr-hours p { margin: 8px 0 0; }
+/* The printers this version leaves alone. Marked with the warning rule rather than the
+   error one: nothing is broken, something is simply not being tracked — and the card only
+   exists at all when there is a second machine to name. */
+.pr-tracking { padding: 15px 18px 16px; border-left: 3px solid var(--fl-warn); }
+.pr-tracking p { margin: 0; }
+.pr-tracking p + p { margin-top: 8px; }
 .pr-trays { display: flex; flex-direction: column; }
 .tray .empty-reel { border: 1px dashed var(--fl-line); background: none; }
 

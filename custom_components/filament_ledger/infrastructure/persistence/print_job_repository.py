@@ -1,9 +1,11 @@
 """SQLite implementation of `PrintJobRepository`.
 
 Upsert on every save: a job's state and counters evolve as the printer reports, and this
-table records the latest claim. The per-slot maps travel as JSON milligram integers —
-`{"1": 40000}` — because the milligram is the ledger's unit and a float in a stored
-document would reintroduce exactly the drift `Grams` exists to prevent.
+table records the latest claim. The per-tray figures travel as a JSON list of milligram
+integers — `[{"printer": "…", "ams": 1, "slot": 1, "mg": 40000}]` — because the milligram
+is the ledger's unit and a float in a stored document would reintroduce exactly the drift
+`Grams` exists to prevent. `tray_json` states why the tray is named this way and not with a
+composite key.
 """
 
 from __future__ import annotations
@@ -15,10 +17,11 @@ from datetime import UTC, datetime
 
 from ...domain.model.print_job import PrintJob
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import PrintJobId, SlotIndex
+from ...domain.value.identifiers import PrintJobId, TrayRef
 from ...domain.value.percentage import Percentage
 from ...domain.value.print_job_state import PrintJobState
 from .database import Database
+from .tray_json import tray_fields, tray_from
 
 COLUMNS = (
     "id, name, state, started_at, ended_at, layer_reached, total_layers, "
@@ -35,19 +38,24 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def usage_to_json(usage: dict[SlotIndex, Grams] | None) -> str | None:
+def usage_to_json(usage: dict[TrayRef, Grams] | None) -> str | None:
     """`None` stays NULL. A missing per-tray figure and an empty report are different
     facts, and collapsing them here would undo the distinction the nullable column and
-    the entity both keep (docs/04-use-cases.md UC-04)."""
+    the entity both keep (docs/04-use-cases.md UC-04).
+
+    Sorted, so one job's document is byte-identical whatever order the printer named its
+    trays in — the same reason this function always sorted."""
     if usage is None:
         return None
-    return json.dumps({str(slot.value): grams.milligrams for slot, grams in sorted(usage.items())})
+    return json.dumps(
+        [{**tray_fields(tray), "mg": grams.milligrams} for tray, grams in sorted(usage.items())]
+    )
 
 
-def usage_from_json(text: str | None) -> dict[SlotIndex, Grams] | None:
+def usage_from_json(text: str | None) -> dict[TrayRef, Grams] | None:
     if text is None:
         return None
-    return {SlotIndex(int(slot)): Grams(int(mg)) for slot, mg in json.loads(text).items()}
+    return {tray_from(entry): Grams(int(entry["mg"])) for entry in json.loads(text)}
 
 
 def _to_job(row: sqlite3.Row) -> PrintJob:

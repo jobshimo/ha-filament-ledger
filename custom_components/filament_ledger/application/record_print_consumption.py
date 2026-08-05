@@ -5,7 +5,7 @@ job ran to completion, so the plan was carried out in full. Plan and reality agr
 within flow-rate variance, which is the same variance a scale would find
 (docs/04-use-cases.md UC-04).
 
-Everything the printer could not attribute degrades to a review instead of a guess: a slot
+Everything the printer could not attribute degrades to a review instead of a guess: a tray
 that consumed with no spool mounted in it, and a job with no usable per-tray figure at all.
 Neither throws, and neither is treated as zero — a missing figure is not a figure of zero,
 and recording zero for a print that consumed 84 g is a silent, optimistic lie.
@@ -38,7 +38,7 @@ from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import SlotIndex
+from ..domain.value.identifiers import TrayRef
 from ..domain.value.location import AmsSlot
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.review import ReviewReason
@@ -80,7 +80,7 @@ class RecordPrintConsumption:
             await self.jobs.save(recorded)
 
             consuming = {
-                slot: used for slot, used in (job.reported_usage or {}).items() if not used.is_zero
+                tray: used for tray, used in (job.reported_usage or {}).items() if not used.is_zero
             }
             if not consuming:
                 # Step 2: no usable per-tray figure — never materialised (`None`), named
@@ -96,11 +96,11 @@ class RecordPrintConsumption:
             await self.events.publish(event)
 
     async def _deduct(
-        self, recorded: PrintJob, consuming: dict[SlotIndex, Grams]
+        self, recorded: PrintJob, consuming: dict[TrayRef, Grams]
     ) -> list[DomainEvent]:
-        """Steps 3–7: one PRINT_CONSUMPTION per resolved slot, one review for the rest."""
+        """Steps 3–7: one PRINT_CONSUMPTION per resolved tray, one review for the rest."""
         events: list[DomainEvent] = []
-        unresolved: dict[SlotIndex, Grams] = {}
+        unresolved: dict[TrayRef, Grams] = {}
         now = self.clock.now()
         # Separate facts: the print finished when the job says it did; `now` is merely
         # when the ledger heard about it (docs/08-data-model.md).
@@ -117,12 +117,12 @@ class RecordPrintConsumption:
         # this line.
         occurred_at = recorded.ended_at if recorded.ended_at is not None else now
 
-        for slot, used in sorted(consuming.items()):
-            mounted = await self.spools.find_by_location(AmsSlot(slot))
+        for tray, used in sorted(consuming.items()):
+            mounted = await self.spools.find_by_location(AmsSlot(tray))
             if mounted is None:
                 # Collected, not guessed: the figure goes to a review carrying a null
                 # resolution, where the user supplies the missing half (step 7).
-                unresolved[slot] = used
+                unresolved[tray] = used
                 continue
             await self.movements.append(
                 record(
@@ -132,7 +132,10 @@ class RecordPrintConsumption:
                     source=MovementSource.AUTOMATIC,
                     occurred_at=occurred_at,
                     recorded_at=now,
-                    note=f"Slot {slot} of {recorded.name}",
+                    # Still the single-machine sentence: the ledger follows one printer,
+                    # this note is what a user reads in the history, and naming a serial
+                    # they have never had to think about would be noise, not precision.
+                    note=f"Slot {tray.slot} of {recorded.name}",
                     job_id=recorded.id,
                 )
             )
@@ -161,7 +164,7 @@ class RecordPrintConsumption:
         return events
 
     async def _review_opened(
-        self, recorded: PrintJob, amounts: dict[SlotIndex, Grams]
+        self, recorded: PrintJob, amounts: dict[TrayRef, Grams]
     ) -> list[DomainEvent]:
         """Open the UNMAPPED_USAGE review inside the ambient unit, tolerating a race.
 

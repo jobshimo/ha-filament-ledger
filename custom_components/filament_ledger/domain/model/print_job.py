@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from ..error import InvalidValueError
 from ..value.grams import Grams
-from ..value.identifiers import PrintJobId, SlotIndex
+from ..value.identifiers import PrintJobId, TrayRef
 from ..value.percentage import Percentage
 from ..value.print_job_state import PrintJobState
 
@@ -29,6 +29,11 @@ class PrintJob:
     consumed, because the plan was carried out in full; for an interrupted job they are the
     *totals the plan would have consumed*, which is exactly what `LinearProgressEstimator`
     scales by progress. One field, because the printer reports one set of numbers.
+
+    **Keyed by `TrayRef`, not by a bare tray number.** The printer reports one figure per
+    tray, and a tray is only identified once its printer and AMS unit are named — two
+    machines both have a tray 1, so a figure keyed by the number alone would be deducted
+    from whichever spool happened to be in *a* tray 1.
 
     `None` and an empty mapping are different facts, and the schema keeps the column
     nullable for that reason: `None` means the per-tray figure never materialised — a known
@@ -64,7 +69,7 @@ class PrintJob:
     layer_reached: int | None = None
     total_layers: int | None = None
     progress: Percentage | None = None
-    reported_usage: dict[SlotIndex, Grams] | None = None
+    reported_usage: dict[TrayRef, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
     printer_started_at: datetime | None = None
@@ -115,11 +120,11 @@ class PrintJob:
         if self.ended_at is not None and self.ended_at < self.started_at:
             msg = f"job cannot end at {self.ended_at} before starting at {self.started_at}"
             raise InvalidValueError(msg)
-        for slot, used in (self.reported_usage or {}).items():
+        for tray, used in (self.reported_usage or {}).items():
             # Zero is tolerated: the printer legitimately reports 0 g for a tray the job
             # loaded but barely touched. Negative consumption is not a thing that exists.
             if used.is_negative:
-                msg = f"reported usage for slot {slot} cannot be negative, got {used}"
+                msg = f"reported usage for {tray} cannot be negative, got {used}"
                 raise InvalidValueError(msg)
 
 

@@ -56,8 +56,9 @@ class SlotSyncStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SlotSyncOutcome:
-    """One slot's answer: the reading (slot, tag and the register-form hints), the
-    status, and — for `MOUNTED` and `DETECTED` — the spool the ledger resolved."""
+    """One tray's answer: the reading (the tray reference, the tag and the register-form
+    hints), the status, and — for `MOUNTED` and `DETECTED` — the spool the ledger
+    resolved."""
 
     reading: TrayReading
     status: SlotSyncStatus
@@ -101,7 +102,7 @@ async def slot_outcome(spools: SpoolRepository, reading: TrayReading) -> SlotSyn
 
     The occupant read settles `MOUNTED`: with auto-mount on, the pass just put the
     resolved spool there; with auto-mount off, whatever the user mounted by hand is
-    still the ledger's honest answer for the slot.
+    still the ledger's honest answer for the tray.
 
     **Reads only.** A module function rather than a method of `TraySync` because the
     Printer tab computes the same per-slot shape *without* running `DetectSpool` first
@@ -113,14 +114,14 @@ async def slot_outcome(spools: SpoolRepository, reading: TrayReading) -> SlotSyn
         return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.EMPTY, spool=None)
     if reading.tag is None:
         # Occupied, tag unreadable: nothing automatic is possible (UC-02/UC-03), and
-        # naming whatever the ledger has in the slot would dress a guess as a match.
+        # naming whatever the ledger has in the tray would dress a guess as a match.
         return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.NO_TAG, spool=None)
     candidates = await spools.find_by_tag(reading.tag)
     if not candidates:
         return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.UNKNOWN_TAG, spool=None)
     if len(candidates) > 1:
         return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.AMBIGUOUS_TAG, spool=None)
-    occupant = await spools.find_by_location(AmsSlot(reading.slot))
+    occupant = await spools.find_by_location(AmsSlot(reading.tray))
     if occupant is None:
         return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.DETECTED, spool=candidates[0])
     return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.MOUNTED, spool=occupant)

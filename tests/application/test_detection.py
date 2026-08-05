@@ -29,7 +29,7 @@ from custom_components.filament_ledger.domain.model.spool import Spool
 from custom_components.filament_ledger.domain.port.repositories import SpoolFilter
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId, TagUid
+from custom_components.filament_ledger.domain.value.identifiers import SpoolId, TagUid
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location, Storage
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.tray_reading import TrayReading
@@ -37,7 +37,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
-from .conftest import Ledger
+from .conftest import Ledger, a_tray
 
 TAG = TagUid("A1B2C3D4")
 
@@ -55,11 +55,11 @@ async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
 
 
 def an_occupied_tray(slot: int, tag: TagUid | None = TAG) -> TrayReading:
-    return TrayReading(slot=SlotIndex(slot), tag=tag, empty=False)
+    return TrayReading(tray=a_tray(slot), tag=tag, empty=False)
 
 
 def an_empty_tray(slot: int) -> TrayReading:
-    return TrayReading(slot=SlotIndex(slot), tag=None, empty=True)
+    return TrayReading(tray=a_tray(slot), tag=None, empty=True)
 
 
 async def located(ledger: Ledger, spool_id: SpoolId) -> Spool:
@@ -74,22 +74,22 @@ class TestATagAppears:
 
         await ledger.use_cases.detect_spool.execute(an_occupied_tray(2))
 
-        assert (await located(ledger, spool_id)).location == AmsSlot(SlotIndex(2))
+        assert (await located(ledger, spool_id)).location == AmsSlot(a_tray(2))
         assert len((await ledger.use_cases.queries.detail(spool_id)).lines) == 1
         [mounted] = ledger.events.of(SpoolMounted)
         assert isinstance(mounted, SpoolMounted)
-        assert mounted == SpoolMounted(spool_id=spool_id, slot=SlotIndex(2))
+        assert mounted == SpoolMounted(spool_id=spool_id, tray=a_tray(2))
 
     async def test_the_occupant_of_the_slot_is_displaced_to_storage(self, ledger: Ledger) -> None:
         """Same displacement semantics as the manual mount — one implementation, shared."""
         occupant = await a_spool(ledger, label="already there")
-        await ledger.use_cases.mount_spool.execute(occupant, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(occupant, a_tray(2))
         arriving = await a_spool(ledger, label="tagged", tag_uid=TAG)
 
         await ledger.use_cases.detect_spool.execute(an_occupied_tray(2))
 
         assert (await located(ledger, occupant)).location == Storage()
-        assert (await located(ledger, arriving)).location == AmsSlot(SlotIndex(2))
+        assert (await located(ledger, arriving)).location == AmsSlot(a_tray(2))
         assert SpoolUnmounted(spool_id=occupant) in ledger.events.published
 
     async def test_a_spool_follows_its_tag_between_slots(self, ledger: Ledger) -> None:
@@ -99,7 +99,7 @@ class TestATagAppears:
 
         await ledger.use_cases.detect_spool.execute(an_occupied_tray(3))
 
-        assert (await located(ledger, spool_id)).location == AmsSlot(SlotIndex(3))
+        assert (await located(ledger, spool_id)).location == AmsSlot(a_tray(3))
 
     async def test_redetection_changes_nothing(self, ledger: Ledger) -> None:
         """The gateway replays `current_trays()` on startup; the second sighting of a
@@ -109,7 +109,7 @@ class TestATagAppears:
 
         await ledger.use_cases.detect_spool.execute(an_occupied_tray(2))
 
-        assert (await located(ledger, spool_id)).location == AmsSlot(SlotIndex(2))
+        assert (await located(ledger, spool_id)).location == AmsSlot(a_tray(2))
         assert len(ledger.events.of(SpoolMounted)) == 1
         assert ledger.events.of(SpoolUnmounted) == []
 
@@ -121,7 +121,7 @@ class TestATagAppears:
         assert await ledger.use_cases.queries.overview() == []
         [event] = ledger.events.of(UnknownSpoolDetected)
         assert isinstance(event, UnknownSpoolDetected)
-        assert event == UnknownSpoolDetected(tag_uid=TAG, slot=SlotIndex(4))
+        assert event == UnknownSpoolDetected(tag_uid=TAG, tray=a_tray(4))
 
     async def test_an_ambiguous_tag_asks_instead_of_guessing(self, ledger: Ledger) -> None:
         """Two spools from one batch legally share a tag. Picking one silently means every
@@ -136,7 +136,7 @@ class TestATagAppears:
         assert ledger.events.of(SpoolMounted) == []
         [event] = ledger.events.of(AmbiguousTagDetected)
         assert isinstance(event, AmbiguousTagDetected)
-        assert event.slot == SlotIndex(2)
+        assert event.tray == a_tray(2)
         assert set(event.candidates) == {first, second}
 
     async def test_a_discarded_spool_cannot_be_the_answer(self, ledger: Ledger) -> None:
@@ -161,7 +161,7 @@ class TestATagAppears:
 
         await ledger.use_cases.detect_spool.execute(an_occupied_tray(2))
 
-        assert (await located(ledger, kept)).location == AmsSlot(SlotIndex(2))
+        assert (await located(ledger, kept)).location == AmsSlot(a_tray(2))
         assert ledger.events.of(AmbiguousTagDetected) == []
 
 
@@ -170,7 +170,7 @@ class TestATrayEmpties:
         """UC-03, automatic: RFID absence detected. No movement — unmounting consumes no
         filament."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(2))
 
         await ledger.use_cases.detect_spool.execute(an_empty_tray(2))
 
@@ -193,12 +193,12 @@ class TestAnUnreadableTag:
         docs/04-use-cases.md authorises automatic action on a tag appearing or a tray
         emptying — an unreadable tag is neither, so the ledger is left alone."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(3))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(3))
         before = len(ledger.events.published)
 
         await ledger.use_cases.detect_spool.execute(an_occupied_tray(3, tag=None))
 
-        assert (await located(ledger, spool_id)).location == AmsSlot(SlotIndex(3))
+        assert (await located(ledger, spool_id)).location == AmsSlot(a_tray(3))
         assert len(ledger.events.published) == before
 
 
@@ -224,13 +224,13 @@ class TestAutoMountDisabled:
         assert ledger.events.of(SpoolMounted) == []
         [event] = ledger.events.of(SpoolDetected)
         assert isinstance(event, SpoolDetected)
-        assert event == SpoolDetected(tag_uid=TAG, slot=SlotIndex(2))
+        assert event == SpoolDetected(tag_uid=TAG, tray=a_tray(2))
 
     async def test_the_option_gates_mounting_not_unmounting(self, ledger: Ledger) -> None:
         """UC-03 carries no such precondition: a tray reporting empty means the spool left
         the machine, and recording that rewrites nothing the user chose."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
 
         await self.detect_spool_with_auto_mount_off(ledger).execute(an_empty_tray(1))
 
@@ -244,7 +244,7 @@ class TestAtomicityOfDetection:
         crash between the two writes must not leave the occupant unmounted with the
         arriving spool still in storage."""
         occupant = await a_spool(ledger, label="already there")
-        await ledger.use_cases.mount_spool.execute(occupant, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(occupant, a_tray(2))
         arriving = await a_spool(ledger, label="tagged", tag_uid=TAG)
         events_before = len(ledger.events.published)
 
@@ -257,7 +257,7 @@ class TestAtomicityOfDetection:
         with pytest.raises(RuntimeError, match="unavailable"):
             await detection.execute(an_occupied_tray(2))
 
-        assert (await located(ledger, occupant)).location == AmsSlot(SlotIndex(2))
+        assert (await located(ledger, occupant)).location == AmsSlot(a_tray(2))
         assert (await located(ledger, arriving)).location == Storage()
         assert len(ledger.events.published) == events_before
 

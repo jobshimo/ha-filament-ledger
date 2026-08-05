@@ -12,10 +12,18 @@ sensor is `sensor.…_ams_1_bandeja_1` (docs/12-field-notes.md); anything keyed 
 English string breaks for every user not running the developer's language. What *is*
 stable is upstream's own identity: `platform == "bambu_lab"` plus the `translation_key` —
 `tray` for the AMS trays, and the job sensors' keys listed in `PRINT_SENSOR_KEYS`. The
-slot translation lives here and nowhere else, per docs/05 §5.8 — and so does the
-per-tray-attribute translation: `AMS 1 Tray 1` becomes `SlotIndex(1)`, and an
-`External Spool` figure is dropped with a warning, because the domain keys usage by AMS
-slot and inventing a fifth slot would be a lie with a number on it.
+tray translation lives here and nowhere else, per docs/05 §5.8 — and so does the
+per-tray-attribute translation: `AMS 1 Tray 1` becomes the tray reference for tray 1 of
+AMS 1, and an `External Spool` figure is dropped with a warning, because the domain keys
+usage by tray and inventing a fifth tray would be a lie with a number on it.
+
+**The printer's serial comes off the job sensors' own `unique_id`s**, which upstream writes
+as `<serial>_<translation_key>` — `00000000TESTSER_print_weight` in the frozen registry
+fixture, anonymised but faithful in shape. That is the stable identity the domain's
+`TrayRef` needs, read from evidence this repository already has rather than from a
+`translation_key` nobody has confirmed. The tray sensors' `unique_id`s carry the serial too,
+behind a model prefix whose boundary is not written down anywhere — so they are not where it
+is read from, and trays fall back to `UNIDENTIFIED_PRINTER` when no job sensor resolved.
 
 Job events are filtered by device. The bus carries `bambu_lab_event` for every machine
 and the payload names only a device id, so the gateway keeps the id of the printer whose
@@ -26,7 +34,9 @@ Two conscious limitations, both documented rather than discovered:
 
 - **One printer, one AMS.** v1 targets a single ledger on a single machine; if the
   registry ever holds several AMS units or several printers, the first (by identity)
-  wins and a warning names the ones ignored.
+  wins and a warning names the ones ignored. The model can now *represent* a second
+  machine; nothing here has learned to follow one. The ignored serials are kept rather
+  than only logged, so the Printer tab can say out loud what the log was saying alone.
 - **No late binding.** If `ha-bambulab` is not set up when this entry loads, the gateway
   constructs dormant: `current_trays()` is empty and both subscribe surfaces are logged
   no-ops. docs/05 §5.8 demands no startup-order tolerance, so watching the registry for
@@ -55,7 +65,15 @@ from ...domain.error import InvalidValueError
 from ...domain.port.printer_gateway import PrintListener, TrayListener
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import ABSENT_TAG_SENTINEL, SlotIndex, TagUid
+from ...domain.value.identifiers import (
+    ABSENT_TAG_SENTINEL,
+    UNIDENTIFIED_PRINTER,
+    AmsIndex,
+    PrinterSerial,
+    SlotIndex,
+    TagUid,
+    TrayRef,
+)
 from ...domain.value.percentage import Percentage
 from ...domain.value.print_event import PrintEnded, PrintEvent, PrintStarted
 from ...domain.value.print_job_state import PrintJobState
@@ -93,6 +111,14 @@ PRINT_SENSOR_KEYS = frozenset(
         "end_time",
     }
 )
+
+# The one AMS this ledger follows, by its printer's own numbering. The registry's tray
+# `unique_id` carries the AMS unit's *serial*, never its ordinal, and the only place an
+# ordinal is ever stated is the weight sensor's `AMS 1 Tray 4` attribute keys — which is
+# also the only ordinal the reference machine has ever reported (docs/12). v1 already
+# dropped every other ordinal with a warning; naming that ordinal is what makes the
+# behaviour representable rather than implicit.
+TRACKED_AMS = AmsIndex(1)
 
 BAMBU_LAB_EVENT = "bambu_lab_event"
 EVENT_PRINT_STARTED = "event_print_started"
@@ -186,9 +212,15 @@ class BambuLabGateway:
         self._job_listeners: list[PrintListener] = []
         self._unsubscribe: CALLBACK_TYPE | None = None
         self._unsubscribe_jobs: CALLBACK_TYPE | None = None
-        self._entity_by_slot = _discover_trays(hass)
-        self._slot_by_entity = {entity_id: slot for slot, entity_id in self._entity_by_slot.items()}
-        self._print_sensors, self._printer_device_id = _discover_print_sensors(hass)
+        # Printers first: the trays need a printer to be named after, and the serial is
+        # read off the job sensors (see the module docstring).
+        printers = _discover_printers(hass)
+        self._print_sensors = printers.sensors
+        self._printer_device_id = printers.device_id
+        self._printer_serial = printers.serial
+        self._ignored_printers = printers.ignored
+        self._entity_by_tray = _discover_trays(hass, self.tray_printer)
+        self._tray_by_entity = {entity_id: tray for tray, entity_id in self._entity_by_tray.items()}
 
     @property
     def dormant(self) -> bool:
@@ -198,7 +230,38 @@ class BambuLabGateway:
         to report, which is a different fact from four empty ones. Reloading the entry
         after the upstream integration appears re-runs discovery, per the module policy.
         """
-        return not self._entity_by_slot
+        return not self._entity_by_tray
+
+    @property
+    def printer_serial(self) -> PrinterSerial | None:
+        """The machine this ledger follows, or `None` when discovery could not name one.
+
+        Null is the honest answer rather than the sentinel: *no printer was identified* is
+        a different statement from *this printer is called UNIDENTIFIED*, and the Printer
+        tab has to be able to tell the reader which of the two it is looking at.
+        """
+        return self._printer_serial
+
+    @property
+    def tray_printer(self) -> PrinterSerial:
+        """The name every tray reference this gateway hands out carries.
+
+        The discovered serial when there is one, and `UNIDENTIFIED_PRINTER` when there is
+        not — the same name migration 0007 wrote into the rows it could not name, so a
+        ledger with no discoverable printer keeps one consistent tray space instead of two
+        that never meet.
+        """
+        return self._printer_serial if self._printer_serial is not None else UNIDENTIFIED_PRINTER
+
+    @property
+    def ignored_printers(self) -> tuple[PrinterSerial, ...]:
+        """Every other printer in the registry — found, named, and not tracked.
+
+        v1 warned about these into a log nobody reads. Keeping them lets the Printer tab
+        say so where the owner will actually see it. **Nothing here follows them**; the
+        list is a statement about today's behaviour, not the beginning of supporting it.
+        """
+        return self._ignored_printers
 
     @property
     def discovered(self) -> bool:
@@ -210,7 +273,7 @@ class BambuLabGateway:
         not, and answering `dormant` there would hide a printer that is plainly present
         (docs/14 §14.5).
         """
-        return bool(self._entity_by_slot) or self._printer_device_id is not None
+        return bool(self._entity_by_tray) or self._printer_device_id is not None
 
     @property
     def watched_entity_ids(self) -> frozenset[str]:
@@ -232,7 +295,7 @@ class BambuLabGateway:
         stalest possible figure on a page whose whole point is being current (docs/14
         §14.5, amended v1.1).
         """
-        return frozenset(self._entity_by_slot.values()) | frozenset(self._print_sensors.values())
+        return frozenset(self._entity_by_tray.values()) | frozenset(self._print_sensors.values())
 
     def current_job_status(self) -> JobStatus:
         """What the printer says about the job right now.
@@ -259,13 +322,13 @@ class BambuLabGateway:
         of them; with no trays discovered this is a no-op, because there is nothing to
         watch and inventing entities to watch would be worse than silence.
         """
-        if not self._entity_by_slot:
+        if not self._entity_by_tray:
             LOGGER.debug("no %s tray entities found; the gateway stays dormant", UPSTREAM_PLATFORM)
             return
         self._listeners.append(listener)
         if self._unsubscribe is None:
             self._unsubscribe = async_track_state_change_event(
-                self._hass, list(self._slot_by_entity), self._on_tray_state_change
+                self._hass, list(self._tray_by_entity), self._on_tray_state_change
             )
 
     def subscribe_jobs(self, listener: PrintListener) -> None:
@@ -284,18 +347,18 @@ class BambuLabGateway:
                 BAMBU_LAB_EVENT, self._on_job_event
             )
 
-    async def current_trays(self) -> dict[SlotIndex, TrayReading]:
-        """Every tray as last reported, keyed by slot, in slot order.
+    async def current_trays(self) -> dict[TrayRef, TrayReading]:
+        """Every tray as last reported, keyed by its reference, in tray order.
 
         A tray whose sensor is missing, unavailable or malformed is *omitted*, never
         reported empty: absence of data and absence of a spool are different facts, and
         conflating them would unmount a spool because a sensor blinked (docs/03 §3.8).
         """
-        readings: dict[SlotIndex, TrayReading] = {}
-        for slot, entity_id in sorted(self._entity_by_slot.items()):
-            reading = _read(slot, self._hass.states.get(entity_id))
+        readings: dict[TrayRef, TrayReading] = {}
+        for tray, entity_id in sorted(self._entity_by_tray.items()):
+            reading = _read(tray, self._hass.states.get(entity_id))
             if reading is not None:
-                readings[slot] = reading
+                readings[tray] = reading
         return readings
 
     @callback
@@ -328,14 +391,14 @@ class BambuLabGateway:
         a background task, where a failing use case is logged instead of unwinding the
         bus dispatch.
         """
-        slot = self._slot_by_entity.get(event.data["entity_id"])
-        if slot is None:  # unreachable: the tracker watches only resolved entities
+        tray = self._tray_by_entity.get(event.data["entity_id"])
+        if tray is None:  # unreachable: the tracker watches only resolved entities
             return
-        reading = _read(slot, event.data["new_state"])
+        reading = _read(tray, event.data["new_state"])
         if reading is None:
             return
         self._hass.async_create_background_task(
-            self._deliver(reading), name=f"filament_ledger tray {slot} change"
+            self._deliver(reading), name=f"filament_ledger tray {tray.slot} change"
         )
 
     async def _deliver(self, reading: TrayReading) -> None:
@@ -515,7 +578,7 @@ class BambuLabGateway:
             return None
         return PrinterError(active=state.state == STATE_ON, code=self._error_code())
 
-    def _per_tray_weights(self) -> dict[SlotIndex, Grams] | None:
+    def _per_tray_weights(self) -> dict[TrayRef, Grams] | None:
         """The weight sensor's per-tray figures, translated — or `None`, never a zero.
 
         `None` covers the whole Q4-open path: no sensor, an unavailable sensor, and
@@ -527,14 +590,14 @@ class BambuLabGateway:
         state = self._sensor_state("print_weight")
         if state is None:
             return None
-        weights: dict[SlotIndex, Grams] = {}
+        weights: dict[TrayRef, Grams] = {}
         recognised = False
         for key, value in state.attributes.items():
             if key == _EXTERNAL_SPOOL_KEY:
                 recognised = True
-                # The domain keys usage by AMS slot (docs/02 §2.3); an external-spool
-                # figure has no slot to land in. Dropping it silently would be the
-                # optimistic lie this project exists to prevent, so it is at least loud.
+                # The domain keys usage by tray (docs/02 §2.3); an external-spool figure
+                # has no tray to land in. Dropping it silently would be the optimistic
+                # lie this project exists to prevent, so it is at least loud.
                 LOGGER.warning(
                     "the printer reports %r g on the external spool; v1 tracks AMS "
                     "consumption only, so this figure is not recorded",
@@ -545,8 +608,8 @@ class BambuLabGateway:
             if match is None:
                 continue
             recognised = True
-            ams, tray = int(match.group(1)), int(match.group(2))
-            if ams != 1:
+            ams, slot = int(match.group(1)), int(match.group(2))
+            if ams != TRACKED_AMS.value:
                 LOGGER.warning("per-tray figure for %r ignored; v1 tracks a single AMS", key)
                 continue
             grams = _weight(value)
@@ -554,20 +617,26 @@ class BambuLabGateway:
                 LOGGER.debug("per-tray figure for %r reads %r; skipped", key, value)
                 continue
             try:
-                weights[SlotIndex(tray)] = grams
+                tray = TrayRef(printer=self.tray_printer, ams=TRACKED_AMS, slot=SlotIndex(slot))
             except InvalidValueError:
                 LOGGER.debug("per-tray key %r names a slot outside 1..4; skipped", key)
+                continue
+            weights[tray] = grams
         return weights if recognised else None
 
 
-def _discover_trays(hass: HomeAssistant) -> dict[SlotIndex, str]:
-    """Resolve the AMS tray sensors to entity ids, keyed by our slot numbering.
+def _discover_trays(hass: HomeAssistant, printer: PrinterSerial) -> dict[TrayRef, str]:
+    """Resolve the AMS tray sensors to entity ids, keyed by the tray each one describes.
 
     The rule, from the shapes captured in docs/12: `platform == "bambu_lab"` selects the
     upstream integration, `translation_key == "tray"` discriminates tray sensors from the
     printer's other sensors, and the `unique_id` suffix `_tray_<n>` carries the slot.
+
+    `printer` and `TRACKED_AMS` complete the reference. The registry's grouping key is the
+    AMS unit's serial, which is what still decides *which* unit wins when there are several;
+    the ordinal it is followed under is `TRACKED_AMS`, for the reason that constant gives.
     """
-    groups: dict[str, dict[SlotIndex, str]] = {}
+    groups: dict[str, dict[TrayRef, str]] = {}
     for entry in er.async_get(hass).entities.values():
         if entry.platform != UPSTREAM_PLATFORM or entry.translation_key != TRAY_TRANSLATION_KEY:
             continue
@@ -576,11 +645,11 @@ def _discover_trays(hass: HomeAssistant) -> dict[SlotIndex, str]:
             LOGGER.debug("tray unique_id %r has no _tray_<n> suffix; skipped", entry.unique_id)
             continue
         try:
-            slot = SlotIndex(int(ordinal))
+            tray = TrayRef(printer=printer, ams=TRACKED_AMS, slot=SlotIndex(int(ordinal)))
         except InvalidValueError:
             LOGGER.debug("tray unique_id %r names a slot outside 1..4; skipped", entry.unique_id)
             continue
-        groups.setdefault(ams, {})[slot] = entry.entity_id
+        groups.setdefault(ams, {})[tray] = entry.entity_id
     if not groups:
         LOGGER.debug("no %s tray sensors in the entity registry", UPSTREAM_PLATFORM)
         return {}
@@ -594,14 +663,39 @@ def _discover_trays(hass: HomeAssistant) -> dict[SlotIndex, str]:
     return groups[first]
 
 
-def _discover_print_sensors(hass: HomeAssistant) -> tuple[dict[str, str], str | None]:
-    """Resolve the printer's job sensors, keyed by translation key, plus its device id.
+@dataclass(frozen=True, slots=True)
+class PrinterDiscovery:
+    """What the registry said about printers: the one followed, and the ones passed over.
+
+    `serial` is `None` when nothing resolved — the honest absence, distinct from the
+    sentinel a row carries when it names a printer nobody has identified yet.
+
+    `ignored` exists because v1's warning went only to the log. The gateway still picks
+    exactly one machine and still passes over the rest; keeping their names lets the
+    Printer tab say so where somebody will read it.
+    """
+
+    sensors: dict[str, str]
+    device_id: str | None
+    serial: PrinterSerial | None
+    ignored: tuple[PrinterSerial, ...]
+
+
+def _discover_printers(hass: HomeAssistant) -> PrinterDiscovery:
+    """Resolve the printer's job sensors, its device id, and its serial.
 
     The job sensors hang off the printer device — the trays hang off the AMS device — so
     these registry entries are also where the printer's device id comes from, and that id
     is what filters `bambu_lab_event` down to the machine this ledger tracks.
+
+    The serial rides on the same entries: upstream writes each `unique_id` as
+    `<serial>_<translation_key>`, so removing the key that matched leaves the serial. A
+    device whose entries carry no readable serial still wins the selection if it sorts
+    first — the device id is what job filtering needs, and a machine with no name is still
+    the machine this ledger follows.
     """
     groups: dict[str, dict[str, str]] = {}
+    serials: dict[str, PrinterSerial] = {}
     for entry in er.async_get(hass).entities.values():
         if (
             entry.platform != UPSTREAM_PLATFORM
@@ -610,9 +704,12 @@ def _discover_print_sensors(hass: HomeAssistant) -> tuple[dict[str, str], str | 
         ):
             continue
         groups.setdefault(entry.device_id, {})[entry.translation_key] = entry.entity_id
+        serial = _serial_of(entry.unique_id, entry.translation_key)
+        if serial is not None:
+            serials.setdefault(entry.device_id, serial)
     if not groups:
         LOGGER.debug("no %s print sensors in the entity registry", UPSTREAM_PLATFORM)
-        return {}, None
+        return PrinterDiscovery(sensors={}, device_id=None, serial=None, ignored=())
     first = min(groups)
     if len(groups) > 1:
         LOGGER.warning(
@@ -620,10 +717,39 @@ def _discover_print_sensors(hass: HomeAssistant) -> tuple[dict[str, str], str | 
             sorted(groups),
             first,
         )
-    return groups[first], first
+    ignored = tuple(
+        serials[device_id]
+        for device_id in sorted(groups)
+        if device_id != first
+        if device_id in serials
+    )
+    return PrinterDiscovery(
+        sensors=groups[first],
+        device_id=first,
+        serial=serials.get(first),
+        ignored=ignored,
+    )
 
 
-def _read(slot: SlotIndex, state: State | None) -> TrayReading | None:
+def _serial_of(unique_id: str, translation_key: str) -> PrinterSerial | None:
+    """The machine's serial, off a job sensor's `unique_id`. `None` when the shape differs.
+
+    Upstream's own format, verified against the frozen registry fixture:
+    `00000000TESTSER_print_weight` for the key `print_weight`. Total, like every reader at
+    this boundary — an upstream that changes the format leaves the ledger with an
+    unidentified printer, which it already knows how to be, rather than with a crash.
+    """
+    suffix = f"_{translation_key}"
+    if not unique_id.endswith(suffix):
+        LOGGER.debug("print sensor unique_id %r does not end in %r; no serial", unique_id, suffix)
+        return None
+    serial = unique_id[: -len(suffix)]
+    if not serial.strip():
+        return None
+    return PrinterSerial(serial)
+
+
+def _read(tray: TrayRef, state: State | None) -> TrayReading | None:
     """Translate one tray sensor into a reading, or `None` when it cannot be trusted.
 
     Total by construction: every guard below covers a constructor precondition of the
@@ -635,14 +761,14 @@ def _read(slot: SlotIndex, state: State | None) -> TrayReading | None:
     attributes = state.attributes
     empty = attributes.get("empty")
     if not isinstance(empty, bool):
-        LOGGER.debug("tray %s reports no usable 'empty' flag (%r); reading skipped", slot, empty)
+        LOGGER.debug("%s reports no usable 'empty' flag (%r); reading skipped", tray, empty)
         return None
     if empty:
         # An emptied tray describes no spool. Whatever name or colour the attributes
         # still carry is a leftover of the previous occupant, not an observation.
-        return TrayReading(slot=slot, tag=None, empty=True)
+        return TrayReading(tray=tray, tag=None, empty=True)
     return TrayReading(
-        slot=slot,
+        tray=tray,
         tag=_tag(attributes.get("tag_uid")),
         empty=False,
         name=_text(attributes.get("name")),

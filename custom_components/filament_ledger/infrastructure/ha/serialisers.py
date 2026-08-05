@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     # application test suite imports this module on machines without it. The functions
     # below only read attributes, so the types can stay annotations that never execute.
     from .bambu_gateway import JobStatus
-    from .printer_state import PrinterSnapshot
+    from .printer_state import PrinterSnapshot, PrinterTracking
     from .tray_sync import SlotSyncOutcome, TraySyncResult
 
 
@@ -355,11 +355,17 @@ def tray_sync_result(result: TraySyncResult) -> dict[str, Any]:
 
 def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
     """The hints ride along for `unknown_tag`: the register form pre-fills from them, so
-    the user confirms the one number the tray cannot report (docs/06 §6.4)."""
+    the user confirms the one number the tray cannot report (docs/06 §6.4).
+
+    The tray is named in full — `printer`, `ams`, `slot` — because the panel mounts into
+    this tray and a bare number is no longer an address. `slot` keeps its name and meaning,
+    so the row a reader sees still says *slot 3*."""
     reading = outcome.reading
     spool = outcome.spool
     return {
-        "slot": reading.slot.value,
+        "printer": reading.tray.printer.value,
+        "ams": reading.tray.ams.value,
+        "slot": reading.tray.slot.value,
         "status": outcome.status.value,
         "tag_uid": reading.tag.value if reading.tag else None,
         "name_hint": reading.name,
@@ -373,19 +379,22 @@ def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
 def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
     """The Printer tab's read-only glance (docs/14 §14.5).
 
-    A dormant gateway answers `{"dormant": true}` **and nothing else**: the panel renders
-    the teaching empty state, and shipping a hull of nulls beside the flag would invite it
-    to render dashes for a printer that is not there.
+    A dormant gateway answers `{"dormant": true}` **and `tracking`, and nothing else**: the
+    panel renders the teaching empty state, and shipping a hull of nulls beside the flag
+    would invite it to render dashes for a printer that is not there. `tracking` is the one
+    exception because it is identity rather than measurement — the tray space a mount would
+    land in, and the machines this ledger found and is not following.
 
     Every other figure is nullable, and null means *the printer did not say*. The panel
     renders each one as a dash, never as a zero — a missing figure is not a figure of zero
     (docs/04 UC-04 step 2's principle, applied to display).
     """
     if snapshot.dormant:
-        return {"dormant": True}
+        return {"dormant": True, "tracking": _tracking(snapshot.tracking)}
     job = snapshot.job
     return {
         "dormant": False,
+        "tracking": _tracking(snapshot.tracking),
         "status": job.status if job else None,
         "progress_pct": job.progress.rounded if job and job.progress is not None else None,
         "current_layer": job.current_layer if job else None,
@@ -403,6 +412,21 @@ def printer_state(snapshot: PrinterSnapshot) -> dict[str, Any]:
         "active_tray": snapshot.active_tray,
         "trays": [_slot_sync(outcome) for outcome in snapshot.trays],
         "observed_print_time": _observed_print_time(snapshot.observed_print_time),
+    }
+
+
+def _tracking(tracking: PrinterTracking) -> dict[str, Any]:
+    """Which machine the ledger follows, which AMS, and which machines it passed over.
+
+    `printer` is **null** when discovery named nobody, and null is not a name: the panel
+    sends it back untouched and the mount command resolves the absence server-side. Every
+    entry of `ignored` is a real serial — a printer the registry holds and this ledger does
+    not track, which is v1's documented limit stated where somebody can read it.
+    """
+    return {
+        "printer": tracking.printer.value if tracking.printer is not None else None,
+        "ams": tracking.ams.value,
+        "ignored": [serial.value for serial in tracking.ignored],
     }
 
 
@@ -482,7 +506,11 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
         "estimated_total_g": grams(total([line.estimated for line in review.lines])),
         "lines": [
             {
-                "slot": line.slot.value,
+                # The tray in full, because approving sends these three back and a bare
+                # number would no longer say which tray was meant.
+                "printer": line.tray.printer.value,
+                "ams": line.tray.ams.value,
+                "slot": line.tray.slot.value,
                 "estimated_g": grams(line.estimated),
                 "charges": [
                     {"spool_id": charge.spool_id, "amount_g": grams(charge.amount)}

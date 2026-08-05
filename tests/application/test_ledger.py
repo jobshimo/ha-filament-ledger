@@ -54,7 +54,6 @@ from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     MovementId,
-    SlotIndex,
     SpoolId,
     TagUid,
 )
@@ -73,7 +72,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
-from .conftest import Ledger, build_ledger
+from .conftest import Ledger, a_tray, build_ledger
 
 
 async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
@@ -361,7 +360,7 @@ class TestMovingSpools:
         spool_id = await a_spool(ledger)
         before = len((await ledger.use_cases.queries.detail(spool_id)).lines)
 
-        await ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
 
         detail = await ledger.use_cases.queries.detail(spool_id)
         assert len(detail.lines) == before
@@ -375,8 +374,8 @@ class TestMovingSpools:
         first = await a_spool(ledger, label="first")
         second = await a_spool(ledger, label="second")
 
-        await ledger.use_cases.mount_spool.execute(first, SlotIndex(2))
-        await ledger.use_cases.mount_spool.execute(second, SlotIndex(2))
+        await ledger.use_cases.mount_spool.execute(first, a_tray(2))
+        await ledger.use_cases.mount_spool.execute(second, a_tray(2))
 
         displaced = await ledger.use_cases.queries.detail(first)
         occupant = await ledger.use_cases.queries.detail(second)

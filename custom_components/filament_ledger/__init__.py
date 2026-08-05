@@ -84,6 +84,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         SqliteMovementVoidRepository,
     )
     from .infrastructure.persistence.print_job_repository import SqlitePrintJobRepository
+    from .infrastructure.persistence.printer_adoption import adopt_unidentified_trays
     from .infrastructure.persistence.review_repository import SqliteReviewRepository
     from .infrastructure.persistence.spool_repository import SqliteSpoolRepository
     from .infrastructure.system_clock import SystemClock
@@ -198,6 +199,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # reconciliation pass below, so a tray change during startup lands in the same
     # idempotent use case instead of falling into a gap.
     gateway = BambuLabGateway(hass)
+
+    # Migration 0007 could not name the printer — it runs with a bare SQLite connection —
+    # so it wrote a placeholder into every mounted spool's tray reference. Discovery has
+    # just resolved the real serial, so the rows learn it here, **before** the
+    # reconciliation pass below asks which spool is in which tray. Get the order wrong and
+    # the pass looks up trays under the new name, finds them empty, and mounts a second
+    # spool into every one of them.
+    await adopt_unidentified_trays(database, gateway.printer_serial)
 
     # The reconciliation pass as an object: startup runs it once below, and the panel's
     # sync button and the `sync_trays` service run the very same wiring on demand.

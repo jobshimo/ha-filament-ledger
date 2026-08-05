@@ -11,6 +11,7 @@ well — a service schema is a user-interface convenience, not a guarantee.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import voluptuous as vol
@@ -39,25 +40,43 @@ from ...const import (
     SERVICE_SYNC_TRAYS,
     SERVICE_UNMOUNT_SPOOL,
 )
-from ...domain.error import DomainError
+from ...domain.error import DomainError, InvalidValueError
 from ...domain.model.pending_review import ReviewCharge
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
     MAX_AMS_SLOT,
+    MIN_AMS_INDEX,
     MIN_AMS_SLOT,
+    AmsIndex,
+    PrinterSerial,
     ReviewId,
     SlotIndex,
     SpoolId,
     TagUid,
+    TrayRef,
 )
 from ...domain.value.material import Material, MaterialKind
+from .bambu_gateway import TRACKED_AMS
 from .runtime import LedgerRuntime, runtimes
 
-# A slot key as it arrives in service data. YAML gives integers, the UI's object
-# selector gives strings; `Coerce(int)` reads both, and the range is bounded here as
-# well as in the domain so a typo becomes a message rather than a stack trace.
-_SLOT_KEY = vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
+# A tray as it arrives in service data — the three parts of `TrayRef`. YAML gives integers,
+# the UI's object selector gives strings; `Coerce(int)` reads both, and the range is bounded
+# here as well as in the domain so a typo becomes a message rather than a stack trace.
+#
+# `printer` and `ams` are optional and their absence names the tray space this ledger
+# follows, so an automation written against v1 keeps working unchanged — the ledger still
+# follows exactly one printer, and naming a serial for the only machine in the house would
+# be ceremony rather than precision.
+_TRAY = vol.Schema(
+    {
+        vol.Optional("printer"): vol.Any(cv.string, None),
+        vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
+        vol.Required("slot"): vol.All(
+            vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+        ),
+    }
+)
 
 # One entry of a tray's attribution (docs/05 §5.4). Non-negative for the same reason
 # `amounts` is: a charge of minus five grams has no physical reading.
@@ -108,27 +127,23 @@ ADJUST_SCHEMA = vol.Schema(
     }
 )
 
-MOUNT_SCHEMA = vol.Schema(
-    {
-        vol.Required("spool_id"): cv.string,
-        vol.Required("slot"): vol.All(
-            vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
-        ),
-    }
-)
+MOUNT_SCHEMA = _TRAY.extend({vol.Required("spool_id"): cv.string})
 
 UNMOUNT_SCHEMA = vol.Schema({vol.Required("spool_id"): cv.string})
 
 APPROVE_REVIEW_SCHEMA = vol.Schema(
     {
         vol.Required("review_id"): cv.string,
-        # Keyed by slot index, matching docs/05 §5.4: `amounts` overrides the frozen
+        # Lists of per-tray entries, matching docs/05 §5.4: `amounts` overrides the frozen
         # estimates, `assign` gives one tray to one spool whole, and `charges` states the
-        # split for a tray that fed from more than one. A negative confirmation has no
-        # physical reading, so it is refused at the schema too.
-        vol.Optional("amounts"): {_SLOT_KEY: vol.All(vol.Coerce(float), vol.Range(min=0))},
-        vol.Optional("assign"): {_SLOT_KEY: cv.string},
-        vol.Optional("charges"): {_SLOT_KEY: [_CHARGE]},
+        # split for a tray that fed from more than one. Lists rather than the maps keyed by
+        # slot these used to be, because a tray takes three parts to name. A negative
+        # confirmation has no physical reading, so it is refused at the schema too.
+        vol.Optional("amounts"): [
+            _TRAY.extend({vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0))})
+        ],
+        vol.Optional("assign"): [_TRAY.extend({vol.Required("spool_id"): cv.string})],
+        vol.Optional("charges"): [_TRAY.extend({vol.Required("charges"): [_CHARGE]})],
         vol.Optional("note"): cv.string,
     }
 )
@@ -157,6 +172,39 @@ def _charges(entries: list[dict[str, Any]]) -> tuple[ReviewCharge, ...]:
         ReviewCharge(spool_id=SpoolId(entry["spool_id"]), amount=Grams.of(entry["amount_g"]))
         for entry in entries
     )
+
+
+def _tray(runtime: LedgerRuntime, data: dict[str, Any]) -> TrayRef:
+    """One tray reference, off the service call. `_TRAY` states what an absent half means.
+
+    An absent printer is answered by the runtime rather than by a bare sentinel, for the
+    reason `LedgerRuntime.tray_printer` gives — which is also what keeps an automation
+    written against v1 landing in the tray it has always landed in.
+    """
+    printer = data.get("printer")
+    return TrayRef(
+        printer=PrinterSerial(printer) if printer else runtime.tray_printer,
+        ams=AmsIndex(int(data.get("ams", TRACKED_AMS.value))),
+        slot=SlotIndex(int(data["slot"])),
+    )
+
+
+def _by_tray[T](
+    runtime: LedgerRuntime, entries: list[dict[str, Any]], read: Callable[[dict[str, Any]], T]
+) -> dict[TrayRef, T]:
+    """A per-tray list as a mapping, refusing a tray named twice.
+
+    A YAML list can carry one tray twice where the map these used to be could not, and two
+    answers to one question must not be resolved by keeping the last.
+    """
+    mapped: dict[TrayRef, T] = {}
+    for entry in entries:
+        tray = _tray(runtime, entry)
+        if tray in mapped:
+            msg = f"{tray} is named twice in one call; state it once"
+            raise InvalidValueError(msg)
+        mapped[tray] = read(entry)
+    return mapped
 
 
 def _material(data: dict[str, Any]) -> Material:
@@ -234,7 +282,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         runtime = _runtime(hass)
         async with _translated_errors():
             await runtime.use_cases.mount_spool.execute(
-                SpoolId(call.data["spool_id"]), SlotIndex(call.data["slot"])
+                SpoolId(call.data["spool_id"]), _tray(runtime, dict(call.data))
             )
         await runtime.async_refresh()
 
@@ -254,17 +302,17 @@ def async_register_services(hass: HomeAssistant) -> None:
                 ApproveReviewCommand(
                     review_id=ReviewId(call.data["review_id"]),
                     amounts=(
-                        {SlotIndex(slot): Grams.of(value) for slot, value in amounts.items()}
+                        _by_tray(runtime, amounts, lambda entry: Grams.of(entry["amount_g"]))
                         if amounts is not None
                         else None
                     ),
                     assignments=(
-                        {SlotIndex(slot): SpoolId(spool_id) for slot, spool_id in assign.items()}
+                        _by_tray(runtime, assign, lambda entry: SpoolId(entry["spool_id"]))
                         if assign is not None
                         else None
                     ),
                     charges=(
-                        {SlotIndex(slot): _charges(entries) for slot, entries in charges.items()}
+                        _by_tray(runtime, charges, lambda entry: _charges(entry["charges"]))
                         if charges is not None
                         else None
                     ),

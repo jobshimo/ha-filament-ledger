@@ -34,7 +34,13 @@ from custom_components.filament_ledger.domain.event import (
 from custom_components.filament_ledger.domain.model.pending_review import ReviewCharge
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId, TagUid
+from custom_components.filament_ledger.domain.value.identifiers import (
+    UNIDENTIFIED_PRINTER,
+    AmsIndex,
+    PrinterSerial,
+    SpoolId,
+    TagUid,
+)
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_event import (
@@ -57,7 +63,7 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from ..application.conftest import Ledger
+from ..application.conftest import Ledger, a_tray
 from .conftest import FakeHass, Harness, a_spool, as_hass
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bambu"
@@ -213,7 +219,7 @@ class TestDiscovery:
         """Four Spanish `bandeja` entities, four slots found — nothing matched a name."""
         readings = await BambuLabGateway(as_hass(bambu_hass())).current_trays()
 
-        assert sorted(readings) == [SlotIndex(1), SlotIndex(2), SlotIndex(3), SlotIndex(4)]
+        assert sorted(readings) == [a_tray(1), a_tray(2), a_tray(3), a_tray(4)]
 
     async def test_non_tray_bambu_entities_are_not_trays(self) -> None:
         """The registry rows include the printer's own sensors (`print_weight`,
@@ -255,7 +261,74 @@ class TestDiscovery:
         ).current_trays()
 
         assert len(readings) == 4
-        assert readings[SlotIndex(1)].colour == Colour(0x5E, 0x43, 0xB7, 0xFF)
+        assert readings[a_tray(1)].colour == Colour(0x5E, 0x43, 0xB7, 0xFF)
+
+    async def test_the_serial_is_read_off_the_job_sensors_unique_ids(self) -> None:
+        """The stable identity a tray reference needs, from evidence already frozen here.
+
+        Upstream writes each job sensor's `unique_id` as `<serial>_<translation_key>`, so
+        removing the key that matched leaves the serial. Read from the registry rather than
+        from a `translation_key` nobody has confirmed on a real instance — the rule
+        `FUTURE_PRINT_SENSOR_KEYS` exists to state.
+        """
+        gateway = BambuLabGateway(as_hass(bambu_hass()))
+
+        assert gateway.printer_serial == PrinterSerial("00000000TESTSER")
+        assert gateway.tray_printer == PrinterSerial("00000000TESTSER")
+
+    async def test_every_tray_is_named_after_the_printer_that_holds_it(self) -> None:
+        """The two halves of discovery agreeing: the trays carry the serial the job
+        sensors gave, so a reading and a spool's location name the same tray."""
+        readings = await BambuLabGateway(as_hass(bambu_hass())).current_trays()
+
+        assert {tray.printer for tray in readings} == {PrinterSerial("00000000TESTSER")}
+        assert {tray.ams for tray in readings} == {AmsIndex(1)}
+
+    async def test_trays_fall_back_to_the_unidentified_printer_when_no_job_sensor_resolved(
+        self,
+    ) -> None:
+        """An AMS with no printer sensors beside it: the trays are still this ledger's
+        trays, and the sentinel is exactly what a ledger with no discoverable printer
+        carries in its rows. One tray space, not two."""
+        trays_only = [row for row in REGISTRY_ROWS if row["translation_key"] == "tray"]
+        gateway = BambuLabGateway(as_hass(bambu_hass(rows=trays_only)))
+
+        assert gateway.printer_serial is None
+        assert gateway.tray_printer == UNIDENTIFIED_PRINTER
+        assert {tray.printer for tray in await gateway.current_trays()} == {UNIDENTIFIED_PRINTER}
+
+    async def test_the_first_printer_wins_and_the_rest_are_named_not_only_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """v1 follows one printer, unchanged — and now says which ones it did not.
+
+        The warning was already there; a log is not a place anybody looks, so the ignored
+        serials are kept for the Printer tab to show. **Nothing here follows them:** the
+        job sensors, the device id and the trays all still come from the one machine.
+        """
+        second_printer = [
+            {
+                "entity_id": f"sensor.p1s_00000000otherser_{key}",
+                "platform": "bambu_lab",
+                "unique_id": f"00000000OTHERSR_{key}",
+                "translation_key": key,
+                "device_id": "00000000000000000000000000zzzzprn",
+            }
+            for key in ("print_weight", "print_status")
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            gateway = BambuLabGateway(as_hass(bambu_hass(rows=REGISTRY_ROWS + second_printer)))
+
+        # `min` over the device ids picks the captured machine; the other is passed over.
+        assert gateway.printer_serial == PrinterSerial("00000000TESTSER")
+        assert gateway.ignored_printers == (PrinterSerial("00000000OTHERSR"),)
+        assert "multiple printers" in caplog.text
+
+    async def test_a_single_printer_leaves_nothing_ignored(self) -> None:
+        """The household this integration was written for sees no such statement, because
+        there is nothing to state."""
+        assert BambuLabGateway(as_hass(bambu_hass())).ignored_printers == ()
 
 
 class TestCurrentTrays:
@@ -263,8 +336,8 @@ class TestCurrentTrays:
         """Tag, presence and every hint — the register form pre-fills from these."""
         readings = await BambuLabGateway(as_hass(bambu_hass())).current_trays()
 
-        assert readings[SlotIndex(1)] == TrayReading(
-            slot=SlotIndex(1),
+        assert readings[a_tray(1)] == TrayReading(
+            tray=a_tray(1),
             tag=TRAY_1_TAG,
             empty=False,
             name="Bambu PLA Basic",
@@ -278,15 +351,15 @@ class TestCurrentTrays:
         ever buys into one (docs/12-field-notes.md)."""
         readings = await BambuLabGateway(as_hass(bambu_hass())).current_trays()
 
-        assert readings[SlotIndex(3)].tag is None
-        assert readings[SlotIndex(3)].empty is False
+        assert readings[a_tray(3)].tag is None
+        assert readings[a_tray(3)].empty is False
 
     async def test_the_rrggbbaa_colour_hint_survives_translation(self) -> None:
         """The printer speaks `#RRGGBBAA` — exactly the domain's storage format, so the
         alpha channel crosses the boundary intact."""
         readings = await BambuLabGateway(as_hass(bambu_hass())).current_trays()
 
-        assert readings[SlotIndex(4)].colour == Colour(255, 255, 255, 255)
+        assert readings[a_tray(4)].colour == Colour(255, 255, 255, 255)
 
     @pytest.mark.parametrize("unusable", ["unavailable", "unknown"])
     async def test_an_unusable_tray_sensor_is_omitted_not_reported_empty(
@@ -299,7 +372,7 @@ class TestCurrentTrays:
 
         readings = await BambuLabGateway(as_hass(hass)).current_trays()
 
-        assert sorted(readings) == [SlotIndex(1), SlotIndex(3), SlotIndex(4)]
+        assert sorted(readings) == [a_tray(1), a_tray(3), a_tray(4)]
 
     async def test_a_missing_state_is_omitted(self) -> None:
         hass = bambu_hass()
@@ -307,7 +380,7 @@ class TestCurrentTrays:
 
         readings = await BambuLabGateway(as_hass(hass)).current_trays()
 
-        assert sorted(readings) == [SlotIndex(1), SlotIndex(3), SlotIndex(4)]
+        assert sorted(readings) == [a_tray(1), a_tray(3), a_tray(4)]
 
     async def test_an_emptied_tray_drops_the_leftover_hints(self) -> None:
         """The capture holds no empty tray, so this flips the one observed flag: whatever
@@ -319,7 +392,7 @@ class TestCurrentTrays:
 
         readings = await BambuLabGateway(as_hass(hass)).current_trays()
 
-        assert readings[SlotIndex(1)] == TrayReading(slot=SlotIndex(1), tag=None, empty=True)
+        assert readings[a_tray(1)] == TrayReading(tray=a_tray(1), tag=None, empty=True)
 
     async def test_malformed_attributes_omit_the_slot(self) -> None:
         """No `empty` flag means the reading cannot be trusted in either direction."""
@@ -328,7 +401,7 @@ class TestCurrentTrays:
 
         readings = await BambuLabGateway(as_hass(hass)).current_trays()
 
-        assert sorted(readings) == [SlotIndex(2), SlotIndex(3), SlotIndex(4)]
+        assert sorted(readings) == [a_tray(2), a_tray(3), a_tray(4)]
 
 
 class TestSubscription:
@@ -343,7 +416,7 @@ class TestSubscription:
 
         assert listener.received == [
             TrayReading(
-                slot=SlotIndex(4),
+                tray=a_tray(4),
                 tag=TRAY_4_TAG,
                 empty=False,
                 name="Bambu PLA Matte",
@@ -474,11 +547,11 @@ class TestEndToEnd:
         for reading in (await gateway.current_trays()).values():
             await harness.ledger.use_cases.detect_spool.execute(reading)
 
-        assert await located(harness.ledger, spool_id) == AmsSlot(SlotIndex(1))
+        assert await located(harness.ledger, spool_id) == AmsSlot(a_tray(1))
         unknown = harness.ledger.events.of(UnknownSpoolDetected)
         # Trays 2 and 4 carry unregistered tags; tray 3's unreadable tag asks for nothing.
         assert len(unknown) == 2
-        assert UnknownSpoolDetected(tag_uid=TRAY_4_TAG, slot=SlotIndex(4)) in unknown
+        assert UnknownSpoolDetected(tag_uid=TRAY_4_TAG, tray=a_tray(4)) in unknown
         assert len(await harness.ledger.use_cases.queries.overview()) == 1
 
     async def test_a_tray_change_with_a_known_tag_mounts_the_spool(self, harness: Harness) -> None:
@@ -490,8 +563,8 @@ class TestEndToEnd:
         fire_tray_change(harness.hass, TRAY_2, tray_state(TRAY_2))
         await harness.hass.drain()
 
-        assert await located(harness.ledger, spool_id) == AmsSlot(SlotIndex(2))
-        assert SpoolMounted(spool_id=spool_id, slot=SlotIndex(2)) in harness.ledger.events.published
+        assert await located(harness.ledger, spool_id) == AmsSlot(a_tray(2))
+        assert SpoolMounted(spool_id=spool_id, tray=a_tray(2)) in harness.ledger.events.published
 
     async def test_an_unknown_tag_is_reported_and_creates_nothing(self, harness: Harness) -> None:
         """A guessed opening weight is a fabricated number; the sighting becomes an event
@@ -505,7 +578,7 @@ class TestEndToEnd:
 
         assert await harness.ledger.use_cases.queries.overview() == []
         [event] = harness.ledger.events.of(UnknownSpoolDetected)
-        assert event == UnknownSpoolDetected(tag_uid=TRAY_4_TAG, slot=SlotIndex(4))
+        assert event == UnknownSpoolDetected(tag_uid=TRAY_4_TAG, tray=a_tray(4))
 
 
 class TestJobEventTranslation:
@@ -537,7 +610,7 @@ class TestJobEventTranslation:
     async def test_a_start_translates_the_per_tray_plan_when_upstream_carries_it(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """`AMS 1 Tray n` becomes `SlotIndex(n)` here and nowhere else (docs/05 §5.8).
+        """`AMS 1 Tray n` becomes `a_tray(n)` here and nowhere else (docs/05 §5.8).
         The external-spool figure has no AMS slot to land in, so it is dropped loudly."""
         hass = bambu_hass()
         hass.states.by_entity_id[WEIGHT] = print_sensor_state(
@@ -552,7 +625,7 @@ class TestJobEventTranslation:
 
         [event] = listener.received
         assert isinstance(event, PrintStarted)
-        assert event.plan == {SlotIndex(1): Grams.of("28.4"), SlotIndex(2): Grams.of("6.1")}
+        assert event.plan == {a_tray(1): Grams.of("28.4"), a_tray(2): Grams.of("6.1")}
         assert "external spool" in caplog.text
 
     async def test_malformed_per_tray_figures_are_skipped_not_invented(self) -> None:
@@ -575,7 +648,7 @@ class TestJobEventTranslation:
 
         [event] = listener.received
         assert isinstance(event, PrintStarted)
-        assert event.plan == {SlotIndex(3): Grams.of(5)}
+        assert event.plan == {a_tray(3): Grams.of(5)}
 
     async def test_a_cancellation_captures_the_moments_figures(self) -> None:
         """Layers, progress and the raw state, read at the moment the event fires —
@@ -636,7 +709,7 @@ class TestJobEventTranslation:
         [event] = listener.received
         assert isinstance(event, PrintEnded)
         assert event.outcome is PrintJobState.FINISHED
-        assert event.reported_usage == {SlotIndex(4): Grams.of("296.56")}
+        assert event.reported_usage == {a_tray(4): Grams.of("296.56")}
 
     async def test_a_finish_captures_the_final_per_tray_figures(self) -> None:
         hass = bambu_hass()
@@ -652,8 +725,8 @@ class TestJobEventTranslation:
         assert isinstance(event, PrintEnded)
         assert event.outcome is PrintJobState.FINISHED
         assert event.reported_usage == {
-            SlotIndex(1): Grams.of("38.2"),
-            SlotIndex(2): Grams.of("9.4"),
+            a_tray(1): Grams.of("38.2"),
+            a_tray(2): Grams.of("9.4"),
         }
 
     async def test_unavailable_sensors_become_unknown_never_zero(self) -> None:
@@ -819,7 +892,7 @@ class TestPrintLifecycleEndToEnd:
         """Start to review, end to end: the plan captured at start, scaled by the layers
         reached, frozen to the spool that was mounted — and no balance touched."""
         spool_id = await a_spool(harness.ledger)
-        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         self.wire(harness)
         harness.hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "40.51", {"AMS 1 Tray 1": 209.0})
 
@@ -830,8 +903,8 @@ class TestPrintLifecycleEndToEnd:
 
         [review] = await SqliteReviewRepository(harness.ledger.database).list_pending()
         assert review.reason is ReviewReason.CANCELLED
-        assert review.estimated_usage == {SlotIndex(1): Grams.of(71)}
-        assert review.charges == [(SlotIndex(1), ReviewCharge(spool_id, Grams.of(71)))]
+        assert review.estimated_usage == {a_tray(1): Grams.of(71)}
+        assert review.charges == [(a_tray(1), ReviewCharge(spool_id, Grams.of(71)))]
         [event] = harness.ledger.events.of(ReviewOpened)
         assert isinstance(event, ReviewOpened)
         assert event.job_name == JOB_NAME
@@ -859,7 +932,7 @@ class TestPrintLifecycleEndToEnd:
         populated attributes at that moment, and the ledger deducts from the mounted
         spool — no review, no decision, because the job ran to completion."""
         spool_id = await a_spool(harness.ledger)
-        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         self.wire(harness)
         fire_job_event(harness.hass, "event_print_started")
         await harness.hass.drain()
@@ -870,7 +943,7 @@ class TestPrintLifecycleEndToEnd:
 
         [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
         assert job.state is PrintJobState.FINISHED
-        assert job.reported_usage == {SlotIndex(1): Grams.of("38.2")}
+        assert job.reported_usage == {a_tray(1): Grams.of("38.2")}
         assert job.consumption_recorded is True
         assert await SqliteReviewRepository(harness.ledger.database).list_pending() == []
         assert harness.ledger.events.of(ReviewOpened) == []

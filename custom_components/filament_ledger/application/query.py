@@ -51,13 +51,39 @@ from .errors import SpoolNotFoundError
 
 
 def describe_location(location: Location) -> dict[str, str | int | None]:
+    """Where a spool is, in the terms a wire and a screen can both use.
+
+    A mounted spool now names its tray in full — `printer`, `ams`, `slot` — because that is
+    what identifies the position. `label` is unchanged and stays the single-machine
+    sentence: the ledger still follows one printer, and a caller rendering *AMS slot 3* is
+    telling the reader the truth. `printer` and `ams` are null for the two locations that
+    are not a tray, which is the same shape `slot` already had.
+    """
     match location:
-        case AmsSlot(slot):
-            return {"kind": "AMS_SLOT", "slot": slot.value, "label": f"AMS slot {slot.value}"}
+        case AmsSlot(tray):
+            return {
+                "kind": "AMS_SLOT",
+                "printer": tray.printer.value,
+                "ams": tray.ams.value,
+                "slot": tray.slot.value,
+                "label": f"AMS slot {tray.slot.value}",
+            }
         case ExternalSpool():
-            return {"kind": "EXTERNAL_SPOOL", "slot": None, "label": "External spool"}
+            return {
+                "kind": "EXTERNAL_SPOOL",
+                "printer": None,
+                "ams": None,
+                "slot": None,
+                "label": "External spool",
+            }
         case Storage():
-            return {"kind": "STORAGE", "slot": None, "label": "Storage"}
+            return {
+                "kind": "STORAGE",
+                "printer": None,
+                "ams": None,
+                "slot": None,
+                "label": "Storage",
+            }
 
 
 @dataclass(frozen=True, slots=True)

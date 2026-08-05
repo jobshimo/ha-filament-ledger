@@ -18,7 +18,7 @@ from typing import cast
 import pytest
 from homeassistant.core import State
 
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId
+from custom_components.filament_ledger.domain.value.identifiers import SpoolId
 from custom_components.filament_ledger.domain.value.location import AmsSlot
 from custom_components.filament_ledger.domain.value.print_event import PrintEnded, PrintStarted
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
@@ -34,6 +34,7 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
     SqliteSpoolRepository,
 )
 
+from ..application.conftest import a_tray
 from .conftest import Harness, a_spool, as_hass
 from .test_bambu_gateway import (
     CURRENT_LAYER,
@@ -91,16 +92,24 @@ class TestDormant:
     ) -> None:
         """The harness installs no printer, exactly like a test bench.
 
-        The reply carries **only** the flag: a hull of nulls beside it would invite the
-        panel to render seven dashes for a machine that is not there.
+        The reply carries the flag and `tracking`, and nothing else: a hull of nulls
+        beside it would invite the panel to render seven dashes for a machine that is not
+        there. `tracking` is identity rather than measurement — a ledger with no printer
+        still has a tray space to mount into, and it names nobody rather than guessing.
         """
-        assert await ws.result_dict(PRINTER_STATE) == {"dormant": True}
+        assert await ws.result_dict(PRINTER_STATE) == {
+            "dormant": True,
+            "tracking": {"printer": None, "ams": 1, "ignored": []},
+        }
 
     async def test_ha_bambulab_absent_reports_dormant(self, ws: WsClient, harness: Harness) -> None:
         """An empty registry: the reader exists, discovery found nothing under it."""
         wire(harness, rows=[])
 
-        assert await ws.result_dict(PRINTER_STATE) == {"dormant": True}
+        assert await ws.result_dict(PRINTER_STATE) == {
+            "dormant": True,
+            "tracking": {"printer": None, "ams": 1, "ignored": []},
+        }
 
     async def test_a_printer_without_an_ams_is_not_dormant(
         self, ws: WsClient, harness: Harness
@@ -141,6 +150,7 @@ class TestPopulated:
         """A pin on the shape docs/14 §14.5 specifies, so a field cannot quietly vanish."""
         assert set(await ws.result_dict(PRINTER_STATE)) == {
             "dormant",
+            "tracking",
             "status",
             "progress_pct",
             "current_layer",
@@ -203,6 +213,8 @@ class TestPopulated:
 
         assert [tray["slot"] for tray in trays] == [1, 2, 3, 4]
         assert set(trays[0]) == {
+            "printer",
+            "ams",
             "slot",
             "status",
             "tag_uid",
@@ -219,7 +231,7 @@ class TestPopulated:
         """The outcome is *derived* by re-reading the ledger, exactly as the sync strip's
         is — but nothing detected it into place. Here the spool is already in the slot."""
         spool_id = await a_spool(harness.ledger, tag_uid=TRAY_1_TAG)
-        await harness.ledger.use_cases.mount_spool.execute(spool_id, SlotIndex(1))
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
 
         payload = await ws.result_dict(PRINTER_STATE)
         trays = cast("list[dict[str, object]]", payload["trays"])
@@ -419,6 +431,68 @@ class TestReadingWritesNothing:
         await ws.result_dict(PRINTER_STATE)
 
         assert await _ledger_snapshot(harness) == before
+
+
+class TestTracking:
+    """Which machine this ledger follows, said where somebody will read it.
+
+    v1 warned about a second printer into a log, and a log is not a place anybody looks —
+    so a printer found and not tracked is now a statement on the tab. **It is a statement
+    about today's behaviour, not the beginning of supporting a second machine:** the
+    gateway still resolves one printer, and there is nothing on the card to press.
+    """
+
+    async def test_the_followed_machine_is_named(self, ws: WsClient, harness: Harness) -> None:
+        wire(harness)
+
+        tracking = cast("dict[str, object]", (await ws.result_dict(PRINTER_STATE))["tracking"])
+
+        assert tracking == {"printer": "00000000TESTSER", "ams": 1, "ignored": []}
+
+    async def test_a_second_printer_is_named_as_found_and_not_tracked(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The honest interim of FEATURE-REQUESTS §7: silently is the part worth fixing."""
+        second_printer = [
+            {
+                "entity_id": f"sensor.p1s_00000000otherser_{key}",
+                "platform": "bambu_lab",
+                "unique_id": f"00000000OTHERSR_{key}",
+                "translation_key": key,
+                "device_id": "00000000000000000000000000zzzzprn",
+            }
+            for key in ("print_weight", "print_status")
+        ]
+        wire(harness, rows=REGISTRY_ROWS + second_printer)
+
+        tracking = cast("dict[str, object]", (await ws.result_dict(PRINTER_STATE))["tracking"])
+
+        assert tracking == {
+            "printer": "00000000TESTSER",
+            "ams": 1,
+            "ignored": ["00000000OTHERSR"],
+        }
+
+    async def test_the_trays_still_all_belong_to_the_followed_machine(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The scope boundary, asserted: representable is not supported. A second printer
+        in the registry changes nothing about which trays reach the ledger."""
+        second_printer = [
+            {
+                "entity_id": "sensor.p1s_00000000otherser_print_weight",
+                "platform": "bambu_lab",
+                "unique_id": "00000000OTHERSR_print_weight",
+                "translation_key": "print_weight",
+                "device_id": "00000000000000000000000000zzzzprn",
+            }
+        ]
+        wire(harness, rows=REGISTRY_ROWS + second_printer)
+
+        trays = cast("list[dict[str, object]]", (await ws.result_dict(PRINTER_STATE))["trays"])
+
+        assert {tray["printer"] for tray in trays} == {"00000000TESTSER"}
+        assert [tray["slot"] for tray in trays] == [1, 2, 3, 4]
 
 
 async def _ledger_snapshot(harness: Harness) -> list[tuple[str, int, str]]:

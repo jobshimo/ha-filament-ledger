@@ -56,7 +56,6 @@ from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     MovementId,
     PrintJobId,
-    SlotIndex,
     SpoolId,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
@@ -65,9 +64,9 @@ from custom_components.filament_ledger.domain.value.print_job_state import Print
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
 
-from .conftest import EPOCH, Ledger
+from .conftest import EPOCH, Ledger, a_tray
 
-SLOT_1 = SlotIndex(1)
+TRAY_1 = a_tray(1)
 
 MOVEMENT_COLUMNS = (
     "id, spool_id, type, amount_mg, source, occurred_at, recorded_at, job_id, review_id, "
@@ -94,7 +93,7 @@ async def a_print_charge(ledger: Ledger, spool_id: SpoolId, grams: str = "84.1")
     Driven through the real use case so the movement carries a real `job_id`, which is
     what the inheritance assertions are about.
     """
-    await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+    await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
     await ledger.use_cases.record_print_consumption.execute(
         PrintJob(
             id=PrintJobId("job-1"),
@@ -102,7 +101,7 @@ async def a_print_charge(ledger: Ledger, spool_id: SpoolId, grams: str = "84.1")
             state=PrintJobState.FINISHED,
             started_at=ledger.clock.now(),
             ended_at=ledger.clock.now(),
-            reported_usage={SLOT_1: Grams.of(grams)},
+            reported_usage={TRAY_1: Grams.of(grams)},
         )
     )
     return await newest_of_type(ledger, MovementType.PRINT_CONSUMPTION)
@@ -638,12 +637,12 @@ class TestRestoringTheUnDiscard:
         )
         discard = await newest_of_type(ledger, MovementType.DISCARD)
         await ledger.use_cases.void_movement.execute(VoidMovementCommand(movement_id=discard))
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
 
         await ledger.use_cases.restore_movement.execute(discard)
 
         successor = await a_spool(ledger, label="Its replacement")
-        await ledger.use_cases.mount_spool.execute(successor, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(successor, TRAY_1)
         assert (await ledger.use_cases.queries.detail(spool_id)).summary.state is (
             SpoolState.DISCARDED
         )
@@ -1040,7 +1039,7 @@ class TestConfidenceIgnoresOpenChapters:
         """Criterion 13. A voided estimate no longer bears on the balance, so it must not
         go on bearing on how much that balance can be trusted (docs/14 §14.4.5)."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         review_id = await ledger.use_cases.open_pending_review.execute(
             OpenPendingReviewCommand(
                 job=PrintJob(
@@ -1050,7 +1049,7 @@ class TestConfidenceIgnoresOpenChapters:
                     started_at=ledger.clock.now(),
                 ),
                 reason=ReviewReason.CANCELLED,
-                amounts={SLOT_1: Grams.of(70)},
+                amounts={TRAY_1: Grams.of(70)},
             )
         )
         await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))
@@ -1076,7 +1075,7 @@ class TestConfidenceIgnoresOpenChapters:
         """The other direction, because a filter that only ever hides is a filter nobody
         can trust to stop hiding."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         review_id = await ledger.use_cases.open_pending_review.execute(
             OpenPendingReviewCommand(
                 job=PrintJob(
@@ -1086,7 +1085,7 @@ class TestConfidenceIgnoresOpenChapters:
                     started_at=ledger.clock.now(),
                 ),
                 reason=ReviewReason.CANCELLED,
-                amounts={SLOT_1: Grams.of(70)},
+                amounts={TRAY_1: Grams.of(70)},
             )
         )
         await ledger.use_cases.approve_review.execute(ApproveReviewCommand(review_id=review_id))

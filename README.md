@@ -95,13 +95,17 @@ as unverified and check the History view after your first print before trusting 
 welcome — that is what the issue templates are for.
 
 **One printer per instance — a multi-printer release is on the roadmap.** Today the config flow
-allows a single entry, and the gateway takes the first printer it finds in the registry and logs
-a warning naming the ones it ignored. **Support for more than one printer is planned for a
-future release**, specified in [docs/15 §15.7](docs/15-public-release.md) and scheduled behind
-its own design pass — it is the largest item on the list and has not been built yet. The
-foundation is already right: spools belong to no printer by design, because the tag travels with
-the reel, so what the change adds is a printer dimension to slots and print jobs. Until it
-ships, a ledger is one inventory on one machine.
+allows a single entry, and the gateway takes the first printer it finds in the registry. If it
+finds others, the Printer tab now names them: *this ledger is following X; Y was found and is
+not being tracked*. That used to be a line in a log, which is not a place anybody looks, and
+*silently* was the part worth fixing first.
+
+**Support for more than one printer is still planned for a future release**, specified in
+[docs/15 §15.7](docs/15-public-release.md). The model half has landed: a tray is now named by
+printer, AMS unit and tray rather than by a bare number, so a second machine is *representable*
+([docs/02 §2.3](docs/02-domain-model.md)). Nothing follows one yet — discovering several,
+letting you choose, and showing them in the AMS view is the release this widening was for.
+Until it ships, a ledger is one inventory on one machine.
 
 **No printer at all is a supported mode.** Without `ha-bambulab` the integration installs and
 runs as a manual inventory: register spools, weigh them, discard them, read the history. You

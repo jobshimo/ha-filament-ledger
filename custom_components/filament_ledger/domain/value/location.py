@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .identifiers import SlotIndex
+from .identifiers import TrayRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,12 +21,19 @@ class Storage:
 
 @dataclass(frozen=True, slots=True)
 class AmsSlot:
-    """Mounted in an AMS tray."""
+    """Mounted in an AMS tray, named in full: printer, AMS unit, tray.
 
-    slot: SlotIndex
+    The reference is the whole of what makes this location unique. A bare tray number
+    identified a position only for as long as there was one machine to hold it — see
+    `TrayRef`.
+    """
+
+    tray: TrayRef
 
     def __str__(self) -> str:
-        return f"AMS slot {self.slot}"
+        # Still the single-machine sentence, because the ledger still follows one machine
+        # and this string is what a user reads. The reference behind it is what changed.
+        return f"AMS slot {self.tray.slot}"
 
 
 @dataclass(frozen=True, slots=True)

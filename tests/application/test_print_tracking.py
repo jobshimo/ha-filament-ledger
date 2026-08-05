@@ -20,7 +20,10 @@ from custom_components.filament_ledger.domain.model.pending_review import Review
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex, SpoolId
+from custom_components.filament_ledger.domain.value.identifiers import (
+    SpoolId,
+    TrayRef,
+)
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_event import PrintEnded, PrintStarted
@@ -33,10 +36,10 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from .conftest import EPOCH, Ledger
+from .conftest import EPOCH, Ledger, a_tray
 
-SLOT_1 = SlotIndex(1)
-SLOT_2 = SlotIndex(2)
+TRAY_1 = a_tray(1)
+TRAY_2 = a_tray(2)
 
 
 async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
@@ -51,7 +54,7 @@ async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
     return await ledger.use_cases.register_spool.execute(command)
 
 
-def started(plan: dict[SlotIndex, Grams] | None = None) -> PrintStarted:
+def started(plan: dict[TrayRef, Grams] | None = None) -> PrintStarted:
     return PrintStarted(name="bracket_v3.gcode.3mf", plan=plan)
 
 
@@ -60,7 +63,7 @@ def ended(
     *,
     layer_reached: int | None = 71,
     total_layers: int | None = 209,
-    reported_usage: dict[SlotIndex, Grams] | None = None,
+    reported_usage: dict[TrayRef, Grams] | None = None,
     raw_print_error: int | None = None,
     printer_started_at: datetime | None = None,
     printer_ended_at: datetime | None = None,
@@ -87,7 +90,7 @@ class TestAStartingPrint:
     async def test_a_start_becomes_a_running_job_with_the_plan_preserved(
         self, ledger: Ledger
     ) -> None:
-        plan = {SLOT_1: Grams.of(209), SLOT_2: Grams.of(31)}
+        plan = {TRAY_1: Grams.of(209), TRAY_2: Grams.of(31)}
 
         job_id = await ledger.use_cases.track_print_job.execute(started(plan))
 
@@ -122,8 +125,8 @@ class TestAnInterruptedPrint:
         scales it by the moment's progress, and the resolution freezes to the mounted
         spool. Nothing is deducted — that is the queue's whole point."""
         spool_id = await a_spool(ledger)
-        await ledger.use_cases.mount_spool.execute(spool_id, SLOT_1)
-        await ledger.use_cases.track_print_job.execute(started({SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        await ledger.use_cases.track_print_job.execute(started({TRAY_1: Grams.of(209)}))
         ledger.clock.advance(minutes=42)
 
         job_id = await ledger.use_cases.track_print_job.execute(
@@ -136,7 +139,7 @@ class TestAnInterruptedPrint:
         assert job.ended_at == ledger.clock.now()
         assert job.layer_reached == 71
         assert job.total_layers == 209
-        assert job.reported_usage == {SLOT_1: Grams.of(209)}
+        assert job.reported_usage == {TRAY_1: Grams.of(209)}
         assert job.raw_gcode_state == "pause"
         assert job.raw_print_error == 50348044
 
@@ -144,15 +147,15 @@ class TestAnInterruptedPrint:
         assert review.job_id == job_id
         assert review.reason is ReviewReason.CANCELLED
         # 71 of 209 layers of a 209 g plan: 71 g, frozen to the mounted spool.
-        assert review.estimated_usage == {SLOT_1: Grams.of(71)}
-        assert review.charges == [(SLOT_1, ReviewCharge(spool_id, Grams.of(71)))]
+        assert review.estimated_usage == {TRAY_1: Grams.of(71)}
+        assert review.charges == [(TRAY_1, ReviewCharge(spool_id, Grams.of(71)))]
         assert review.estimator_used is EstimatorKind.LINEAR_PROGRESS
         assert (await ledger.use_cases.queries.detail(spool_id)).summary.balance == Grams.of(1000)
 
     async def test_a_failure_opens_a_review_with_reason_failed(self, ledger: Ledger) -> None:
         """Classification comes only from the event type — never inferred from the error
         code, which is stored verbatim beside it (Q1, closed)."""
-        await ledger.use_cases.track_print_job.execute(started({SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.track_print_job.execute(started({TRAY_1: Grams.of(209)}))
 
         await ledger.use_cases.track_print_job.execute(
             ended(PrintJobState.FAILED, raw_print_error=50348044)
@@ -167,20 +170,20 @@ class TestAnInterruptedPrint:
     async def test_the_endings_figures_override_the_plan_when_present(self, ledger: Ledger) -> None:
         """The weight sensor can re-report at the ending; the moment's figures win over
         the start's capture."""
-        await ledger.use_cases.track_print_job.execute(started({SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.track_print_job.execute(started({TRAY_1: Grams.of(209)}))
 
         await ledger.use_cases.track_print_job.execute(
-            ended(reported_usage={SLOT_1: Grams.of(209), SLOT_2: Grams.of(31)})
+            ended(reported_usage={TRAY_1: Grams.of(209), TRAY_2: Grams.of(31)})
         )
 
         [job] = await stored_jobs(ledger)
-        assert job.reported_usage == {SLOT_1: Grams.of(209), SLOT_2: Grams.of(31)}
+        assert job.reported_usage == {TRAY_1: Grams.of(209), TRAY_2: Grams.of(31)}
 
     async def test_a_terminal_event_with_no_prior_row_creates_it_then(self, ledger: Ledger) -> None:
         """The integration restarted mid-print, so the start was never seen. The review
         must never be lost to a restart — the row is created at the ending."""
         await ledger.use_cases.track_print_job.execute(
-            ended(PrintJobState.FAILED, reported_usage={SLOT_1: Grams.of(209)})
+            ended(PrintJobState.FAILED, reported_usage={TRAY_1: Grams.of(209)})
         )
 
         [job] = await stored_jobs(ledger)
@@ -298,20 +301,20 @@ class TestAFinishedPrint:
         pins the handoff."""
         first = await a_spool(ledger, label="first")
         second = await a_spool(ledger, label="second")
-        await ledger.use_cases.mount_spool.execute(first, SLOT_1)
-        await ledger.use_cases.mount_spool.execute(second, SLOT_2)
+        await ledger.use_cases.mount_spool.execute(first, TRAY_1)
+        await ledger.use_cases.mount_spool.execute(second, TRAY_2)
         await ledger.use_cases.track_print_job.execute(started())
 
         await ledger.use_cases.track_print_job.execute(
             ended(
                 PrintJobState.FINISHED,
-                reported_usage={SLOT_1: Grams.of("38.2"), SLOT_2: Grams.of("9.4")},
+                reported_usage={TRAY_1: Grams.of("38.2"), TRAY_2: Grams.of("9.4")},
             )
         )
 
         [job] = await stored_jobs(ledger)
         assert job.state is PrintJobState.FINISHED
-        assert job.reported_usage == {SLOT_1: Grams.of("38.2"), SLOT_2: Grams.of("9.4")}
+        assert job.reported_usage == {TRAY_1: Grams.of("38.2"), TRAY_2: Grams.of("9.4")}
         assert job.consumption_recorded is True
         assert await SqliteReviewRepository(ledger.database).list_pending() == []
         assert ledger.events.of(ReviewOpened) == []
@@ -346,7 +349,7 @@ class TestDuplicateEndings:
         the first opens the review, and the second finds it already open — a warning in
         the log, never a crash, and never a second decision item."""
         ledger = interleaved_ledger
-        await ledger.use_cases.track_print_job.execute(started({SLOT_1: Grams.of(209)}))
+        await ledger.use_cases.track_print_job.execute(started({TRAY_1: Grams.of(209)}))
         event = ended(PrintJobState.CANCELLED)
 
         with caplog.at_level(logging.WARNING):

@@ -43,19 +43,22 @@ initial location (defaults to storage).
 
 ## UC-02 · MountSpool
 
-Associates a spool with an AMS slot.
+Associates a spool with an AMS tray.
 
 **Trigger** — automatic, on RFID detection from `PrinterGateway`; or manual, for spools
 without a tag.
 
-**Input** — `SpoolId` (manual) or `TagUid` + slot index (automatic).
+**Input** — `SpoolId` (manual) or `TagUid` (automatic), plus the `TrayRef` the spool goes
+into — printer, AMS unit and tray ([02 §2.3](02-domain-model.md)). A caller that names only
+the tray number means the tray space this ledger follows, which is resolved at the adapter
+([05 §5.4](05-ha-integration.md)) and never guessed inside the use case.
 
 **Preconditions**
 - Spool is not `DISCARDED`.
-- Target slot is free, or holds a spool that is implicitly displaced.
+- Target tray is free, or holds a spool that is implicitly displaced.
 - **For the automatic trigger only:** the `auto_mount_on_rfid` option is enabled. When it is
   disabled, RFID detection raises `SpoolDetected` — informational, no location change — and
-  the AMS view offers a manual **[ Mount ]** button for that slot. The setting exists because
+  the AMS view offers a manual **[ Mount ]** button for that tray. The setting exists because
   some users keep spools registered to a shelf and load them briefly; silently rewriting
   their locations is not a service.
 
@@ -64,14 +67,15 @@ without a tag.
 2. **If tag resolution finds nothing: raise `UnknownSpoolDetected` and stop.** No spool is
    created.
 3. **If tag resolution finds more than one non-discarded spool: raise `AmbiguousTagDetected`
-   with the candidates and stop.** The slot stays unmounted.
-4. If the slot holds a different spool, unmount it to storage (UC-03).
-5. Set location to `AmsSlot(n)`.
+   with the candidates and stop.** The tray stays unmounted.
+4. If the tray holds a different spool, unmount it to storage (UC-03).
+5. Set location to `AmsSlot(tray)`.
 6. Raise `SpoolMounted`.
 
-**Postconditions** — spool is in the slot; at most one spool per slot.
+**Postconditions** — spool is in the tray; at most one spool per tray, counted across all
+three parts of the reference: another printer's tray 1 is a different tray.
 
-**Failures** — spool discarded; slot index out of range; tag ambiguous.
+**Failures** — spool discarded; tray index out of range; tag ambiguous.
 
 > Steps 2 and 3 are the important ones, and they refuse in opposite directions for the same
 > reason. Auto-creating a spool means inventing an opening weight. Auto-picking between two
@@ -104,7 +108,7 @@ system.**
 
 **Trigger** — `PrinterGateway` reports a job reaching `FINISHED`.
 
-**Input** — `PrintJobId`, per-slot reported usage.
+**Input** — `PrintJobId`, per-tray reported usage keyed by `TrayRef`.
 
 **Preconditions**
 - Job is `FINISHED`, not cancelled or failed.
@@ -116,20 +120,20 @@ system.**
 2. **If no per-tray usage is available at all, open a review (UC-05) with reason
    `UNMAPPED_USAGE`, a zero estimate and an explicit flag, mark the job recorded, and stop.**
    Deduct nothing.
-3. For each slot with non-zero usage:
-   a. Resolve the mounted spool. If none, collect the slot as unresolved and continue.
+3. For each tray with non-zero usage:
+   a. Resolve the mounted spool. If none, collect the tray as unresolved and continue.
    b. Append `PRINT_CONSUMPTION` with source `AUTOMATIC`.
 4. Re-evaluate confidence for affected spools.
 5. Run anomaly detection.
 6. Raise `MovementRecorded` per movement; `SpoolDepleted` where balance crossed zero.
-7. If any slots were unresolved, open a review (UC-05) with reason `UNMAPPED_USAGE` covering
-   only those slots, carrying their amounts and a null resolution.
+7. If any trays were unresolved, open a review (UC-05) with reason `UNMAPPED_USAGE` covering
+   only those trays, carrying their amounts and a null resolution.
 8. Mark the job recorded.
 
-**Postconditions** — balances reduced for every resolved slot; every unresolved or unavailable
+**Postconditions** — balances reduced for every resolved tray; every unresolved or unavailable
 amount is sitting in a review; job marked recorded exactly once.
 
-**Failures** — no mounted spool for a consuming slot, and no per-tray figure at all. Both
+**Failures** — no mounted spool for a consuming tray, and no per-tray figure at all. Both
 degrade to a review; neither throws, and neither is treated as zero.
 
 **Why step 2 exists.** The per-tray figure only materialises once the sliced `.3mf` has been
@@ -172,26 +176,26 @@ approval reflex is worse than no approval step at all.
 
 Creates an approval item for anything the system cannot settle on its own.
 
-**Trigger** — job reaches `CANCELLED` or `FAILED`; or UC-04 found unresolved slots or no
+**Trigger** — job reaches `CANCELLED` or `FAILED`; or UC-04 found unresolved trays or no
 usable per-tray figure.
 
 **Input** — `PrintJobId`, the originating event type, raw `gcode_state`, raw `print_error`,
-and — when called from UC-04 — the slot amounts already computed.
+and — when called from UC-04 — the per-tray amounts already computed.
 
 **Flow**
 1. Classify the reason:
    - `CANCELLED` / `FAILED` — taken directly from the `ha-bambulab` event type
      (`event_print_canceled` / `event_print_failed`). See [Q1](01-vision.md): this is no
      longer inferred from `print_error`.
-   - `UNMAPPED_USAGE` — the job finished, but a slot's consumption cannot be attributed.
+   - `UNMAPPED_USAGE` — the job finished, but a tray's consumption cannot be attributed.
    - `UNCLASSIFIED` — the job ended without a recognisable event. A legitimate value, not an
      error state.
 
    `raw_gcode_state` and `raw_print_error` are stored verbatim regardless, so a
    reclassification stays possible if upstream turns out to be wrong.
-2. Ask the `ConsumptionEstimator` for per-slot grams. *(Skipped when UC-04 supplied amounts.)*
-3. Resolve each involved slot to its currently mounted spool, and **freeze that attribution
-   on the review** as a single charge for the whole of that slot's amount. A slot with no
+2. Ask the `ConsumptionEstimator` for per-tray grams. *(Skipped when UC-04 supplied amounts.)*
+3. Resolve each involved tray to its currently mounted spool, and **freeze that attribution
+   on the review** as a single charge for the whole of that tray's amount. A tray with no
    mounted spool is frozen with no charge at all — that is a fact worth recording, not an
    error.
 4. Create `PendingReview` in `PENDING`, recording which estimator ran.
@@ -219,8 +223,10 @@ Converts a review into ledger entries.
 
 **Trigger** — user approves in the panel, or service call.
 
-**Input** — `ReviewId`, optional per-slot corrected amounts, optional per-slot spool
-assignments, optional per-slot charge lists, optional note.
+**Input** — `ReviewId`, optional per-tray corrected amounts, optional per-tray spool
+assignments, optional per-tray charge lists, optional note. Each is keyed by the whole
+`TrayRef` the review froze, because a review sits in the queue and a bare tray number would
+come back ambiguous ([02 §2.3](02-domain-model.md)).
 
 `assignments` names one spool and gives it a tray whole — the answer to the queue's commonest
 question, *which spool was in this tray*, which needs no arithmetic from the caller. `charges`
@@ -398,12 +404,12 @@ overhead with no payoff.
 | Trigger | Use case | Automatic |
 |---|---|---|
 | Panel: "New spool" | UC-01 | — |
-| RFID appears in slot, auto-mount on | UC-02 | ✓ |
-| RFID appears in slot, auto-mount off | `SpoolDetected` only | ✓ (changes nothing) |
+| RFID appears in tray, auto-mount on | UC-02 | ✓ |
+| RFID appears in tray, auto-mount off | `SpoolDetected` only | ✓ (changes nothing) |
 | RFID resolves to several spools | `AmbiguousTagDetected` | ✓ (asks, changes nothing) |
-| RFID leaves slot | UC-03 | ✓ |
+| RFID leaves tray | UC-03 | ✓ |
 | `event_print_finished` | UC-04 | ✓ |
-| `event_print_finished`, slot unresolved or figure missing | UC-04 → UC-05 | ✓ (opens a question) |
+| `event_print_finished`, tray unresolved or figure missing | UC-04 → UC-05 | ✓ (opens a question) |
 | `event_print_canceled` / `event_print_failed` | UC-05 | ✓ (opens a question, changes nothing) |
 | Panel: approve | UC-06 | — |
 | Panel: dismiss | UC-07 | — |

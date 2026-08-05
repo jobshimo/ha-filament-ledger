@@ -14,10 +14,9 @@ import pytest
 from custom_components.filament_ledger.domain.error import InvalidValueError
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SlotIndex
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 
-from .conftest import A_JOB_ID, EPOCH, a_cancelled_job, at
+from .conftest import A_JOB_ID, EPOCH, a_cancelled_job, a_tray, at
 
 
 class TestValidation:
@@ -38,13 +37,13 @@ class TestValidation:
 
     def test_reported_usage_cannot_be_negative(self) -> None:
         with pytest.raises(InvalidValueError):
-            a_cancelled_job(reported_usage={SlotIndex(1): Grams.of(-5)})
+            a_cancelled_job(reported_usage={a_tray(1): Grams.of(-5)})
 
     def test_a_zero_usage_tray_is_a_legitimate_report(self) -> None:
         """The printer reports 0 g for a tray the job loaded but barely touched. Refusing
         it would drop the tray from the record entirely, which is a different claim."""
-        job = a_cancelled_job(reported_usage={SlotIndex(1): Grams.zero()})
-        assert job.reported_usage == {SlotIndex(1): Grams.zero()}
+        job = a_cancelled_job(reported_usage={a_tray(1): Grams.zero()})
+        assert job.reported_usage == {a_tray(1): Grams.zero()}
 
     def test_a_missing_usage_report_is_not_an_empty_one(self) -> None:
         """`None` means the figure never materialised; `{}` would mean the printer named
