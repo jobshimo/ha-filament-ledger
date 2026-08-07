@@ -178,6 +178,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             auto_register=bool(
                 settings.get(CONF_AUTO_REGISTER_ON_DETECT, DEFAULT_AUTO_REGISTER_ON_DETECT)
             ),
+            # The instance's language, for the colour word in auto-generated labels.
+            # Read here — the application layer never sees `hass` — and baked in at
+            # registration time, because a label is stored data, not a translated view.
+            language=hass.config.language,
         ),
         edit_spool_details=EditSpoolDetails(spools, database),
         # What the gateway's job events drive: starts become RUNNING rows, interrupted
