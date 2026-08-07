@@ -68,6 +68,23 @@ class Material:
     def other(cls, name: str) -> Self:
         return cls(MaterialKind.OTHER, name)
 
+    @classmethod
+    def from_printer(cls, text: str) -> Self:
+        """A material from the printer's own string, total over every non-blank hint.
+
+        The tray sensors report material as free text (docs/05-ha-integration.md §5.8):
+        `"PLA"` names a kind this enum knows, but `"PLA-CF"` and its cousins do not, and
+        refusing them would throw away what the printer actually said. So a recognised
+        name becomes its kind, and anything else registers truthfully as `OTHER` carrying
+        the printer's exact words — never a nearest-match guess, because `"PLA-CF"` filed
+        under `PLA` is a fabricated fact with a plausible face.
+        """
+        cleaned = text.strip()
+        try:
+            return cls(MaterialKind(cleaned.upper()))
+        except ValueError:
+            return cls(MaterialKind.OTHER, cleaned)
+
     @property
     def density_g_cm3(self) -> Decimal:
         return _NOMINAL_DENSITY[self.kind]

@@ -47,6 +47,9 @@ const TABS = [
   // Between AMS and Trash: a glance at the machine sits with the daily surfaces, and the
   // correction ones sit behind them (docs/14 §14.4.4, §14.5).
   "printer",
+  // Beside Trash, because both are the past tense of the inventory: Finished holds the
+  // spools whose filament is gone, Trash holds the ones that were never really here.
+  "finished",
   "trash",
   // Last. Configuration is the least-frequent surface (docs/14 §14.6.4).
   "settings",
@@ -406,6 +409,11 @@ class FilamentLedgerPanel extends HTMLElement {
     // refresh — a glance has a moment, and the moment is the user's.
     this._printer = null;
     this._printerLoading = false;
+    // The Finished tab's list, fetched on the same terms as the printer glance: once per
+    // opening, no timer, never on the general refresh. Spools whose filament is gone
+    // change only when the user changes them, so the moment of the read is the user's.
+    this._finished = null;
+    this._finishedLoading = false;
     this._settings = null;
     this._settingsLoading = false;
     this._settingsSaved = false;
@@ -791,6 +799,11 @@ class FilamentLedgerPanel extends HTMLElement {
       // one view has to be visible in the other immediately, and the Trash is
       // human-sized by construction.
       this._trash = trash;
+      // The Finished list follows the Trash's policy once it exists at all — an action
+      // taken from that tab must be visible there immediately. Null means the tab was
+      // never opened, and the refresh keeps it that way rather than paying for a view
+      // nobody asked for.
+      if (this._finished) this._finished = await this.call("spools/finished");
       if (this._detail) this._detail = await this.call("spools/get", { spool_id: this._detail.id });
     } catch (error) {
       this._error = error.message || String(error);
@@ -826,6 +839,7 @@ class FilamentLedgerPanel extends HTMLElement {
         // Exactly one command per opening, and none at all for the other tabs: neither
         // surface rides the general refresh, and no timer exists (docs/14 §14.5).
         if (id === "printer") this._printerLoading = true;
+        if (id === "finished") this._finishedLoading = true;
         if (id === "stats") this._statsLoading = true;
         if (id === "settings") {
           this._settingsLoading = true;
@@ -834,6 +848,7 @@ class FilamentLedgerPanel extends HTMLElement {
         }
         this.render();
         if (id === "printer") this._loadPrinter();
+        if (id === "finished") this._loadFinished();
         if (id === "stats") this._loadStats();
         if (id === "settings") this._loadSettings();
         break;
@@ -1090,6 +1105,23 @@ class FilamentLedgerPanel extends HTMLElement {
       this._error = error.message || String(error);
     }
     this._statsLoading = false;
+    this.render();
+  }
+
+  /**
+   * The Finished list, read on opening the tab and nowhere else — the printer glance's
+   * terms, for the printer glance's reason: these spools change only when the user
+   * changes one, so the read belongs to the moment the tab was opened. Reading writes
+   * nothing, so this deliberately does not go through `guarded`.
+   */
+  async _loadFinished() {
+    try {
+      this._finished = await this.call("spools/finished");
+      this._error = null;
+    } catch (error) {
+      this._error = error.message || String(error);
+    }
+    this._finishedLoading = false;
     this.render();
   }
 
@@ -1715,6 +1747,7 @@ class FilamentLedgerPanel extends HTMLElement {
     if (this._tab === "review") return this.reviewView();
     if (this._tab === "ams") return this.amsView();
     if (this._tab === "printer") return this.printerView();
+    if (this._tab === "finished") return this.finishedView();
     if (this._tab === "trash") return this.trashView();
     if (this._tab === "settings") return this.settingsView();
     return this.inventoryView();
@@ -1757,6 +1790,12 @@ class FilamentLedgerPanel extends HTMLElement {
     const stat = (key, value, alert) =>
       `<div class="stat"><div class="k">${key}</div><div class="v ${alert ? "alert" : ""}">${value}</div></div>`;
 
+    // The Inventory shows what can still print. A depleted spool is a real object — the
+    // sensors keep counting it, the AMS view keeps drawing it in its tray — but it is not
+    // stock to choose from, so it lives in the Finished tab instead of sinking to the
+    // bottom of this grid for ever.
+    const holding = this._spools.filter((s) => s.state !== "DEPLETED");
+
     // The two buttons lead the view rather than following the summary card, which is where
     // docs/06 §6.2 has always drawn them and where a pinned row has to be anyway. The
     // summary is a figure to read, not a control to reach: it scrolls with the spools.
@@ -1772,7 +1811,49 @@ class FilamentLedgerPanel extends HTMLElement {
           ${stat(t("inv.needsWeighing"), esc(this._stock?.needs_weighing ?? 0), this._stock?.needs_weighing)}
         </div>
         ${this.syncStrip()}
-        <div class="grid">${this._spools.map((s) => this.spoolCard(s)).join("")}</div>
+        ${
+          holding.length
+            ? `<div class="grid">${holding.map((s) => this.spoolCard(s)).join("")}</div>`
+            : `<div class="empty"><p>${t("inv.allFinished")}</p></div>`
+        }
+      </section>`,
+    );
+  }
+
+  // -- finished ----------------------------------------------------------------------
+
+  /**
+   * The past tense of the Inventory: spools whose filament is gone — run out, or thrown
+   * away (docs/14 §14.4.4's terms, applied one tab over). Rendered with the same cards
+   * as the Inventory, so opening a spool's history and its actions work here exactly as
+   * they do there — this is a different question over the same objects, not a different
+   * kind of object.
+   */
+  finishedView() {
+    const t = this._t;
+    const spools = this._finished;
+    if (!spools) {
+      // Nothing yet: the first read is in flight, or it failed and the error bar above
+      // has already said what happened.
+      return this.shell(
+        "",
+        this._finishedLoading ? `<div class="empty">${t("app.loading")}</div>` : "",
+      );
+    }
+    if (!spools.length) {
+      return this.shell(
+        "",
+        `<div class="empty teach">
+          <h2>${t("fin.emptyTitle")}</h2>
+          <p>${t("fin.emptyBody")}</p>
+        </div>`,
+      );
+    }
+    return this.shell(
+      "",
+      `<section class="stack">
+        <p class="muted small">${t("fin.body")}</p>
+        <div class="grid">${spools.map((s) => this.spoolCard(s)).join("")}</div>
       </section>`,
     );
   }
@@ -4078,13 +4159,18 @@ class FilamentLedgerPanel extends HTMLElement {
    * reason `_movementSubject` is: a refresh landing underneath must change what the modal
    * says, and a modal whose subject went away has to admit it rather than quote a figure
    * that is no longer true. The overview is asked first because it is what an inventory
-   * card and an AMS tray were drawn from; the loaded detail answers for the one spool the
-   * overview omits — a deleted one, reached from the Trash.
+   * card and an AMS tray were drawn from; the Finished list answers for a discarded
+   * spool's card, which the overview omits; the loaded detail answers for the one spool
+   * neither carries — a deleted one, reached from the Trash.
    */
   _dialogSpool() {
     const id = this._dialog?.spool_id;
     if (id === undefined) return null;
-    return this._spools.find((s) => s.id === id) ?? (this._detail?.id === id ? this._detail : null);
+    return (
+      this._spools.find((s) => s.id === id) ??
+      (this._finished ?? []).find((s) => s.id === id) ??
+      (this._detail?.id === id ? this._detail : null)
+    );
   }
 
   /**

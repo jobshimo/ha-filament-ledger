@@ -705,8 +705,9 @@ class TestEndToEnd:
         assert SpoolMounted(spool_id=spool_id, tray=a_tray(2)) in harness.ledger.events.published
 
     async def test_an_unknown_tag_is_reported_and_creates_nothing(self, harness: Harness) -> None:
-        """A guessed opening weight is a fabricated number; the sighting becomes an event
-        for the review queue, never a spool."""
+        """A guessed opening weight is a fabricated number; with auto-registration off —
+        this harness's wiring — the sighting becomes an event for the review queue,
+        never a spool."""
         plant_registry(harness.hass, REGISTRY_ROWS)
         gateway = BambuLabGateway(as_hass(harness.hass))
         gateway.subscribe(harness.ledger.use_cases.detect_spool.execute)

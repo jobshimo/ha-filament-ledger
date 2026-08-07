@@ -23,10 +23,12 @@ from homeassistant.helpers import config_validation as cv
 from .const import (
     CONF_ANOMALY_THRESHOLD,
     CONF_AUTO_MOUNT_ON_RFID,
+    CONF_AUTO_REGISTER_ON_DETECT,
     CONF_DEFAULT_CORE_WEIGHT,
     CONF_DEFAULT_OPENING_WEIGHT,
     DEFAULT_ANOMALY_THRESHOLD_PCT,
     DEFAULT_AUTO_MOUNT_ON_RFID,
+    DEFAULT_AUTO_REGISTER_ON_DETECT,
     DEFAULT_CORE_WEIGHT_G,
     DEFAULT_OPENING_WEIGHT_G,
     DOMAIN,
@@ -54,6 +56,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_AUTO_MOUNT_ON_RFID,
                 default=defaults.get(CONF_AUTO_MOUNT_ON_RFID, DEFAULT_AUTO_MOUNT_ON_RFID),
+            ): cv.boolean,
+            vol.Required(
+                CONF_AUTO_REGISTER_ON_DETECT,
+                default=defaults.get(CONF_AUTO_REGISTER_ON_DETECT, DEFAULT_AUTO_REGISTER_ON_DETECT),
             ): cv.boolean,
         }
     )

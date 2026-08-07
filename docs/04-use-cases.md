@@ -66,8 +66,9 @@ machines it could have meant rather than picking one.
 
 **Flow**
 1. Resolve the spool — by id, or by tag lookup.
-2. **If tag resolution finds nothing: raise `UnknownSpoolDetected` and stop.** No spool is
-   created.
+2. **If tag resolution finds nothing: register the spool with the configured defaults when
+   `auto_register_on_detect` is on and the reading names material and colour; otherwise
+   raise `UnknownSpoolDetected` and stop.** Nothing is ever guessed into existence.
 3. **If tag resolution finds more than one non-discarded spool: raise `AmbiguousTagDetected`
    with the candidates and stop.** The tray stays unmounted.
 4. If the tray holds a different spool, unmount it to storage (UC-03).
@@ -80,7 +81,9 @@ three parts of the reference: another printer's tray 1 is a different tray.
 **Failures** — spool discarded; tray index out of range; tag ambiguous.
 
 > Steps 2 and 3 are the important ones, and they refuse in opposite directions for the same
-> reason. Auto-creating a spool means inventing an opening weight. Auto-picking between two
+> reason. Auto-creating a spool from a bare tag means inventing an identity — a full Bambu
+> reading with `auto_register_on_detect` on invents nothing, which is why it alone may
+> register. Auto-picking between two
 > spools that share a tag means guessing which physical object is in the machine — and if the
 > guess is wrong, every print from now on drains a spool sitting on a shelf while the one
 > actually loaded runs out with no warning.

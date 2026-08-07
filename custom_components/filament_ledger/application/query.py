@@ -732,6 +732,33 @@ class Queries:
 
         return TrashView(spools=summaries, movements=trashed)
 
+    async def finished(self) -> list[SpoolSummary]:
+        """The Finished view: spools whose filament is gone — run out, or thrown away.
+
+        A view over the same summaries the overview computes, never a second read model:
+        DEPLETED and DISCARDED are the two ends a spool's filament can meet, and both
+        belong here so the reel in the bin and the reel on the shelf waiting for one are
+        found in one place. Deleted spools are absent for the Trash's reason — a
+        retracted registration was never really here — and everything still holding
+        filament is absent because this list is the past, not the shelf.
+
+        Newest ending first, the way the Trash presents: the spool that just ran out is
+        the one being looked for, and its last movement is the moment it ended.
+        """
+        summaries = await self.overview(include_discarded=True)
+        ended = [
+            summary
+            for summary in summaries
+            if summary.state in (SpoolState.DEPLETED, SpoolState.DISCARDED)
+        ]
+        return sorted(
+            ended,
+            # Every spool here has at least its opening entry, but the fallback keeps the
+            # key total rather than trusting that across every path a row can take.
+            key=lambda s: s.last_movement_at or s.spool.registered_at,
+            reverse=True,
+        )
+
     async def statistics(
         self, period: StatisticsPeriod = StatisticsPeriod.LAST_30_DAYS
     ) -> StatisticsView:

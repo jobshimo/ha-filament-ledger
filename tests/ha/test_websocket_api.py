@@ -55,6 +55,7 @@ from .conftest import FakeHass, Harness, a_spool, as_hass
 from .test_bambu_gateway import (
     REGISTRY_ROWS,
     TRAY_1_TAG,
+    TRAY_2,
     TRAY_ATTRIBUTES,
     plant_registry,
     second_printer_rows,
@@ -82,6 +83,7 @@ def _tray_of(line: dict[str, object]) -> dict[str, object]:
 
 
 LIST = "filament_ledger/spools/list"
+FINISHED = "filament_ledger/spools/finished"
 GET = "filament_ledger/spools/get"
 STOCK = "filament_ledger/stock"
 CREATE = "filament_ledger/spools/create"
@@ -386,6 +388,40 @@ class TestList:
         }
         assert payload["movement_count"] == 1
         assert payload["has_anomaly"] is False
+
+
+class TestFinished:
+    """The Finished tab's read: the same summary shape as the list, over the spools whose
+    filament is gone — run out or thrown away — and nothing still holding any."""
+
+    async def test_an_untouched_ledger_has_finished_nothing(self, ws: WsClient) -> None:
+        assert await ws.result_list(FINISHED) == []
+
+    async def test_depleted_and_discarded_spools_appear_and_stock_does_not(
+        self, ws: WsClient
+    ) -> None:
+        await a_created_spool(ws, label="still printing")
+        empty = await a_created_spool(ws, label="ran out")
+        await ws.result_dict(ADJUST, spool_id=empty, amount_g=-1000, reason="printed it all")
+        binned = await a_created_spool(ws, label="thrown away")
+        await ws.result_dict(DISCARD, spool_id=binned, mode="whole_spool", reason="water damage")
+
+        payload = await ws.result_list(FINISHED)
+
+        assert {(entry["id"], entry["state"]) for entry in payload} == {
+            (empty, "DEPLETED"),
+            (binned, "DISCARDED"),
+        }
+        # The same serialiser as the list, so the tab renders the same cards.
+        by_id = {entry["id"]: entry for entry in payload}
+        assert by_id[empty]["name"] == "ran out"
+        assert by_id[empty]["balance_g"] == 0
+        # The Inventory read is deliberately unchanged: a depleted spool is still a real
+        # object — the AMS view and the sensors keep resolving it — and the panel's
+        # Inventory grid is what excludes it, not the query.
+        listed = {entry["id"] for entry in await ws.result_list(LIST)}
+        assert empty in listed
+        assert binned not in listed
 
 
 class TestDetail:
@@ -1480,11 +1516,12 @@ class TestTraysSync:
     """The startup reconciliation pass on demand: the captured gateway feeding the real
     ledger, with the per-slot outcome the panel's strip renders."""
 
-    def wire(self, harness: Harness, auto_mount: bool = True) -> None:
+    def wire(self, harness: Harness, auto_mount: bool = True, auto_register: bool = False) -> None:
         """Install the reference instance and the pass, as the composition root wires it.
 
-        The harness ledger wires `DetectSpool` with the production default; the
-        auto-mount-off scenario builds its own with the flag flipped, the way the
+        The harness ledger wires `DetectSpool` with auto-registration off — the captured
+        trays carry full hints, and most scenarios exist to observe the reporting
+        branches. A scenario that deviates on either flag builds its own, the way the
         application suite does — the fixture stays one honest wiring, not a matrix.
         """
         plant_registry(harness.hass, REGISTRY_ROWS)
@@ -1492,12 +1529,16 @@ class TestTraysSync:
             harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
         detect_spool = (
             harness.ledger.use_cases.detect_spool
-            if auto_mount
+            if auto_mount and not auto_register
             else DetectSpool(
                 SqliteSpoolRepository(harness.ledger.database),
                 harness.ledger.events,
                 harness.ledger.database,
-                auto_mount=False,
+                auto_mount=auto_mount,
+                register_spool=harness.ledger.use_cases.register_spool,
+                default_opening_weight=Grams.of(1000),
+                default_core_weight=Grams.of(250),
+                auto_register=auto_register,
             )
         )
         harness.runtime.sync_trays = TraySync(
@@ -1556,6 +1597,36 @@ class TestTraysSync:
         ).summary.spool.location
         assert location == AmsSlot(a_tray(1))
         assert harness.coordinator.refresh_count == refreshes + 1
+
+    async def test_a_move_while_off_heals_before_the_new_tray_registers(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The ledger has the spool in tray 2; reality has its tag in tray 1 and tray 2
+        empty. Empty trays run first, so the unmount lands before tray 1 resolves —
+        processed the other way round, auto-registration would read the move as a second
+        reel of the batch and mint a phantom twin."""
+        spool_id = await a_spool(harness.ledger, tag_uid=TRAY_1_TAG)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(2))
+        self.wire(harness, auto_register=True)
+        harness.hass.states.by_entity_id[TRAY_2] = tray_state(
+            TRAY_2, {**TRAY_ATTRIBUTES[TRAY_2], "empty": True}
+        )
+
+        result = await ws.result_dict(TRAYS_SYNC)
+
+        slots = cast("list[dict[str, object]]", result["slots"])
+        assert [(entry["slot"], entry["status"]) for entry in slots][:2] == [
+            (1, "mounted"),
+            (2, "empty"),
+        ]
+        twins = [
+            s.spool.id
+            for s in await harness.ledger.use_cases.queries.overview()
+            if s.spool.tag_uid == TRAY_1_TAG
+        ]
+        assert twins == [spool_id]
+        location = (await harness.ledger.use_cases.queries.detail(spool_id)).summary.spool.location
+        assert location == AmsSlot(a_tray(1))
 
     async def test_an_unknown_tag_travels_with_the_register_form_hints(
         self, ws: WsClient, harness: Harness

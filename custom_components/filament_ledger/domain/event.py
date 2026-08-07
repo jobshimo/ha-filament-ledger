@@ -165,11 +165,15 @@ class SpoolDetected(DomainEvent):
 
 @dataclass(frozen=True, slots=True)
 class UnknownSpoolDetected(DomainEvent):
-    """An unrecognised RFID appeared in a tray.
+    """An unrecognised RFID appeared in a tray, and nothing could be done with it.
 
-    The system **does not auto-create a spool**. A guessed opening weight is a fabricated
-    number, and a fabricated number in a ledger is worse than a missing one — it looks
-    authoritative.
+    Raised only when auto-registration did not apply: the `auto_register_on_detect`
+    option is off, or the reading carried no material or no colour — a spool the system
+    knows nothing about beyond its serial. A guessed identity is a fabricated fact, and a
+    fabricated fact in a ledger is worse than a missing one — it looks authoritative.
+    A reading that *does* carry the full Bambu payload registers its spool instead of
+    raising this (see `DetectSpool`), because there the opening weight is the one
+    configured default the user already stated, not a guess.
     """
 
     tag_uid: TagUid

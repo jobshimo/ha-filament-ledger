@@ -27,15 +27,19 @@ snapshot, not a receipt — the panel refreshes right after it anyway.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
 from ...application.detect_spool import DetectSpool
 from ...domain.model.spool import Spool
 from ...domain.port.repositories import SpoolRepository
+from ...domain.value.identifiers import TrayRef
 from ...domain.value.location import AmsSlot
 from ...domain.value.tray_reading import TrayReading
 from .bambu_gateway import BambuLabGateway
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SlotSyncStatus(StrEnum):
@@ -90,11 +94,22 @@ class TraySync:
     async def execute(self) -> TraySyncResult:
         if self.gateway.dormant:
             return TraySyncResult(dormant=True, slots=[])
-        slots: list[SlotSyncOutcome] = []
-        for reading in (await self.gateway.current_trays()).values():
-            await self.detect_spool.execute(reading)
-            slots.append(await slot_outcome(self.spools, reading))
-        return TraySyncResult(dormant=False, slots=slots)
+        readings = list((await self.gateway.current_trays()).values())
+        outcomes: dict[TrayRef, SlotSyncOutcome] = {}
+        # Empty trays run first (stable order otherwise; the strip still reports in the
+        # gateway's order): a spool moved between trays while Home Assistant was off must
+        # reach storage before its new tray resolves, or the pass would read the move as
+        # a second reel of the batch and register a phantom twin.
+        for reading in sorted(readings, key=lambda reading: not reading.empty):
+            try:
+                await self.detect_spool.execute(reading)
+            except Exception:
+                # The pass now writes (auto-registration), so one failing tray must not
+                # take down the remaining trays — nor startup, which runs this unguarded.
+                # The outcome below still reads honestly from the repositories.
+                LOGGER.exception("reconciling %s failed; the remaining trays still run", reading)
+            outcomes[reading.tray] = await slot_outcome(self.spools, reading)
+        return TraySyncResult(dormant=False, slots=[outcomes[r.tray] for r in readings])
 
 
 async def slot_outcome(spools: SpoolRepository, reading: TrayReading) -> SlotSyncOutcome:
