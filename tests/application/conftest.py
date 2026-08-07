@@ -51,6 +51,7 @@ from custom_components.filament_ledger.application.void_movement import (
     VoidMovement,
 )
 from custom_components.filament_ledger.domain.event import DomainEvent
+from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     AmsIndex,
     PrinterSerial,
@@ -169,18 +170,35 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
         jobs, spools, movements, open_pending_review, clock, events, database
     )
 
+    # Built once and shared, exactly as the composition root shares it: the interactive
+    # register path and `DetectSpool`'s auto-registration run the same instance.
+    register_spool = RegisterSpool(spools, movements, clock, events, database)
+
     return Ledger(
         use_cases=UseCases(
-            register_spool=RegisterSpool(spools, movements, clock, events, database),
+            register_spool=register_spool,
             reconcile_spool=ReconcileSpool(spools, movements, clock, events, database),
             discard_filament=DiscardFilament(spools, movements, clock, events, database),
             adjust_spool=AdjustSpool(spools, movements, clock, events, database),
             mount_spool=MountSpool(spools, clock, events, database),
             unmount_spool=UnmountSpool(spools, events, database),
-            # The production default. The auto-mount-off scenarios build their own
-            # `DetectSpool` with the flag flipped, the way `TestAtomicity` builds its own
-            # `RegisterSpool` — the fixture stays one honest wiring, not a matrix.
-            detect_spool=DetectSpool(spools, events, database, auto_mount=True),
+            # `auto_mount` carries the production default. `auto_register` deliberately
+            # does not: the captured Bambu fixtures these suites replay carry material
+            # and colour on every occupied tray, so the production default would register
+            # a spool under half the scenarios that exist to observe the *un*-registered
+            # branches. The auto-register scenarios build their own `DetectSpool` with
+            # the flag on, the way the auto-mount-off ones always have — the fixture
+            # stays one honest wiring, not a matrix.
+            detect_spool=DetectSpool(
+                spools,
+                events,
+                database,
+                auto_mount=True,
+                register_spool=register_spool,
+                default_opening_weight=Grams.of(1000),
+                default_core_weight=Grams.of(250),
+                auto_register=False,
+            ),
             edit_spool_details=EditSpoolDetails(spools, database),
             track_print_job=TrackPrintJob(
                 jobs=jobs,

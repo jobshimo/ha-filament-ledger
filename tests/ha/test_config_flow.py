@@ -19,6 +19,7 @@ from custom_components.filament_ledger.config_flow import (
 from custom_components.filament_ledger.const import (
     CONF_ANOMALY_THRESHOLD,
     CONF_AUTO_MOUNT_ON_RFID,
+    CONF_AUTO_REGISTER_ON_DETECT,
     CONF_DEFAULT_CORE_WEIGHT,
     CONF_DEFAULT_OPENING_WEIGHT,
     DOMAIN,
@@ -31,6 +32,7 @@ VALID = {
     CONF_DEFAULT_CORE_WEIGHT: 180,
     CONF_ANOMALY_THRESHOLD: 20,
     CONF_AUTO_MOUNT_ON_RFID: False,
+    CONF_AUTO_REGISTER_ON_DETECT: False,
 }
 
 
@@ -57,6 +59,7 @@ class TestUserStep:
             CONF_DEFAULT_CORE_WEIGHT: 250,
             CONF_ANOMALY_THRESHOLD: 15,
             CONF_AUTO_MOUNT_ON_RFID: True,
+            CONF_AUTO_REGISTER_ON_DETECT: True,
         }
 
     async def test_valid_input_creates_the_entry_with_the_documented_fields(self) -> None:
@@ -78,6 +81,7 @@ class TestUserStep:
             pytest.param(CONF_ANOMALY_THRESHOLD, 0, id="a-zero-threshold"),
             pytest.param(CONF_ANOMALY_THRESHOLD, 101, id="a-threshold-past-everything"),
             pytest.param(CONF_AUTO_MOUNT_ON_RFID, "maybe", id="an-auto-mount-that-hedges"),
+            pytest.param(CONF_AUTO_REGISTER_ON_DETECT, "maybe", id="an-auto-register-that-hedges"),
         ],
     )
     async def test_out_of_range_values_are_rejected_by_the_form(
@@ -130,6 +134,7 @@ class TestOptionsFlow:
             CONF_DEFAULT_CORE_WEIGHT: 180,
             CONF_ANOMALY_THRESHOLD: 33,
             CONF_AUTO_MOUNT_ON_RFID: False,
+            CONF_AUTO_REGISTER_ON_DETECT: False,
         }
 
     async def test_submitting_replaces_the_options(self) -> None:
