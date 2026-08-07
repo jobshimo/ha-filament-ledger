@@ -14,6 +14,7 @@ CONF_DEFAULT_OPENING_WEIGHT: Final = "default_opening_weight"
 CONF_DEFAULT_CORE_WEIGHT: Final = "default_core_weight"
 CONF_ANOMALY_THRESHOLD: Final = "anomaly_threshold"
 CONF_AUTO_MOUNT_ON_RFID: Final = "auto_mount_on_rfid"
+CONF_AUTO_REGISTER_ON_DETECT: Final = "auto_register_on_detect"
 
 DEFAULT_OPENING_WEIGHT_G: Final = 1000
 # Bambu spools are roughly this. It is a starting point the user corrects per vendor, not a
@@ -25,6 +26,11 @@ DEFAULT_ANOMALY_THRESHOLD_PCT: Final = 15
 # option exists for users who keep spools registered to a shelf and load them briefly —
 # silently rewriting their locations is not a service. See docs/04-use-cases.md UC-02.
 DEFAULT_AUTO_MOUNT_ON_RFID: Final = True
+# On by default too: an unknown Bambu tag whose reading names material and colour is a
+# spool the printer just described in full, and registering it with the configured
+# defaults is the product working as designed. Off, every unknown tag only reports, which
+# suits users who register by hand with a real weight. See docs/04-use-cases.md UC-02.
+DEFAULT_AUTO_REGISTER_ON_DETECT: Final = True
 
 DATABASE_FILENAME: Final = "filament_ledger.db"
 

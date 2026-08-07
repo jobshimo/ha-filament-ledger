@@ -474,6 +474,53 @@ class TestTheWholeStory:
         assert stock_per_material(summaries) == {"PLA": 1}
 
 
+class TestFinished:
+    """The Finished view's read model: spools whose filament is gone, and nothing else."""
+
+    async def test_it_holds_exactly_the_ended_spools_newest_ending_first(
+        self, ledger: Ledger
+    ) -> None:
+        """DEPLETED and DISCARDED are the two ends a spool's filament can meet, so both
+        are here. A spool still holding filament is the shelf, not the past; a deleted
+        one was never really here and belongs to the Trash."""
+        await a_spool(ledger, label="still full")
+        emptied = await a_spool(ledger, label="ran out")
+        binned = await a_spool(ledger, label="thrown away")
+        retracted = await a_spool(ledger, label="never really here")
+        await ledger.use_cases.delete_spool.execute(retracted)
+        ledger.clock.advance(days=1)
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=emptied, amount=Grams.of(-1000), reason="printed it all")
+        )
+        ledger.clock.advance(days=1)
+        await ledger.use_cases.discard_filament.execute(
+            DiscardFilamentCommand(
+                spool_id=binned, mode=DiscardMode.WHOLE_SPOOL, reason="water damage"
+            )
+        )
+
+        finished = await ledger.use_cases.queries.finished()
+
+        # Newest ending first: the spool that just ran out is the one being looked for.
+        assert [(summary.spool.id, summary.state) for summary in finished] == [
+            (binned, SpoolState.DISCARDED),
+            (emptied, SpoolState.DEPLETED),
+        ]
+
+    async def test_the_overview_still_carries_a_depleted_spool(self, ledger: Ledger) -> None:
+        """Deliberate, and load-bearing: the AMS view resolves a depleted-but-mounted
+        spool from the overview and the per-spool sensors stay available through it. The
+        panel's Inventory grid is what excludes DEPLETED, not this query."""
+        emptied = await a_spool(ledger, label="ran out")
+        await ledger.use_cases.adjust_spool.execute(
+            AdjustSpoolCommand(spool_id=emptied, amount=Grams.of(-1000), reason="printed it all")
+        )
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.id == emptied
+        assert summary.state is SpoolState.DEPLETED
+
+
 @dataclass(frozen=True, slots=True)
 class UnappendableMovements:
     """A movement repository whose append always fails — the injected crash between

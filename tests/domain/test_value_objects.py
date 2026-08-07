@@ -96,6 +96,18 @@ class TestMaterial:
         assert Material.of(MaterialKind.PLA).display_name == "PLA"
         assert Material.other("Nylon-X").display_name == "Nylon-X"
 
+    def test_from_printer_recognises_a_known_kind_in_any_case(self) -> None:
+        """The printer's own string, whitespace and case forgiven — those are transport
+        noise, not information."""
+        assert Material.from_printer("PLA") == Material.of(MaterialKind.PLA)
+        assert Material.from_printer(" petg ") == Material.of(MaterialKind.PETG)
+
+    def test_from_printer_keeps_a_variant_truthful_as_other(self) -> None:
+        """ "PLA-CF" is not PLA: the nearest kind would be a fabricated fact with a
+        plausible face, so the variant registers as OTHER carrying the printer's words."""
+        assert Material.from_printer("PLA-CF") == Material.other("PLA-CF")
+        assert Material.from_printer("Support W").display_name == "Support W"
+
 
 class TestPercentage:
     def test_bounded_to_zero_and_one_hundred(self) -> None:

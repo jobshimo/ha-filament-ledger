@@ -682,9 +682,11 @@ not know HA consumes them.
 
 Two events exist specifically to refuse a guess:
 
-`UnknownSpoolDetected` is raised when an unrecognised RFID appears in a tray. The system
-**does not auto-create a spool** — a guessed opening weight is a fabricated number, and a
-fabricated number in a ledger is worse than a missing one.
+`UnknownSpoolDetected` is raised when an unrecognised RFID appears in a tray and
+auto-registration does not apply — `auto_register_on_detect` off, or a reading missing its
+material or colour. The system **does not guess a spool into existence** — a guessed
+identity is a fabricated fact, and a fabricated fact in a ledger is worse than a missing
+one. A full Bambu reading registers with the configured defaults instead (UC-02).
 
 `AmbiguousTagDetected` is raised when a recognised RFID resolves to **more than one**
 non-discarded spool, which §2.3 establishes is legal. The system does not pick the newest, the

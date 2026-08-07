@@ -58,17 +58,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .const import (
         CONF_ANOMALY_THRESHOLD,
         CONF_AUTO_MOUNT_ON_RFID,
+        CONF_AUTO_REGISTER_ON_DETECT,
         CONF_DEFAULT_CORE_WEIGHT,
         CONF_DEFAULT_OPENING_WEIGHT,
         DATABASE_FILENAME,
         DEFAULT_ANOMALY_THRESHOLD_PCT,
         DEFAULT_AUTO_MOUNT_ON_RFID,
+        DEFAULT_AUTO_REGISTER_ON_DETECT,
         DEFAULT_CORE_WEIGHT_G,
         DEFAULT_OPENING_WEIGHT_G,
         DOMAIN,
     )
     from .domain.service.anomaly_detector import AnomalyDetector
     from .domain.service.confidence_evaluator import ConfidenceEvaluator
+    from .domain.value.grams import Grams
     from .infrastructure.estimation.linear_progress_estimator import LinearProgressEstimator
     from .infrastructure.ha.bambu_gateway import BambuLabGateway
     from .infrastructure.ha.event_bridge import HomeAssistantEventBus
@@ -137,23 +140,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         jobs, spools, movements, open_pending_review, clock, events, database, anomalies
     )
 
+    # The defaults, read once here for the two consumers that apply them: the runtime
+    # hands them to the register form's surfaces, and `DetectSpool` below fills them into
+    # a spool it registers on the printer's say-so — the same numbers in both places, so
+    # an auto-registered spool and a hand-registered one cannot start from different
+    # assumptions.
+    default_opening_weight_g = int(
+        settings.get(CONF_DEFAULT_OPENING_WEIGHT, DEFAULT_OPENING_WEIGHT_G)
+    )
+    default_core_weight_g = int(settings.get(CONF_DEFAULT_CORE_WEIGHT, DEFAULT_CORE_WEIGHT_G))
+
+    # Built once, then shared: `UseCases` carries it for every interactive register path,
+    # and `DetectSpool` invokes the very same instance for auto-registration — two
+    # constructions would be two places for the wiring to drift apart.
+    register_spool = RegisterSpool(spools, movements, clock, events, database)
+
     # `database` is passed where a `UnitOfWork` is expected: the connection is the thing
     # that can make a multi-write sequence atomic, so it is the thing that implements it.
     use_cases = UseCases(
-        register_spool=RegisterSpool(spools, movements, clock, events, database),
+        register_spool=register_spool,
         reconcile_spool=ReconcileSpool(spools, movements, clock, events, database, anomalies),
         discard_filament=DiscardFilament(spools, movements, clock, events, database, anomalies),
         adjust_spool=AdjustSpool(spools, movements, clock, events, database, anomalies),
         mount_spool=MountSpool(spools, clock, events, database),
         unmount_spool=UnmountSpool(spools, events, database),
-        # `auto_mount` is read here, once: an options change reloads this entry (see
+        # Both flags are read here, once: an options change reloads this entry (see
         # `_reload_on_options_change` below), so the rebuilt use case always carries the
-        # current setting. The printer gateway below is what drives it.
+        # current settings. The printer gateway below is what drives it.
         detect_spool=DetectSpool(
             spools,
             events,
             database,
             auto_mount=bool(settings.get(CONF_AUTO_MOUNT_ON_RFID, DEFAULT_AUTO_MOUNT_ON_RFID)),
+            register_spool=register_spool,
+            default_opening_weight=Grams.of(default_opening_weight_g),
+            default_core_weight=Grams.of(default_core_weight_g),
+            auto_register=bool(
+                settings.get(CONF_AUTO_REGISTER_ON_DETECT, DEFAULT_AUTO_REGISTER_ON_DETECT)
+            ),
         ),
         edit_spool_details=EditSpoolDetails(spools, database),
         # What the gateway's job events drive: starts become RUNNING rows, interrupted
@@ -224,10 +248,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         use_cases=use_cases,
         coordinator=coordinator,
         detach_printer=gateway.detach,
-        default_opening_weight_g=int(
-            settings.get(CONF_DEFAULT_OPENING_WEIGHT, DEFAULT_OPENING_WEIGHT_G)
-        ),
-        default_core_weight_g=int(settings.get(CONF_DEFAULT_CORE_WEIGHT, DEFAULT_CORE_WEIGHT_G)),
+        default_opening_weight_g=default_opening_weight_g,
+        default_core_weight_g=default_core_weight_g,
         sync_trays=sync_trays,
         printer=printer,
     )

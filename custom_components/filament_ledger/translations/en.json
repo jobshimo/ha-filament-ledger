@@ -8,13 +8,15 @@
           "default_opening_weight": "Default opening weight (g)",
           "default_core_weight": "Default empty spool weight (g)",
           "anomaly_threshold": "Flag a reconciliation this far off (%)",
-          "auto_mount_on_rfid": "Mount spools automatically on RFID detection"
+          "auto_mount_on_rfid": "Mount spools automatically on RFID detection",
+          "auto_register_on_detect": "Register unknown Bambu spools automatically"
         },
         "data_description": {
           "default_opening_weight": "What a fresh spool holds. Bambu spools are 1000 g.",
           "default_core_weight": "The bare reel, without filament. A kitchen scale weighs the whole spool, so the ledger subtracts this for you. Bambu reels are about 250 g.",
           "anomaly_threshold": "When the scale disagrees with the ledger by more than this, something upstream is systematically wrong and worth a look.",
-          "auto_mount_on_rfid": "When the printer reads a known tag, record that spool as mounted in that slot. Turn off if you load registered spools briefly and want their recorded locations left alone."
+          "auto_mount_on_rfid": "When the printer reads a known tag, record that spool as mounted in that slot. Turn off if you load registered spools briefly and want their recorded locations left alone.",
+          "auto_register_on_detect": "When an unknown tag arrives with its material and colour, register that spool with the default weights above. Turn off to register every spool yourself, with a weight you measured."
         }
       }
     },
@@ -30,7 +32,8 @@
           "default_opening_weight": "Default opening weight (g)",
           "default_core_weight": "Default empty spool weight (g)",
           "anomaly_threshold": "Flag a reconciliation this far off (%)",
-          "auto_mount_on_rfid": "Mount spools automatically on RFID detection"
+          "auto_mount_on_rfid": "Mount spools automatically on RFID detection",
+          "auto_register_on_detect": "Register unknown Bambu spools automatically"
         }
       }
     }

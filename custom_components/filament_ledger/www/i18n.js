@@ -95,6 +95,7 @@ const EN = {
   "tab.review": "Review",
   "tab.ams": "AMS",
   "tab.printer": "Printer",
+  "tab.finished": "Finished",
   "tab.trash": "Trash",
   "tab.settings": "Settings",
 
@@ -187,6 +188,9 @@ const EN = {
   "inv.sync": "⟳ Sync with printer",
   "inv.sealed": "Sealed",
   "inv.weighThis": "Weigh this spool",
+  "inv.allFinished":
+    "Every spool here has run out. They are waiting in the Finished tab; register a new " +
+    "one to keep printing.",
 
   // -- the sync strip ----------------------------------------------------------------
   "sync.dormantTitle": "No printer connected — nothing to sync.",
@@ -397,6 +401,16 @@ const EN = {
     "correction is a new row. Deleted entries stay here, struck through, with the row that " +
     "returned their grams beside them: this is the one view that hides nothing, because it " +
     "is the view that proves the total.",
+
+  // -- finished ----------------------------------------------------------------------
+  "fin.emptyTitle": "Nothing has finished yet.",
+  "fin.emptyBody":
+    "Spools that run out of filament, and spools thrown away, move here — out of the " +
+    "Inventory but never out of the ledger. Their history stays readable for as long " +
+    "as you keep them.",
+  "fin.body":
+    "Run out, or thrown away. Open any spool to read the history that got it here; a " +
+    "weighing that finds filament puts it straight back in the Inventory.",
 
   // -- trash -------------------------------------------------------------------------
   "trash.emptyTitle": "The trash is empty.",
@@ -701,6 +715,7 @@ const ES = {
   "tab.review": "Revisión",
   "tab.ams": "AMS",
   "tab.printer": "Impresora",
+  "tab.finished": "Terminadas",
   "tab.trash": "Papelera",
   "tab.settings": "Ajustes",
 
@@ -779,6 +794,9 @@ const ES = {
   "inv.sync": "⟳ Sincronizar con la impresora",
   "inv.sealed": "Sellada",
   "inv.weighThis": "Pese esta bobina",
+  "inv.allFinished":
+    "Todas las bobinas de aquí se han agotado. Esperan en la pestaña Terminadas; " +
+    "registre una nueva para seguir imprimiendo.",
 
   // -- tira de sincronización --------------------------------------------------------
   "sync.dormantTitle": "No hay impresora conectada: nada que sincronizar.",
@@ -988,6 +1006,17 @@ const ES = {
     "editarse: una corrección es una fila nueva. Las entradas eliminadas siguen aquí, " +
     "tachadas, junto a la fila que devolvió sus gramos: esta es la única vista que no " +
     "oculta nada, porque es la vista que demuestra el total.",
+
+  // -- terminadas --------------------------------------------------------------------
+  "fin.emptyTitle": "Todavía no ha terminado ninguna.",
+  "fin.emptyBody":
+    "Las bobinas que agotan su filamento y las que se tiran a la basura pasan aquí: " +
+    "fuera del inventario, pero nunca fuera del registro. Su historial sigue " +
+    "disponible mientras las conserve.",
+  "fin.body":
+    "Agotadas o tiradas a la basura. Abra cualquier bobina para leer el historial que " +
+    "la trajo hasta aquí; un pesaje que encuentre filamento la devuelve directamente " +
+    "al inventario.",
 
   // -- papelera ----------------------------------------------------------------------
   "trash.emptyTitle": "La papelera está vacía.",

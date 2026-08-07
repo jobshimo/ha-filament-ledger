@@ -38,6 +38,11 @@ class RegisterSpoolCommand:
     tag_source: TagSource = TagSource.MANUAL
     location: Location | None = None
     confirm_duplicate_tag: bool = False
+    # Provenance of the opening balance, for the history's *automatic* / *confirmed by
+    # you* label (docs/02 §2.3). Defaults USER_CONFIRMED because on every interactive
+    # path the user typed the number; only auto-registration from a tray reading passes
+    # AUTOMATIC, because there the figure is a configured default nobody confirmed today.
+    movement_source: MovementSource = MovementSource.USER_CONFIRMED
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +82,7 @@ class RegisterSpool:
                     spool_id=spool.id,
                     type=MovementType.OPENING_BALANCE,
                     amount=command.opening_weight,
-                    source=MovementSource.USER_CONFIRMED,
+                    source=command.movement_source,
                     occurred_at=now,
                     note="Registered",
                 )
