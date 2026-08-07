@@ -41,6 +41,7 @@ from ..domain.event import (
 )
 from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
+from ..domain.value.colour_name import label_with_colour
 from ..domain.value.grams import Grams
 from ..domain.value.identifiers import TagSource, TagUid, TrayRef
 from ..domain.value.location import AmsSlot, Storage
@@ -82,6 +83,11 @@ class DetectSpool:
     default_opening_weight: Grams
     default_core_weight: Grams
     auto_register: bool
+    # The instance's configured language, baked into the labels this use case writes: a
+    # label is stored user data rather than a translated view, so it speaks the language
+    # the household spoke when the spool appeared. Defaults English — the same fallback
+    # the panel translator makes.
+    language: str = "en"
 
     async def execute(self, reading: TrayReading) -> None:
         if reading.empty:
@@ -149,7 +155,10 @@ class DetectSpool:
                     opening_weight=self.default_opening_weight,
                     core_weight=self.default_core_weight,
                     vendor=BAMBU_VENDOR,
-                    label=reading.name,
+                    # The product name alone would be born twice for two reels of one
+                    # product in two colours, so the colour's name rides along — in the
+                    # instance's language, decided now, because a label is stored data.
+                    label=label_with_colour(reading.name, reading.colour, self.language),
                     tag_uid=reading.tag,
                     # The serial came off the tray reading, not off a keyboard
                     # (docs/14 §14.2) — the same provenance the register-from-sync
