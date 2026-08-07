@@ -9,6 +9,7 @@ runs on.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import pytest
 
@@ -17,11 +18,16 @@ from custom_components.filament_ledger.application.adjust_spool import (
     DiscardMode,
 )
 from custom_components.filament_ledger.application.detect_spool import DetectSpool
-from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
+from custom_components.filament_ledger.application.register_spool import (
+    RegisterSpool,
+    RegisterSpoolCommand,
+)
+from custom_components.filament_ledger.domain.error import DuplicateTagNotConfirmedError
 from custom_components.filament_ledger.domain.event import (
     AmbiguousTagDetected,
     SpoolDetected,
     SpoolMounted,
+    SpoolRegistered,
     SpoolUnmounted,
     UnknownSpoolDetected,
 )
@@ -29,9 +35,17 @@ from custom_components.filament_ledger.domain.model.spool import Spool
 from custom_components.filament_ledger.domain.port.repositories import SpoolFilter
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
-from custom_components.filament_ledger.domain.value.identifiers import SpoolId, TagUid
+from custom_components.filament_ledger.domain.value.identifiers import (
+    SpoolId,
+    TagSource,
+    TagUid,
+)
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location, Storage
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
+from custom_components.filament_ledger.domain.value.movement_type import (
+    MovementSource,
+    MovementType,
+)
 from custom_components.filament_ledger.domain.value.tray_reading import TrayReading
 from custom_components.filament_ledger.infrastructure.persistence.spool_repository import (
     SqliteSpoolRepository,
@@ -114,8 +128,10 @@ class TestATagAppears:
         assert ledger.events.of(SpoolUnmounted) == []
 
     async def test_an_unknown_tag_is_reported_never_invented(self, ledger: Ledger) -> None:
-        """No spool is created: a guessed opening weight is a fabricated number, and a
-        fabricated number in a ledger is worse than a missing one."""
+        """No spool is created: a bare tag names material and colour for nobody, so there
+        is nothing honest to register — a guessed identity is a fabricated fact, and a
+        fabricated fact in a ledger is worse than a missing one. The fully described case
+        is `TestAutoRegister`'s, and it is the only opening in this rule."""
         await ledger.use_cases.detect_spool.execute(an_occupied_tray(4))
 
         assert await ledger.use_cases.queries.overview() == []
@@ -213,6 +229,10 @@ class TestAutoMountDisabled:
             events=ledger.events,
             uow=ledger.database,
             auto_mount=False,
+            register_spool=ledger.use_cases.register_spool,
+            default_opening_weight=Grams.of(1000),
+            default_core_weight=Grams.of(250),
+            auto_register=False,
         )
 
     async def test_a_known_tag_is_announced_but_not_moved(self, ledger: Ledger) -> None:
@@ -238,6 +258,192 @@ class TestAutoMountDisabled:
         assert len(ledger.events.of(SpoolUnmounted)) == 1
 
 
+def a_full_reading(
+    slot: int, *, material: str = "PLA", name: str = "Bambu PLA Basic"
+) -> TrayReading:
+    """What a Bambu reel actually produces: tag, name, material and colour, all present."""
+    return TrayReading(
+        tray=a_tray(slot),
+        tag=TAG,
+        empty=False,
+        name=name,
+        material=material,
+        colour=Colour.parse("00FF00FF"),
+    )
+
+
+@dataclass
+class RacingRegisterSpool:
+    """Loses the duplicate-tag race on purpose: the competitor lands first, then the
+    refusal arrives — exactly what `DetectSpool` sees when startup replay and a live tray
+    event both read the same unknown tag before either registered it."""
+
+    ledger: Ledger
+
+    async def execute(self, command: RegisterSpoolCommand) -> SpoolId:
+        await self.ledger.use_cases.register_spool.execute(command)
+        msg = f"tag {command.tag_uid} already belongs to 1 spool(s)"
+        raise DuplicateTagNotConfirmedError(msg)
+
+
+class TestAutoRegister:
+    """The one opening in "an unknown tag never creates a spool": a reading naming
+    material and colour describes the spool in full, so nothing about registering it is a
+    guess — the opening weight is the configured default the user already stated. The
+    scenarios build their own `DetectSpool` with the flag on, the way the auto-mount-off
+    ones do; the fixture wires it off so the reporting branches stay observable."""
+
+    def detection(
+        self,
+        ledger: Ledger,
+        *,
+        auto_mount: bool = True,
+        auto_register: bool = True,
+        register_spool: RegisterSpool | None = None,
+    ) -> DetectSpool:
+        # Defaults distinct from the register form's 1000/250, so the assertions prove
+        # the *configured* figures flowed through rather than a coincidence.
+        return DetectSpool(
+            spools=SqliteSpoolRepository(ledger.database),
+            events=ledger.events,
+            uow=ledger.database,
+            auto_mount=auto_mount,
+            register_spool=(
+                register_spool if register_spool is not None else ledger.use_cases.register_spool
+            ),
+            default_opening_weight=Grams.of(800),
+            default_core_weight=Grams.of(200),
+            auto_register=auto_register,
+        )
+
+    async def test_a_fully_described_unknown_tag_registers_and_mounts(self, ledger: Ledger) -> None:
+        """The whole path in one pass: the spool is born from the reading and the
+        configured defaults, and the ordinary mount path puts it in the tray."""
+        await self.detection(ledger).execute(a_full_reading(2))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        spool = summary.spool
+        assert spool.tag_uid == TAG
+        assert spool.tag_source is TagSource.DETECTED
+        assert spool.vendor == "Bambu Lab"
+        assert spool.label == "Bambu PLA Basic"
+        assert spool.material == Material.of(MaterialKind.PLA)
+        assert spool.colour == Colour.parse("00FF00FF")
+        assert spool.opening_weight == Grams.of(800)
+        assert spool.core_weight == Grams.of(200)
+        assert spool.location == AmsSlot(a_tray(2))
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+        [mounted] = ledger.events.of(SpoolMounted)
+        assert mounted == SpoolMounted(spool_id=spool.id, tray=a_tray(2))
+        assert ledger.events.of(UnknownSpoolDetected) == []
+
+    async def test_the_opening_balance_is_labelled_automatic(self, ledger: Ledger) -> None:
+        """Provenance stays honest: nobody confirmed the default weight today, and the
+        history's *automatic* label is how the reader learns that."""
+        await self.detection(ledger).execute(a_full_reading(2))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        [line] = (await ledger.use_cases.queries.detail(summary.spool.id)).lines
+        assert line.movement.type is MovementType.OPENING_BALANCE
+        assert line.movement.source is MovementSource.AUTOMATIC
+
+    async def test_a_variant_material_registers_truthfully_as_other(self, ledger: Ledger) -> None:
+        """ "PLA-CF" is not PLA, and filing it under the nearest kind would be a fabricated
+        fact with a plausible face. OTHER carrying the printer's exact words is the truth."""
+        await self.detection(ledger).execute(a_full_reading(2, material="PLA-CF"))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.material == Material.other("PLA-CF")
+
+    @pytest.mark.parametrize(
+        ("material", "colour"),
+        [
+            pytest.param("PLA", None, id="a-reading-with-no-colour"),
+            pytest.param(None, Colour.parse("00FF00FF"), id="a-reading-with-no-material"),
+        ],
+    )
+    async def test_a_partial_reading_reports_instead_of_inventing(
+        self, ledger: Ledger, material: str | None, colour: Colour | None
+    ) -> None:
+        """Either hint missing means the system cannot describe the spool, and a spool it
+        cannot describe is a spool it must not invent — exactly the old rule."""
+        reading = TrayReading(
+            tray=a_tray(4), tag=TAG, empty=False, material=material, colour=colour
+        )
+
+        await self.detection(ledger).execute(reading)
+
+        assert await ledger.use_cases.queries.overview() == []
+        [event] = ledger.events.of(UnknownSpoolDetected)
+        assert event == UnknownSpoolDetected(tag_uid=TAG, tray=a_tray(4))
+
+    async def test_the_option_off_keeps_todays_behaviour(self, ledger: Ledger) -> None:
+        """A full reading with `auto_register` off is an unknown tag, reported exactly as
+        it always was — the option governs the opening, not the rule."""
+        await self.detection(ledger, auto_register=False).execute(a_full_reading(4))
+
+        assert await ledger.use_cases.queries.overview() == []
+        assert len(ledger.events.of(UnknownSpoolDetected)) == 1
+        assert ledger.events.of(SpoolRegistered) == []
+
+    async def test_with_auto_mount_off_the_spool_registers_to_storage(self, ledger: Ledger) -> None:
+        """The two options are independent: the spool enters the inventory, but the user
+        asked the system not to move spools, so the sighting is reported and the AMS view
+        offers the manual [ Mount ] button for a spool that now exists."""
+        await self.detection(ledger, auto_mount=False).execute(a_full_reading(2))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.location == Storage()
+        assert ledger.events.of(SpoolMounted) == []
+        [event] = ledger.events.of(SpoolDetected)
+        assert event == SpoolDetected(tag_uid=TAG, tray=a_tray(2))
+
+    async def test_a_second_tray_with_the_same_batch_tag_is_a_second_reel(
+        self, ledger: Ledger
+    ) -> None:
+        """A Bambu tag identifies a batch, not a unit: the same unregistered tag in two
+        trays is two physical reels. The second registers as a deliberate duplicate and
+        the resolution asks — merging both into one row would let tray 2 silently steal
+        tray 1's spool."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(1))
+
+        await detection.execute(a_full_reading(2))
+
+        summaries = await ledger.use_cases.queries.overview()
+        assert len(summaries) == 2
+        # The first reel stays where it was mounted; the second waits in storage.
+        assert {s.spool.location for s in summaries} == {AmsSlot(a_tray(1)), Storage()}
+        [event] = ledger.events.of(AmbiguousTagDetected)
+        assert event.tray == a_tray(2)
+        assert len(event.candidates) == 2
+        assert ledger.events.of(SpoolUnmounted) == []
+
+    async def test_a_replayed_reading_registers_nothing_twice(self, ledger: Ledger) -> None:
+        """Startup replays every tray. The second pass finds the tag it registered on the
+        first, confirms the mount, and writes and announces nothing."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(2))
+
+        await detection.execute(a_full_reading(2))
+
+        assert len(await ledger.use_cases.queries.overview()) == 1
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+        assert len(ledger.events.of(SpoolMounted)) == 1
+
+    async def test_losing_the_registration_race_mounts_the_winner(self, ledger: Ledger) -> None:
+        """Between the unknown-tag check and the write, someone else registered the tag.
+        The refusal is the race being lost, not a failure: the spool exists, so the
+        ordinary resolution mounts it and nothing crashes."""
+        racing = cast(RegisterSpool, RacingRegisterSpool(ledger))
+
+        await self.detection(ledger, register_spool=racing).execute(a_full_reading(2))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.location == AmsSlot(a_tray(2))
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+
+
 class TestAtomicityOfDetection:
     async def test_a_failed_displacement_mounts_nothing(self, ledger: Ledger) -> None:
         """The displaced occupant and the mounted spool commit together or not at all: a
@@ -253,6 +459,10 @@ class TestAtomicityOfDetection:
             events=ledger.events,
             uow=ledger.database,
             auto_mount=True,
+            register_spool=ledger.use_cases.register_spool,
+            default_opening_weight=Grams.of(1000),
+            default_core_weight=Grams.of(250),
+            auto_register=False,
         )
         with pytest.raises(RuntimeError, match="unavailable"):
             await detection.execute(an_occupied_tray(2))

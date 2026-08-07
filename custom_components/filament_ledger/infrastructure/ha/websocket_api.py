@@ -207,6 +207,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_spools_delete,
         handle_spools_restore,
         handle_trash,
+        handle_finished,
         handle_statistics,
         handle_printer_state,
         handle_settings_get,
@@ -867,6 +868,24 @@ async def handle_trash(
     """Deleted spools and open void chapters — a view over facts, not a holding pen."""
     runtime = _runtime(hass)
     connection.send_result(msg["id"], trash_result(await runtime.use_cases.queries.trash()))
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/spools/finished"})
+@websocket_api.async_response
+@guarded
+async def handle_finished(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Spools whose filament is gone — the Finished tab's read, fetched on opening it.
+
+    The same summary shape `spools/list` sends, because the tab renders the same cards:
+    a second shape would be a second serialiser for the same facts. Nothing is written,
+    so `async_refresh` is deliberately not called — there is nothing for the entities to
+    hear about a page being looked at.
+    """
+    runtime = _runtime(hass)
+    summaries = await runtime.use_cases.queries.finished()
+    connection.send_result(msg["id"], [spool_summary(s) for s in summaries])
 
 
 @websocket_api.websocket_command(

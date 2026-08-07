@@ -138,9 +138,9 @@ transaction the API does not have.
 
 > A tag the printer attached is the printer's statement. A tag I typed is mine to change.
 
-- A tag whose provenance is **DETECTED** — attached by the register-from-sync flow, which
-  is the only path where a tray reading supplies the tag
-  (`www/filament-ledger-panel.js:978-984`, `tray_sync.py:150-164` hints) — renders
+- A tag whose provenance is **DETECTED** — attached by the register-from-sync flow or by
+  `auto_register_on_detect`, the two paths where a tray reading supplies the tag
+  (`www/filament-ledger-panel.js:978-984`, `application/detect_spool.py`) — renders
   **read-only** in the edit dialog, with the provenance stated.
 - A tag whose provenance is **MANUAL** — typed by the user at registration or here — is
   editable: it can be changed or cleared.
