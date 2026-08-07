@@ -300,6 +300,7 @@ class TestAutoRegister:
         auto_mount: bool = True,
         auto_register: bool = True,
         register_spool: RegisterSpool | None = None,
+        language: str = "en",
     ) -> DetectSpool:
         # Defaults distinct from the register form's 1000/250, so the assertions prove
         # the *configured* figures flowed through rather than a coincidence.
@@ -314,6 +315,7 @@ class TestAutoRegister:
             default_opening_weight=Grams.of(800),
             default_core_weight=Grams.of(200),
             auto_register=auto_register,
+            language=language,
         )
 
     async def test_a_fully_described_unknown_tag_registers_and_mounts(self, ledger: Ledger) -> None:
@@ -326,7 +328,9 @@ class TestAutoRegister:
         assert spool.tag_uid == TAG
         assert spool.tag_source is TagSource.DETECTED
         assert spool.vendor == "Bambu Lab"
-        assert spool.label == "Bambu PLA Basic"
+        # The product name alone would be born twice for two reels in two colours, so
+        # the label carries the colour's name — the reading's #00FF00 is green.
+        assert spool.label == "Bambu PLA Basic Green"
         assert spool.material == Material.of(MaterialKind.PLA)
         assert spool.colour == Colour.parse("00FF00FF")
         assert spool.opening_weight == Grams.of(800)
@@ -336,6 +340,14 @@ class TestAutoRegister:
         [mounted] = ledger.events.of(SpoolMounted)
         assert mounted == SpoolMounted(spool_id=spool.id, tray=a_tray(2))
         assert ledger.events.of(UnknownSpoolDetected) == []
+
+    async def test_the_label_speaks_the_instances_language(self, ledger: Ledger) -> None:
+        """A label is stored data, not a translated view: a Spanish instance writes
+        Spanish once, and changing the language later renames nothing."""
+        await self.detection(ledger, language="es").execute(a_full_reading(2))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.label == "Bambu PLA Basic Verde"
 
     async def test_the_opening_balance_is_labelled_automatic(self, ledger: Ledger) -> None:
         """Provenance stays honest: nobody confirmed the default weight today, and the
