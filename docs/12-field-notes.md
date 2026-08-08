@@ -170,6 +170,9 @@ away. Two consequences, both already designed for:
 - **Capture at event time, confirmed.** The gateway reads the sensor when the lifecycle
   event fires, not on a poll — a reading taken off-beat can land in a gap and report
   nothing while the figure exists.
+  > **Superseded on 2026-08-08.** This conclusion was drawn from a single adjacent row
+  > and it is wrong: the event time *is* off-beat, because the gap it can land in is
+  > every moment between two republishes. See the 2026-08-08 entry below.
 - **The missing-figure branch is load-bearing, not theoretical.** A finish can still
   arrive figureless, and [04 UC-04](04-use-cases.md) step 2 — review, never zero — is
   the branch that catches it. Built alongside the happy path, exactly as
@@ -178,3 +181,59 @@ away. Two consequences, both already designed for:
 **Verdict: per-tray weights populate at event time; UC-04 built as designed.** The
 anonymised capture lives in `tests/fixtures/bambu/print_sensors_finished.json`, and the
 translation is fixture-tested rather than believed, same as every other shape here.
+
+> **Half of this verdict was superseded on 2026-08-08.** *Per-tray weights populate* holds
+> and the fixture is still the reference shape. *At event time* does not: three hours of
+> recorder history showed the figure is readable only between republishes, and never yet
+> at the moment a job starts. The entry below has the measurements and what they cost.
+
+---
+
+## 2026-08-08 — The per-tray figure cannot be sampled at an instant
+
+Read out of the recorder database on the live instance, over one day of ordinary printing.
+This entry supersedes half of the 2026-08-03 verdict above, and it is the measurement that
+turned three silently wrong charges into a fix.
+
+**The sensor is republished in bursts, and each burst is a pair of opposite shapes.**
+`sensor.…_peso_de_la_impresion` was rewritten about eight times across the three hours of
+one 220-layer print (08:42:43, 08:43:27, 09:29:49, 09:32:53, 10:50:51, 11:18:47, 11:44:13
+and neighbours). Within a burst, two consecutive rows land **one to four seconds apart**
+with the **state value unchanged** and the attributes disagreeing:
+
+```
+A   state: 93.71   attributes: {"AMS 1 Tray 1": 31.33, "AMS 1 Tray 3": 62.38, …}
+B   state: 93.71   attributes: {state_class, unit_of_measurement, device_class, friendly_name}
+```
+
+Shape B carries **no tray key at all**. It is not a correction and it is not a spool that
+emptied — it is the same figure, republished without its breakdown. The one-to-four-second
+figure is the gap *inside* a pair, never the cadence between bursts; a reader who confuses
+the two will conclude the sensor is nearly always fresh, and it is nearly always stale.
+
+**The start event fires before the sensor knows about the job.** A print that began at
+13:49 saw its weight sensor update at **13:49:45**. Nothing was republished between
+11:44:17 and that moment. So the attributes standing there when `event_print_started`
+arrives describe the *previous* print, in full and plausibly.
+
+**What that cost, in the ledger, on real jobs.**
+
+| Observed | Recorded | Why |
+| --- | --- | --- |
+| 937-layer print | charged 2.1 g | the start captured the previous job's plan, and the ending had no figure to overrule it |
+| 220-layer two-colour print, Tray 1 31.33 g + Tray 3 62.38 g | charged nothing | both captures happened to read shape B |
+| job running now, AMS 1 Tray 2 / 248.41 g | recorded tray 1 / 12.24 g | a stale plan, on the wrong tray, pointing at the wrong spool |
+
+**Consequences, now built.** The gateway *follows* the sensor by state change and keeps the
+last reading that actually carried tray keys; shape B and an unavailable sensor are
+non-observations that never overwrite a good one. A start **discards** the held reading, so
+no job can inherit its predecessor's. An ending is charged with the last reading seen during
+that job — or, when this process was not alive to watch the job begin (a reload, a restart
+mid-print), with a live read of the sensor, which by then has been updated during this job.
+An ending whose start *was* watched and which saw no republish reports no usage, and
+[04 UC-04](04-use-cases.md) step 2 sends it to review rather than inventing a figure.
+
+**Not used, and still not:** `remain` reads 100 on every tray of this machine, as recorded
+at the top of this file. Nothing above is an estimate — the figure is the slicer's plan for
+the job, which the owner has accepted as the automatic charge, correctable afterwards
+through the void, reassign and adjust paths that already exist.

@@ -150,8 +150,12 @@ amount is sitting in a review; job marked recorded exactly once.
 degrade to a review; neither throws, and neither is treated as zero.
 
 **Why step 2 exists.** The per-tray figure only materialises once the sliced `.3mf` has been
-retrieved, and that retrieval is known to fail in LAN mode ([Q4](01-vision.md)). A missing
-figure is not a figure of zero. Recording zero for a print that consumed 84 g is a silent,
+retrieved, and that retrieval is known to fail in LAN mode ([Q4](01-vision.md)). It is also
+not readable at any single instant: the sensor carrying it is republished in occasional
+bursts, each one a pair of rows seconds apart that carry the breakdown and then drop it,
+and it first arrives well after the job starts — so the gateway follows it and keeps the last reading seen during the job, and a job
+that ended before one arrived reports no usage rather than the previous job's
+([12](12-field-notes.md)). A missing figure is not a figure of zero. Recording zero for a print that consumed 84 g is a silent,
 optimistic lie, and it is the only failure in this system that leaves no trace at all.
 
 **Which clock stamps the entry.** Step 3b writes `occurred_at` from the job's `ended_at`,
