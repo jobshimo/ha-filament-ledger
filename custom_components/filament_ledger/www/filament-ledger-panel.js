@@ -1661,6 +1661,36 @@ class FilamentLedgerPanel extends HTMLElement {
     }
     this._restoreFocus(focused);
     this._syncTabStrip();
+    const main = this._root.querySelector("main.entering");
+    if (main) this._settleAnimation(main, () => main.classList.remove("entering"));
+    const modal = this._root.querySelector(".modal");
+    if (modal) this._settleAnimation(modal, () => (modal.style.animation = "none"));
+  }
+
+  /**
+   * Strip a finished entry animation off the element it decorated.
+   *
+   * The class stayed on forever, and that was the mobile scroll bug: `fl-view`'s first
+   * frame carries a transform, and WebKit refuses touch-scrolling inside an ancestor it
+   * still considers animated — so the first view painted on a phone would not pan until
+   * some repaint dropped the class. The animation is an arrival, so once it has played
+   * the element must be indistinguishable from one that never animated.
+   *
+   * `animationend` bubbles, and the view is full of shorter child animations (bars, rows)
+   * that would end first — the target check is what keeps them from cutting the entry
+   * short. The timer is the fallback for the ends that never fire: a tab backgrounded
+   * mid-animation, an engine that dropped the event. Both paths converge on `undo`, which
+   * must be idempotent — and removing a class or overwriting an inline style is.
+   */
+  _settleAnimation(el, undo) {
+    const done = (event) => {
+      if (event && event.target !== el) return;
+      el.removeEventListener("animationend", done);
+      clearTimeout(timer);
+      undo();
+    };
+    const timer = setTimeout(done, 700);
+    el.addEventListener("animationend", done);
   }
 
   /**
