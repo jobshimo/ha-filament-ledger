@@ -16,7 +16,7 @@
           "default_core_weight": "El carrete desnudo, sin filamento. Una balanza de cocina pesa la bobina entera, así que el registro resta este valor por usted. Los carretes de Bambu rondan los 250 g.",
           "anomaly_threshold": "Cuando la balanza discrepa del registro por más de esto, algo falla de forma sistemática más arriba y conviene revisarlo.",
           "auto_mount_on_rfid": "Cuando la impresora lee una etiqueta conocida, registrar esa bobina como montada en esa bandeja. Desactívelo si carga bobinas ya registradas por poco tiempo y prefiere que su ubicación registrada no cambie.",
-          "auto_register_on_detect": "Cuando llega una etiqueta desconocida con su material y su color, registrar esa bobina con los pesos predeterminados de arriba. Desactívelo para registrar cada bobina usted mismo, con un peso medido."
+          "auto_register_on_detect": "Cuando llega una etiqueta desconocida con su material y su color, registrar esa bobina automáticamente. El peso inicial es el que indica la propia etiqueta y, si no indica ninguno, el valor predeterminado de arriba. Desactívelo para registrar cada bobina usted mismo, con un peso medido."
         }
       }
     },

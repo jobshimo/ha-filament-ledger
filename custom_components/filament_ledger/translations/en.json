@@ -16,7 +16,7 @@
           "default_core_weight": "The bare reel, without filament. A kitchen scale weighs the whole spool, so the ledger subtracts this for you. Bambu reels are about 250 g.",
           "anomaly_threshold": "When the scale disagrees with the ledger by more than this, something upstream is systematically wrong and worth a look.",
           "auto_mount_on_rfid": "When the printer reads a known tag, record that spool as mounted in that slot. Turn off if you load registered spools briefly and want their recorded locations left alone.",
-          "auto_register_on_detect": "When an unknown tag arrives with its material and colour, register that spool with the default weights above. Turn off to register every spool yourself, with a weight you measured."
+          "auto_register_on_detect": "When an unknown tag arrives with its material and colour, register that spool automatically. The opening weight is the one the tag itself reports, falling back to the default above when it reports none. Turn off to register every spool yourself, with a weight you measured."
         }
       }
     },
