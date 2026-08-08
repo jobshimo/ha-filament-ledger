@@ -200,6 +200,41 @@ class TestTwoSignalsForOneEnding:
             "bracket_v3.gcode.3mf",
         ]
 
+    async def test_an_inference_leaves_a_stale_running_row_alone(self, ledger: Ledger) -> None:
+        """Upstream announces a start per attempt, and it announced two for one job on the
+        reference machine (22:07:51 and 22:15:38 UTC, 2026-08-08, same file, no ending
+        between). The ending closes the newest and the older row is left standing.
+
+        The startup pass then offers that leftover a `finish` on *every* restart. Closing it
+        would charge the machine's current plan a second time, for a print already paid for.
+        """
+        await ledger.use_cases.track_print_job.execute(started())
+        ledger.clock.advance(minutes=8)
+        await ledger.use_cases.track_print_job.execute(started())
+        await ledger.use_cases.track_print_job.execute(ended(PrintJobState.FINISHED))
+        ledger.clock.advance(hours=3)
+
+        job_id = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage={TRAY_1: Grams.of(100)}, derived=True)
+        )
+
+        assert job_id is None
+        states = [job.state for job in await stored_jobs(ledger)]
+        assert states == [PrintJobState.FINISHED, PrintJobState.RUNNING]
+
+    async def test_a_stale_row_does_not_hide_a_real_ending_from_the_bus(
+        self, ledger: Ledger
+    ) -> None:
+        """The same leftover, and an *announced* ending. That one fired just now, so the
+        newest running row is what it describes and the guard must not swallow it."""
+        await ledger.use_cases.track_print_job.execute(started())
+        ledger.clock.advance(minutes=8)
+        current = await ledger.use_cases.track_print_job.execute(started())
+
+        job_id = await ledger.use_cases.track_print_job.execute(ended(PrintJobState.FINISHED))
+
+        assert job_id == current
+
     async def test_a_duplicate_never_charges_the_same_print_twice(self, ledger: Ledger) -> None:
         """The whole point, measured where it hurts: the spool's balance."""
         spool_id = await a_spool(ledger)

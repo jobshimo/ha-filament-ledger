@@ -263,7 +263,11 @@ unfiltered — `recorder:` carries only `purge_keep_days: 60`. The last one that
 source says why (`pybambu/models.py`):
 
 ```python
-if previous_gcode_state != "unknown" and previous_gcode_state != "FINISH" and self.gcode_state == "FINISH":
+if (
+    previous_gcode_state != "unknown"
+    and previous_gcode_state != "FINISH"
+    and self.gcode_state == "FINISH"
+):
     self._client.callback("event_print_finished")
 ```
 

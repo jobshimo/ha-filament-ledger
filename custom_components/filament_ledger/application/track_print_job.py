@@ -146,6 +146,18 @@ class TrackPrintJob:
         """
         now = self.clock.now()
         job = await self._running_job(event.printer)
+        if job is not None and event.derived and not await self._is_newest(event.printer, job):
+            # A stale running row, and an inference has no business closing one. See
+            # `_is_newest` for the double charge this prevents.
+            LOGGER.debug(
+                "job %s (%s) on printer %s is a stale running row; a later job already "
+                "concluded there, so this inferred %s does not describe it",
+                job.id,
+                job.name,
+                event.printer,
+                event.outcome.value,
+            )
+            return None
         if job is None:
             if event.derived:
                 LOGGER.debug(
@@ -234,6 +246,30 @@ class TrackPrintJob:
                 event.outcome.value,
             )
         return ended.id
+
+    async def _is_newest(self, printer: PrinterSerial, job: PrintJob) -> bool:
+        """Whether this running row is the last thing that happened on the machine.
+
+        **A running row is not always the print a machine is running.** Upstream announces a
+        start per attempt, and it announced two for one job on the reference machine — 22:07:51
+        and 22:15:38 UTC on 2026-08-08, same file, no ending between them. The older row is
+        then a leftover: `_running_job` closes the newest, and the stale one is left standing,
+        which is what this ledger has always done with an ending that never arrived.
+
+        Left standing is harmless until something reads a *level* and offers to close it. The
+        startup pass does exactly that, on every restart, for as long as the row exists — so
+        without this check the first restart after that print finished would close the stale
+        row too and charge the machine's current plan a second time. One physical print, two
+        deductions, and no way to tell the duplicate from a real entry afterwards.
+
+        Announced endings are deliberately not subject to this. One of those is a discrete
+        event that just fired, so the newest running row *is* what it describes; an inference
+        is read off a level that says nothing about which of two rows it belongs to, and when
+        a later job has already concluded on that machine the level is describing the concluded
+        one.
+        """
+        recent = await self.jobs.list_recent(1, printer=printer)
+        return bool(recent) and recent[0].id == job.id
 
     async def _already_ended(self, event: PrintEnded, now: datetime) -> PrintJob | None:
         """This machine's newest job when it is the print this ending is already recorded
