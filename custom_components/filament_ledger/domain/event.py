@@ -172,8 +172,9 @@ class UnknownSpoolDetected(DomainEvent):
     knows nothing about beyond its serial. A guessed identity is a fabricated fact, and a
     fabricated fact in a ledger is worse than a missing one — it looks authoritative.
     A reading that *does* carry the full Bambu payload registers its spool instead of
-    raising this (see `DetectSpool`), because there the opening weight is the one
-    configured default the user already stated, not a guess.
+    raising this (see `DetectSpool`), because there the opening weight is the reel's own
+    tagged figure — or, failing that, the configured default the user already stated.
+    Neither is a guess.
     """
 
     tag_uid: TagUid

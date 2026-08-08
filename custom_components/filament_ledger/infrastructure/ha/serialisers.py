@@ -355,7 +355,16 @@ def tray_sync_result(result: TraySyncResult) -> dict[str, Any]:
 
 def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
     """The hints ride along for `unknown_tag`: the register form pre-fills from them, so
-    the user confirms the one number the tray cannot report (docs/06 §6.4).
+    the user confirms rather than retypes what the tray already reported (docs/06 §6.4).
+
+    **`weight_hint_g` is one of them**, and it is here so the two entry points agree.
+    Auto-registration opens the balance at the reel's own tagged weight; a user
+    registering the very same row by hand — with `auto_register_on_detect` off, or from
+    the sync strip's **Register…** button — would otherwise be handed the configured
+    default instead. Same reel, same tag, two different numbers is the inconsistency a
+    bug report is made of. Null when the tag declined to say, exactly as the other hints
+    are null when absent: the panel then falls back to the configured default, and a
+    zero here would be a fabricated figure wearing a real one's clothes.
 
     The tray is named in full — `printer`, `ams`, `slot` — because the panel mounts into
     this tray and a bare number is no longer an address. `slot` keeps its name and meaning,
@@ -371,6 +380,10 @@ def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
         "name_hint": reading.name,
         "material_hint": reading.material,
         "colour_hint": reading.colour.display_hex if reading.colour else None,
+        # Whole grams, like every other opening weight on the wire: the figure fills a
+        # form field the user may type over, and a tenth would claim a precision a
+        # nominal reel weight does not have.
+        "weight_hint_g": whole_grams(reading.weight) if reading.weight is not None else None,
         "spool_id": spool.id if spool else None,
         "spool_name": spool.display_name if spool else None,
     }

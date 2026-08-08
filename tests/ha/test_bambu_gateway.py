@@ -481,7 +481,53 @@ class TestCurrentTrays:
             name="Bambu PLA Basic",
             material="PLA",
             colour=Colour(0x5E, 0x43, 0xB7, 0xFF),
+            weight=Grams.of(1000),
         )
+
+    async def test_the_tags_own_weight_becomes_the_readings_opening_figure(self) -> None:
+        """`tray_weight` is a string of grams the RFID carries, and it is what a reel of
+        this product held new — so auto-registration opens a 250 g reel at 250 g rather
+        than at a default that suits only the kilo spools (docs/12-field-notes.md)."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[TRAY_2] = tray_state(
+            TRAY_2, {**TRAY_ATTRIBUTES[TRAY_2], "tray_weight": "250"}
+        )
+
+        readings = await BambuLabGateway(as_hass(hass)).current_trays()
+
+        assert readings[a_tray(2)].weight == Grams.of(250)
+
+    async def test_a_tag_that_declines_to_say_reports_no_weight(self) -> None:
+        """Tray 3's untagged reel reports `tray_weight: "0"` on the reference machine.
+        Zero is the tag saying nothing, never a reel holding nothing — the register path
+        reads the absence as *fall back to the configured default*."""
+        readings = await BambuLabGateway(as_hass(bambu_hass())).current_trays()
+
+        assert readings[a_tray(3)].weight is None
+
+    @pytest.mark.parametrize(
+        "unusable",
+        [
+            pytest.param("", id="an-empty-string"),
+            pytest.param("n/a", id="a-word-where-a-number-belongs"),
+            pytest.param("-500", id="a-negative-reel"),
+            pytest.param("NaN", id="a-decimal-shaped-nothing"),
+            pytest.param(None, id="an-absent-attribute"),
+            pytest.param(True, id="a-bool-that-int-would-have-accepted"),
+        ],
+    )
+    async def test_an_unusable_weight_is_dropped_never_fabricated(self, unusable: object) -> None:
+        """The reading stays whole and the figure goes missing: `_read` is total by
+        construction, and the domain refuses a non-positive opening weight anyway."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[TRAY_2] = tray_state(
+            TRAY_2, {**TRAY_ATTRIBUTES[TRAY_2], "tray_weight": unusable}
+        )
+
+        readings = await BambuLabGateway(as_hass(hass)).current_trays()
+
+        assert readings[a_tray(2)].weight is None
+        assert readings[a_tray(2)].tag == TRAY_2_TAG
 
     async def test_sixteen_zeros_is_an_absent_tag_not_an_identity(self) -> None:
         """Tray 3 holds a third-party or refilled spool: physically present, no readable
@@ -560,6 +606,7 @@ class TestSubscription:
                 name="Bambu PLA Matte",
                 material="PLA",
                 colour=Colour(255, 255, 255, 255),
+                weight=Grams.of(1000),
             )
         ]
 
