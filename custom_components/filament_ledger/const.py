@@ -27,9 +27,10 @@ DEFAULT_ANOMALY_THRESHOLD_PCT: Final = 15
 # silently rewriting their locations is not a service. See docs/04-use-cases.md UC-02.
 DEFAULT_AUTO_MOUNT_ON_RFID: Final = True
 # On by default too: an unknown Bambu tag whose reading names material and colour is a
-# spool the printer just described in full, and registering it with the configured
-# defaults is the product working as designed. Off, every unknown tag only reports, which
-# suits users who register by hand with a real weight. See docs/04-use-cases.md UC-02.
+# spool the printer just described in full, and registering it — at the reel's own tagged
+# weight, or these defaults when the tag gives none — is the product working as designed.
+# Off, every unknown tag only reports, which suits users who register by hand with a
+# weight they measured. See docs/04-use-cases.md UC-02.
 DEFAULT_AUTO_REGISTER_ON_DETECT: Final = True
 
 DATABASE_FILENAME: Final = "filament_ledger.db"

@@ -972,6 +972,7 @@ def _read(tray: TrayRef, state: State | None) -> TrayReading | None:
         name=_text(attributes.get("name")),
         material=_text(attributes.get("type")),
         colour=_colour(attributes.get("color")),
+        weight=_reel_weight(attributes.get("tray_weight")),
     )
 
 
@@ -1013,3 +1014,30 @@ def _weight(value: object) -> Grams | None:
         return None
     grams = Grams.of(value)
     return None if grams.is_negative else grams
+
+
+def _reel_weight(value: object) -> Grams | None:
+    """The RFID's nominal spool weight — `tray_weight`, which the tag carries in grams.
+
+    Deliberately *not* `_weight` above, on two counts that are policy rather than
+    plumbing. The dialect differs: this field arrives as a **string** (`"1000"`), while
+    the consumption figures arrive as numbers. And zero means the opposite thing: a tray
+    that consumed nothing is a real figure of zero, whereas `tray_weight: "0"` is the tag
+    declining to say — the reference machine writes it for the untagged third-party reel
+    in tray 3 (docs/12-field-notes.md). Folding the two policies into one helper would
+    make one of the two call sites wrong.
+
+    Non-positive and unparseable both become `None`, never a fabricated number: the
+    domain refuses an opening weight of nothing, and the register path reads absence as
+    *fall back to the configured default* rather than as a figure.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        grams = Grams.of(value.strip() if isinstance(value, str) else value)
+    except ArithmeticError, ValueError:
+        # `Decimal` refuses the shapes an attribute dictionary can still hold — "", "n/a",
+        # "NaN". Caught here so `_read` stays total, as its own docstring promises.
+        LOGGER.debug("unusable tray_weight %r ignored", value)
+        return None
+    return grams if grams.is_positive else None

@@ -3888,9 +3888,15 @@ class FilamentLedgerPanel extends HTMLElement {
     const t = this._t;
     const defaults = this._stock?.defaults || { opening_weight_g: 1000, core_weight_g: 250 };
     // Pre-fill from a sync outcome when one opened this dialog (docs/06 §6.4): material,
-    // colour, name and tag are what the tray reported; the opening weight stays the
-    // user's to confirm — the one number the RFID cannot know.
+    // colour, name, tag and — when the tag carried one — the reel's own weight are what
+    // the tray reported.
     const hint = this._dialog?.prefill ?? null;
+    // The tagged reel's weight wins over the configured default, so registering by hand
+    // and letting auto-registration do it produce the same number for the same reel.
+    // Still only a pre-fill: `tray_weight` is what the reel held *new*, and somebody
+    // registering a half-used spool must be able to type the figure they measured over
+    // it. Absent (the tag said nothing) falls back to the default, as it always did.
+    const opening = hint?.weight_hint_g ?? defaults.opening_weight_g;
     // A hint outside the list (say "PLA-CF") must not fall through to the browser's
     // default first option — PLA is specific, and wrong, silently. OTHER plus the raw
     // hint in the name field drops nothing the printer said (TrayReading's guarantee).
@@ -3906,7 +3912,7 @@ class FilamentLedgerPanel extends HTMLElement {
         <label>${t("dlg.materialOther")}<input name="material_other" value="${esc(materialOther)}" placeholder="${t("dlg.materialOtherPlaceholder")}"></label>
         <label>${t("dlg.colour")}<input name="colour" value="${esc(hint?.colour_hint || "#000000")}" type="color"></label>
         <label>${t("dlg.openingWeight")}
-          <input name="opening_weight_g" type="number" step="0.1" min="1" value="${defaults.opening_weight_g}" required>
+          <input name="opening_weight_g" type="number" step="0.1" min="1" value="${esc(opening)}" required>
         </label>
         <label>${t("dlg.coreWeight")}
           <input name="core_weight_g" type="number" step="0.1" min="0" value="${defaults.core_weight_g}" required>

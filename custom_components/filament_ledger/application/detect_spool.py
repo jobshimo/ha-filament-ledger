@@ -7,11 +7,18 @@ subsequent print deducts from a spool sitting on a shelf.
 
 An unknown tag is refused more narrowly than it used to be. When the reading carries the
 full Bambu payload — a material string *and* a colour — and `auto_register_on_detect` is
-on, the spool registers itself with the configured defaults and then mounts through the
-ordinary path: nothing there is a guess, because the opening weight is the default the
-user already stated and everything else is what the RFID said. A reading missing either
-hint still only reports, because a spool the system cannot describe is a spool it must
-not invent.
+on, the spool registers itself and then mounts through the ordinary path: nothing there
+is a guess, because everything is what the RFID said — the opening weight is the reel's
+own `tray_weight`, falling back to the configured default for a tag that declines to
+give one. A reading missing either hint still only reports, because a spool the system
+cannot describe is a spool it must not invent.
+
+**That opening weight is what the reel held new, and a reel is not always new.** Meeting
+a half-used spool for the first time therefore opens it overstated — exactly as the
+configured default always has, and no worse. Nothing here invents a correction for it:
+the printer has no scale and `remain` is useless on this hardware (docs/12), so any
+compensation would be a fabricated number. The confidence badge and the *needs weighing*
+prompt are the honest answer, and they already cover this spool from its first entry.
 
 **Nothing here records a movement itself.** Both paths only move spools; moving a spool
 consumes no filament. (Auto-registration delegates to `RegisterSpool`, whose opening
@@ -152,7 +159,17 @@ class DetectSpool:
                 RegisterSpoolCommand(
                     material=Material.from_printer(reading.material),
                     colour=reading.colour,
-                    opening_weight=self.default_opening_weight,
+                    # The reel's own figure when the tag carries one: a 250 g or 750 g
+                    # spool is born at its size rather than at a default that happens to
+                    # be right only for the 1 kg reels. The configured default is the
+                    # fallback for tags that decline to say — and absence really is
+                    # absence here, because the boundary turns `tray_weight: "0"` into
+                    # `None` rather than passing a zero the domain would refuse.
+                    opening_weight=(
+                        reading.weight
+                        if reading.weight is not None
+                        else self.default_opening_weight
+                    ),
                     core_weight=self.default_core_weight,
                     vendor=BAMBU_VENDOR,
                     # The product name alone would be born twice for two reels of one

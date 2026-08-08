@@ -66,9 +66,10 @@ machines it could have meant rather than picking one.
 
 **Flow**
 1. Resolve the spool — by id, or by tag lookup.
-2. **If tag resolution finds nothing: register the spool with the configured defaults when
-   `auto_register_on_detect` is on and the reading names material and colour; otherwise
-   raise `UnknownSpoolDetected` and stop.** Nothing is ever guessed into existence.
+2. **If tag resolution finds nothing: register the spool when `auto_register_on_detect` is
+   on and the reading names material and colour — at the reel's own tagged weight, or the
+   configured default when the tag gives none; otherwise raise `UnknownSpoolDetected` and
+   stop.** Nothing is ever guessed into existence.
 3. **If tag resolution finds more than one non-discarded spool: raise `AmbiguousTagDetected`
    with the candidates and stop.** The tray stays unmounted.
 4. If the tray holds a different spool, unmount it to storage (UC-03).

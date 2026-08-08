@@ -259,9 +259,17 @@ class TestAutoMountDisabled:
 
 
 def a_full_reading(
-    slot: int, *, material: str = "PLA", name: str = "Bambu PLA Basic"
+    slot: int,
+    *,
+    material: str = "PLA",
+    name: str = "Bambu PLA Basic",
+    weight: Grams | None = None,
 ) -> TrayReading:
-    """What a Bambu reel actually produces: tag, name, material and colour, all present."""
+    """What a Bambu reel actually produces: tag, name, material and colour, all present.
+
+    `weight` defaults absent, which is the tag declining to say — the boundary turns
+    `tray_weight: "0"` into exactly that, and the configured default stands in.
+    """
     return TrayReading(
         tray=a_tray(slot),
         tag=TAG,
@@ -269,6 +277,7 @@ def a_full_reading(
         name=name,
         material=material,
         colour=Colour.parse("00FF00FF"),
+        weight=weight,
     )
 
 
@@ -340,6 +349,25 @@ class TestAutoRegister:
         [mounted] = ledger.events.of(SpoolMounted)
         assert mounted == SpoolMounted(spool_id=spool.id, tray=a_tray(2))
         assert ledger.events.of(UnknownSpoolDetected) == []
+
+    async def test_the_reels_own_weight_opens_the_balance(self, ledger: Ledger) -> None:
+        """A 250 g reel is born at 250 g: the tag carried the figure, so the configured
+        default — right only for the kilo spools — has nothing to stand in for."""
+        await self.detection(ledger).execute(a_full_reading(2, weight=Grams.of(250)))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.opening_weight == Grams.of(250)
+        assert summary.balance == Grams.of(250)
+
+    async def test_a_tag_that_gives_no_weight_falls_back_to_the_default(
+        self, ledger: Ledger
+    ) -> None:
+        """`tray_weight: "0"`, an unparseable figure and a missing attribute all reach
+        this use case as the same absence, and absence is what the default is for."""
+        await self.detection(ledger).execute(a_full_reading(2))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.opening_weight == Grams.of(800)
 
     async def test_the_label_speaks_the_instances_language(self, ledger: Ledger) -> None:
         """A label is stored data, not a translated view: a Spanish instance writes

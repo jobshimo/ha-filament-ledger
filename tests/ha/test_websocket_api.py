@@ -1632,7 +1632,9 @@ class TestTraysSync:
         self, ws: WsClient, harness: Harness
     ) -> None:
         """Full equality on the slot the panel's Register… action feeds from: tag, name,
-        material and colour, exactly as the tray reported them (docs/06 §6.4)."""
+        material, colour and the reel's own weight, exactly as the tray reported them
+        (docs/06 §6.4). The weight rides along so registering this row by hand opens the
+        same balance auto-registration would have."""
         self.wire(harness)
 
         result = await ws.result_dict(TRAYS_SYNC)
@@ -1647,11 +1649,28 @@ class TestTraysSync:
             "name_hint": "Bambu PLA Matte",
             "material_hint": "PLA",
             "colour_hint": "#FFFFFF",
+            "weight_hint_g": 1000,
             "spool_id": None,
             "spool_name": None,
         }
         # Reported, never created: an unknown tag must not become a spool (UC-02).
         assert await ws.result_list(LIST) == []
+
+    async def test_a_tag_that_states_no_weight_sends_no_hint(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """Tray 3's untagged reel reports `tray_weight: "0"`. The hint travels null rather
+        than zero, so the register form falls back to the configured default instead of
+        offering a reel that holds nothing."""
+        self.wire(harness)
+
+        result = await ws.result_dict(TRAYS_SYNC)
+
+        slots = cast("list[dict[str, object]]", result["slots"])
+        assert slots[2]["weight_hint_g"] is None
+        # The tagged rows still carry theirs — the null is the tag's silence, not a
+        # serialiser that forgot the field.
+        assert slots[0]["weight_hint_g"] == 1000
 
     async def test_with_auto_mount_off_a_sighting_is_reported_never_acted_on(
         self, ws: WsClient, harness: Harness
@@ -1674,6 +1693,7 @@ class TestTraysSync:
             "name_hint": "Bambu PLA Basic",
             "material_hint": "PLA",
             "colour_hint": "#5E43B7",
+            "weight_hint_g": 1000,
             "spool_id": spool_id,
             "spool_name": "PLA Basic Purple",
         }
@@ -1705,6 +1725,7 @@ class TestTraysSync:
             "name_hint": "Bambu PLA Basic",
             "material_hint": "PLA",
             "colour_hint": "#5E43B7",
+            "weight_hint_g": 1000,
             "spool_id": None,
             "spool_name": None,
         }
