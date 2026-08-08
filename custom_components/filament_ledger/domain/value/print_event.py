@@ -40,10 +40,19 @@ class PrintStarted:
 
     `printer` is the machine that began it — the module docstring says why it is required.
 
-    `plan` carries the slicer's per-tray totals when the weight sensor's attributes
-    already hold them — the same figures `PrintJob.reported_usage` preserves, captured at
-    the moment they are known to describe *this* job. `None` records that the breakdown
-    never materialised, which is the open Q4 question, not a claim of zero.
+    `plan` carries the slicer's per-tray totals when a gateway can honestly say they
+    describe *this* job — the same figures `PrintJob.reported_usage` preserves. `None`
+    records that they were not known when the job began, never a claim of zero.
+
+    **The Bambu gateway always sends `None`, and that is not a gap to be closed by
+    reading the sensor here.** Measured on the reference machine: the weight sensor is
+    republished about three-quarters of a minute *after* the start event fires, so
+    anything standing on it at this moment belongs to the print before — capturing it is
+    how a 937-layer job was charged the 2.1 g of its predecessor
+    (docs/12-field-notes.md, 2026-08-08). That adapter therefore follows the sensor
+    through the job and reports the figures on the *ending* instead. The field stays
+    because the port permits a gateway that genuinely knows the plan up front, and
+    because `TrackPrintJob` must not let a figureless ending erase one that did.
 
     `printer_started_at` is the machine's own answer to *when did this print begin*, and
     the name says whose clock it is. The ledger stamps its own moment when it hears the
