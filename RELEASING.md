@@ -133,8 +133,14 @@ a major contributor may submit.
 What HACS checks, and where this repository stands: a `hacs.json` at the root ✓, the integration
 under `custom_components/<domain>/` ✓, a `manifest.json` carrying `domain`, `documentation`,
 `issue_tracker`, `codeowners`, `name` and `version` ✓, a repository description ✓, issues enabled
-✓, a published GitHub release ✓, the brand icon ✓ — and **topics on the repository**, plus a green
-run of the **HACS Action** in CI, which are the two that still need doing.
+✓, a published GitHub release ✓, the brand icon ✓, topics on the repository ✓, and a green run of
+the **HACS Action** in CI ✓ — every prerequisite is met, and the submission itself is the only
+step left.
+
+The pull request template asks for three links, and the order they are produced in is the part
+worth stating: the release must be cut **after** the validation run it points at, so the run and
+the release describe the same commit. Read them off one CI run on `main` — its *HACS validation*
+and *Home Assistant manifest* jobs — and the release for the tag on that same SHA.
 
 Neither of these changes anything for existing custom-repository users. They keep updating
 exactly as before.
