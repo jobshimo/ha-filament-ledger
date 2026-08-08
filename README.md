@@ -3,12 +3,8 @@
 [![CI](https://github.com/jobshimo/ha-filament-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/jobshimo/ha-filament-ledger/actions/workflows/ci.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-<!-- Ready to activate. Uncomment the HACS badge once the repository is public and installable
-     as a custom repository; uncomment the release badge after the first tag (see RELEASING.md).
-
 [![HACS: custom](https://img.shields.io/badge/HACS-custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
 [![Release](https://img.shields.io/github/v/release/jobshimo/ha-filament-ledger?sort=semver)](https://github.com/jobshimo/ha-filament-ledger/releases)
--->
 
 **Filament Ledger is a Home Assistant custom integration that tracks how much filament you
 actually have left.** It keeps a double-entry ledger per spool — every gram that leaves is an
