@@ -263,6 +263,39 @@ def fire_tray_change(hass: FakeHass, entity_id: str, new_state: State | None) ->
     )
 
 
+#: Shape B of a flicker pair: the same sensor, the same state value, and no tray key at
+#: all. Captured from the two recorder rows of one republish burst, one to four seconds
+#: apart (docs/12-field-notes.md, 2026-08-08) — the shape a finish landing beside it used
+#: to read as "this print consumed nothing".
+WEIGHT_WITHOUT_BREAKDOWN: dict[str, object] = {
+    "state_class": "total",
+    "unit_of_measurement": "g",
+    "device_class": "weight",
+    "friendly_name": "A1_00000000TESTSER Peso de la impresion",
+}
+
+
+def fire_weight_change(
+    hass: FakeHass,
+    attributes: dict[str, object],
+    entity_id: str = WEIGHT,
+    state: str = "40.51",
+) -> None:
+    """One republish of a weight sensor, the way upstream does it — in occasional
+    bursts through a print, each burst a pair of opposite shapes.
+
+    The state value is held constant on purpose: what alternates between the two shapes
+    is the *attributes*, and a gateway watching the state alone would see nothing happen.
+    """
+    old_state = hass.states.get(entity_id)
+    new_state = State(entity_id, state, attributes)
+    hass.states.by_entity_id[entity_id] = new_state
+    hass.bus.async_fire(
+        "state_changed",
+        {"entity_id": entity_id, "old_state": old_state, "new_state": new_state},
+    )
+
+
 def fire_job_event(hass: FakeHass, event_type: str, device_id: str = PRINTER_DEVICE) -> None:
     """What upstream fires: `bambu_lab_event` naming the device, the entry, the type —
     the verified v2.2.22 payload shape."""
@@ -793,48 +826,261 @@ class TestJobEventTranslation:
 
         assert listener.received == [PrintStarted(name=JOB_NAME, printer=A_PRINTER, plan=None)]
 
-    async def test_a_start_translates_the_per_tray_plan_when_upstream_carries_it(
+    async def test_a_republished_breakdown_translates_its_tray_keys(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """`AMS 1 Tray n` becomes `a_tray(n)` here and nowhere else (docs/05 §5.8).
         The external-spool figure has no AMS slot to land in, so it is dropped loudly."""
         hass = bambu_hass()
-        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
-            WEIGHT,
-            attributes={"AMS 1 Tray 1": 28.4, "AMS 1 Tray 2": 6.1, "External Spool": 1.2},
-        )
         listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
 
         with caplog.at_level(logging.WARNING):
-            fire_job_event(hass, "event_print_started")
-            await hass.drain()
+            fire_weight_change(
+                hass, {"AMS 1 Tray 1": 28.4, "AMS 1 Tray 2": 6.1, "External Spool": 1.2}
+            )
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
 
-        [event] = listener.received
-        assert isinstance(event, PrintStarted)
-        assert event.plan == {a_tray(1): Grams.of("28.4"), a_tray(2): Grams.of("6.1")}
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {a_tray(1): Grams.of("28.4"), a_tray(2): Grams.of("6.1")}
         assert "external spool" in caplog.text
+
+    async def test_the_external_spool_warning_does_not_repeat_per_republish(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The sensor is republished repeatedly through a print. The figure is still
+        dropped loudly, but *once per observation* — the same attributes again is the same
+        observation, not news."""
+        hass = bambu_hass()
+        self.subscribed(hass)
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 1.2})
+
+        assert caplog.text.count("external spool") == 1
+
+    @pytest.mark.parametrize(
+        "unusable",
+        [
+            pytest.param(float("inf"), id="infinity"),
+            pytest.param(float("-inf"), id="negative-infinity"),
+            pytest.param(1e30, id="a-figure-too-large-to-quantise"),
+            pytest.param(float("nan"), id="not-a-number"),
+        ],
+    )
+    async def test_a_figure_no_quantity_can_hold_is_skipped_not_raised(
+        self, unusable: float
+    ) -> None:
+        """All four are floats, so a type check waves them through and `Grams.of` raises
+        — `InvalidOperation` for the first three, `ValueError` for the last. This runs on
+        every republish now, from a callback that promised the event loop it never
+        raises, so the guard is the difference between a skipped key and an exception
+        unwinding the bus dispatch."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": unusable, "AMS 1 Tray 2": 9.4})
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        # The bad key is gone; the honest one beside it survives.
+        assert ended.reported_usage == {a_tray(2): Grams.of("9.4")}
 
     async def test_malformed_per_tray_figures_are_skipped_not_invented(self) -> None:
         """Strings in an attribute dictionary, no schema, no version: a textual figure, a
         negative one and a second AMS are all noise — only honest rows survive."""
         hass = bambu_hass()
-        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
-            WEIGHT,
-            attributes={
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+        fire_weight_change(
+            hass,
+            {
                 "AMS 1 Tray 1": "lots",
                 "AMS 1 Tray 2": -3,
                 "AMS 2 Tray 1": 7.5,
                 "AMS 1 Tray 3": 5.0,
             },
         )
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {a_tray(3): Grams.of(5)}
+
+    async def test_a_start_discards_the_previous_jobs_figures(self) -> None:
+        """The measured race (docs/12-field-notes.md): upstream updates the weight sensor
+        about three-quarters of a minute *after* the start event fires, so whatever stands
+        on it when a job starts describes the job before. Inheriting it is how a 937-layer
+        print was charged the 2.1 g of its predecessor — so the start carries no plan and
+        throws the held reading away."""
+        hass = bambu_hass()
         listener = self.subscribed(hass)
+        fire_weight_change(hass, {"AMS 1 Tray 1": 2.1})  # the previous job's figures
 
         fire_job_event(hass, "event_print_started")
         await hass.drain()
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
 
-        [event] = listener.received
-        assert isinstance(event, PrintStarted)
-        assert event.plan == {a_tray(3): Grams.of(5)}
+        started, ended = listener.received
+        assert isinstance(started, PrintStarted)
+        assert isinstance(ended, PrintEnded)
+        assert started.plan is None
+        # Nothing arrived during this job, so the ending reports the honest absence
+        # rather than the figures still sitting on the sensor.
+        assert ended.reported_usage is None
+
+    async def test_a_shape_without_tray_keys_never_erases_one_with_them(self) -> None:
+        """The flicker itself, and the whole reason the reading is held rather than
+        sampled: each republish burst is a pair of rows one to four seconds apart, one
+        carrying the breakdown and one carrying no tray key at all, with the state value
+        unchanged. A finish landing beside the empty half of a pair used to charge a
+        220-layer two-colour print nothing.
+
+        An unavailable sensor is the same silence, and is treated the same way."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 31.33, "AMS 1 Tray 3": 62.38})
+        fire_weight_change(hass, WEIGHT_WITHOUT_BREAKDOWN)
+        fire_tray_change(hass, WEIGHT, State(WEIGHT, "unavailable"))
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {
+            a_tray(1): Grams.of("31.33"),
+            a_tray(3): Grams.of("62.38"),
+        }
+
+    async def test_two_machines_never_share_a_held_reading(self) -> None:
+        """The state is per printer, and so is the discard: one machine starting a print
+        must not blank what the other machine is holding mid-job."""
+        hass = two_printer_hass()
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+        fire_weight_change(hass, {"AMS 1 Tray 1": 38.2})
+        fire_weight_change(hass, {"AMS 1 Tray 2": 9.4}, entity_id=SECOND_WEIGHT)
+
+        # The second machine starts, which discards only its own held reading.
+        fire_job_event(hass, "event_print_started", device_id=SECOND_DEVICE)
+        await hass.drain()
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+        fire_job_event(hass, "event_print_finished", device_id=SECOND_DEVICE)
+        await hass.drain()
+
+        endings = [event for event in listener.received if isinstance(event, PrintEnded)]
+        mine, theirs = endings
+        assert mine.printer == A_PRINTER
+        assert mine.reported_usage == {a_tray(1): Grams.of("38.2")}
+        assert theirs.printer == ANOTHER_PRINTER
+        assert theirs.reported_usage is None
+
+    async def test_detach_forgets_the_readings_it_was_holding(self) -> None:
+        """A reload builds a new gateway; a plan carried across one would describe a job
+        nobody is watching any more.
+
+        The sensor is left on the breakdown-less half afterwards so what is being observed
+        is the *held* reading going away: with it still held, the ending would report the
+        38.2 g below whatever the sensor said."""
+        hass = bambu_hass()
+        gateway = BambuLabGateway(as_hass(hass))
+        listener = RecordingPrintListener()
+        gateway.subscribe_jobs(listener)
+        fire_weight_change(hass, {"AMS 1 Tray 1": 38.2})
+
+        gateway.detach()
+        gateway.subscribe_jobs(listener)  # as a reload's fresh subscription would
+        hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "40.51", WEIGHT_WITHOUT_BREAKDOWN)
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        [ended] = listener.received
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage is None
+
+    async def test_a_reload_mid_print_still_reads_the_plan_that_is_already_there(self) -> None:
+        """A config-entry reload — which every options change performs — builds a fresh
+        gateway, and the state tracker only ever fires for *future* changes. The plan
+        published earlier in this print is sitting in `hass.states` all the same, so the
+        ending reads it rather than reporting the silence that started this whole fix.
+
+        Nothing is subscribed until after the sensor already holds the breakdown, and no
+        further weight event is fired: that *is* the reload."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "93.71", {"AMS 1 Tray 1": 93.71})
+        listener = self.subscribed(hass)
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        [ended] = listener.received
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {a_tray(1): Grams.of("93.71")}
+
+    async def test_a_watched_start_with_nothing_published_reports_the_absence(self) -> None:
+        """The other half of the reload rule, and the reason it is a rule rather than a
+        blanket live read: this gateway *saw* the job begin, so nothing has been published
+        since, so the figures still on the sensor belong to the print before this one.
+        Reading them live would charge this job with its predecessor's plan — the very
+        defect being fixed. `None` sends it to the review queue instead."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+        # The previous job's plan, still standing on the sensor.
+        fire_weight_change(hass, {"AMS 1 Tray 1": 2.1})
+
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage is None
+
+    async def test_a_changed_external_figure_is_announced_even_when_the_trays_stand_still(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The dedupe key is the whole reading. Comparing only the tray plan would drop
+        this republish as a repeat and swallow the figure the warning exists to name."""
+        hass = bambu_hass()
+        self.subscribed(hass)
+
+        with caplog.at_level(logging.WARNING):
+            fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 1.2})
+            fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 7.5})
+
+        assert caplog.text.count("external spool") == 2
+
+    async def test_a_second_ams_is_named_once_per_reading_not_once_per_republish(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One AMS per printer is tracked, and a household with two hears so — once for
+        the reading, not once for every republish of it."""
+        hass = bambu_hass()
+        self.subscribed(hass)
+
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "AMS 2 Tray 1": 7.5})
+
+        assert caplog.text.count("one AMS per printer is tracked") == 1
 
     async def test_a_cancellation_captures_the_moments_figures(self) -> None:
         """Layers, progress and the raw state, read at the moment the event fires —
@@ -883,35 +1129,41 @@ class TestJobEventTranslation:
         gateway translates exactly what the printer said."""
         hass = bambu_hass()
         shape = PRINT_SENSORS_FINISHED[WEIGHT]
-        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
-            WEIGHT,
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+        fire_weight_change(
+            hass,
+            cast("dict[str, object]", shape["attributes"]),
             state=str(shape["state"]),
-            attributes=cast("dict[str, object]", shape["attributes"]),
         )
-        listener = self.subscribed(hass)
 
         fire_job_event(hass, "event_print_finished")
         await hass.drain()
 
-        [event] = listener.received
-        assert isinstance(event, PrintEnded)
-        assert event.outcome is PrintJobState.FINISHED
-        assert event.reported_usage == {a_tray(4): Grams.of("296.56")}
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.outcome is PrintJobState.FINISHED
+        assert ended.reported_usage == {a_tray(4): Grams.of("296.56")}
 
-    async def test_a_finish_captures_the_final_per_tray_figures(self) -> None:
+    async def test_a_finish_uses_the_last_breakdown_seen_during_the_job(self) -> None:
+        """The figures climb as the print runs, so the last one seen is the one that
+        describes the whole job — and the ending is not the moment it is read, because by
+        then the sensor may be mid-flicker."""
         hass = bambu_hass()
-        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
-            WEIGHT, attributes={"AMS 1 Tray 1": 38.2, "AMS 1 Tray 2": 9.4}
-        )
         listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+        fire_weight_change(hass, {"AMS 1 Tray 1": 12.0})
+        fire_weight_change(hass, {"AMS 1 Tray 1": 38.2, "AMS 1 Tray 2": 9.4})
 
         fire_job_event(hass, "event_print_finished")
         await hass.drain()
 
-        [event] = listener.received
-        assert isinstance(event, PrintEnded)
-        assert event.outcome is PrintJobState.FINISHED
-        assert event.reported_usage == {
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.outcome is PrintJobState.FINISHED
+        assert ended.reported_usage == {
             a_tray(1): Grams.of("38.2"),
             a_tray(2): Grams.of("9.4"),
         }
@@ -952,11 +1204,9 @@ class TestJobEventTranslation:
         use case downstream has no way to notice.
         """
         hass = two_printer_hass()
-        hass.states.by_entity_id[WEIGHT] = print_sensor_state(
-            WEIGHT, attributes={"AMS 1 Tray 1": 38.2}
-        )
-        hass.states.by_entity_id[SECOND_WEIGHT] = State(SECOND_WEIGHT, "9.4", {"AMS 1 Tray 2": 9.4})
         listener = self.subscribed(hass)
+        fire_weight_change(hass, {"AMS 1 Tray 1": 38.2})
+        fire_weight_change(hass, {"AMS 1 Tray 2": 9.4}, entity_id=SECOND_WEIGHT, state="9.4")
 
         fire_job_event(hass, "event_print_finished", device_id=SECOND_DEVICE)
         await hass.drain()
@@ -1117,10 +1367,11 @@ class TestPrintLifecycleEndToEnd:
         spool_id = await a_spool(harness.ledger)
         await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
         self.wire(harness)
-        harness.hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "40.51", {"AMS 1 Tray 1": 209.0})
 
         fire_job_event(harness.hass, "event_print_started")
         await harness.hass.drain()
+        # The plan arrives during the job, as it does on the machine: after the start.
+        fire_weight_change(harness.hass, {"AMS 1 Tray 1": 209.0})
         fire_job_event(harness.hass, "event_print_canceled")
         await harness.hass.drain()
 
@@ -1159,7 +1410,7 @@ class TestPrintLifecycleEndToEnd:
         self.wire(harness)
         fire_job_event(harness.hass, "event_print_started")
         await harness.hass.drain()
-        harness.hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "38.2", {"AMS 1 Tray 1": 38.2})
+        fire_weight_change(harness.hass, {"AMS 1 Tray 1": 38.2}, state="38.2")
 
         fire_job_event(harness.hass, "event_print_finished")
         await harness.hass.drain()
@@ -1219,8 +1470,8 @@ class TestPrintLifecycleEndToEnd:
         await harness.hass.drain()
         fire_job_event(harness.hass, "event_print_started", device_id=SECOND_DEVICE)
         await harness.hass.drain()
-        harness.hass.states.by_entity_id[SECOND_WEIGHT] = State(
-            SECOND_WEIGHT, "9.4", {"AMS 1 Tray 2": 9.4}
+        fire_weight_change(
+            harness.hass, {"AMS 1 Tray 2": 9.4}, entity_id=SECOND_WEIGHT, state="9.4"
         )
         fire_job_event(harness.hass, "event_print_finished", device_id=SECOND_DEVICE)
         await harness.hass.drain()
