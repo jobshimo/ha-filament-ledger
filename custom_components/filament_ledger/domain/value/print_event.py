@@ -88,6 +88,18 @@ class PrintEnded:
     will be estimated from them; `reported_usage` is whatever per-tray figures the weight
     sensor held when the job ended.
 
+    **`derived` says whether the printer announced this ending or the ledger inferred it**,
+    and it is the difference between an ending that may open a job and one that may only
+    close one. An announced ending is a discrete event: it fired once, because the machine
+    said so, so a row missing for it means the ledger was not listening and creating one is
+    the honest repair (`TrackPrintJob._ended`). An inferred ending is read off a *level* —
+    the status sensor rests in `finish` for hours between prints and flickers back into it
+    on every reconnect, five times in ten minutes on the reference machine
+    (docs/12-field-notes.md, 2026-08-08) — so letting one open a job would mint a phantom
+    print, and charge its predecessor's plan again, on every restart and every dropout.
+    Inference is trustworthy about a job the ledger already knows is running and about
+    nothing else, and this flag is where that limit is written down rather than assumed.
+
     `printer_started_at` and `printer_ended_at` are the machine's own pair, read at the
     ending because that is the last moment they describe *this* job. Both are recorded
     whatever the outcome — they are the printer's claims and the record keeps claims
@@ -111,6 +123,7 @@ class PrintEnded:
     raw_print_error: int | None = None
     printer_started_at: datetime | None = None
     printer_ended_at: datetime | None = None
+    derived: bool = False
 
     def __post_init__(self) -> None:
         if not self.outcome.is_terminal:
