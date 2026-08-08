@@ -237,3 +237,65 @@ An ending whose start *was* watched and which saw no republish reports no usage,
 at the top of this file. Nothing above is an estimate — the figure is the slicer's plan for
 the job, which the owner has accepted as the automatic charge, correctable afterwards
 through the void, reassign and adjust paths that already exist.
+
+---
+
+## 2026-08-08 — The bus event is not delivered when it matters most
+
+The same afternoon, further down the same failure. The per-tray fix above closed the *wrong
+figure* hole; this is the *no figure at all* hole underneath it, and it cost 248.41 g.
+
+**What happened.** A seven-hour print started at 13:49:21 UTC and finished. The status sensor
+recorded it:
+
+| UTC | `print_status` |
+| --- | --- |
+| 20:59:14 | `offline` |
+| 21:08:13 | `unavailable` |
+| 21:12:29 | `finish` |
+
+The ledger never heard. Its row stayed `RUNNING` with `consumption_recorded = 0` until the
+integration was restarted hours later.
+
+**Why.** The recorder's `events` table holds every `bambu_lab_event` this instance ever saw,
+unfiltered — `recorder:` carries only `purge_keep_days: 60`. The last one that day is
+`event_print_started` at 13:49:21. **No terminal event was ever fired.** Upstream's own
+source says why (`pybambu/models.py`):
+
+```python
+if (
+    previous_gcode_state != "unknown"
+    and previous_gcode_state != "FINISH"
+    and self.gcode_state == "FINISH"
+):
+    self._client.callback("event_print_finished")
+```
+
+`gcode_state` is initialised to `"unknown"`, so a connection that resets across the ending
+suppresses the callback. The guard is deliberate — it stops spurious events at startup — and
+its cost lands squarely on the one moment this ledger charges money.
+
+**How rare is it.** Not rare, and that is the point. Every one of the 25 closed jobs in the
+ledger between 08-04 and 08-08 correlates to a bus event at the same second: 25 endings, 25
+events, no exceptions. The mechanism had never failed. What failed was the timing — the
+sensor went `unavailable` seven times in those five days, and only this one landed on an
+ending. The other six fell overnight with nothing finishing.
+
+**Consequence, now built.** A second, independent ending path reads the status sensor:
+`finish` and `failed` only, never `offline` or `pause`, which are facts about the connection
+and the machine rather than about the job. Two shapes of it — the *transition*, watched live,
+and the *level*, read once by a startup pass for the machine that stopped while nothing was
+listening.
+
+**An inferred ending may only close a job, never open one**, and that limit is the whole
+safety argument: an idle machine rests in `finish` for hours, and it bounced
+`finish → offline → finish` five times in the ten minutes after this print stopped. A path
+that trusted the level would mint a phantom print on every restart and every dropout, and
+charge the last plan again each time.
+
+**And the second signal must not charge twice.** Both routes report a healthy ending within
+the same second; whichever loses the race arrives to find no `RUNNING` row, which is exactly
+the shape of the restart-mid-print case that opens a new row. `consumption_recorded` does not
+cover it — that flag guards a *row*, and the duplicate is a different row. So an ending is
+also refused when the machine's newest job is terminal, carries the same name, and stopped
+within five minutes.

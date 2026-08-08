@@ -145,6 +145,32 @@ _OUTCOMES = {
     EVENT_PRINT_FAILED: PrintJobState.FAILED,
 }
 
+# The same two endings, read off the status sensor instead of announced on the bus — the
+# ledger's second, independent path to *this print stopped* (docs/05 §5.8).
+#
+# **It exists because the bus event is not delivered when it is needed most.** Upstream
+# fires `event_print_finished` only on a transition it observed, and guards it with
+# `previous_gcode_state != "unknown"` (`pybambu/models.py`) — a reconnection resets that to
+# `unknown`, so a machine whose connection drops across its own ending announces nothing at
+# all. Measured on the reference instance (docs/12-field-notes.md, 2026-08-08): a
+# seven-hour print reached `finish` at 21:12:29 UTC after the sensor went unavailable at
+# 21:08:13, and no terminal event was ever fired for it — 248.41 g the ledger never heard
+# about, against 26 endings out of 26 that had been announced correctly before it.
+#
+# `offline` is deliberately absent, and so is `pause`. Both are states of the *connection*
+# or of the machine, not of the job: the same print flickered offline and back dozens of
+# times while it was running perfectly well.
+#
+# **Cancelled cannot be told from failed here, and is not guessed at.** Upstream
+# distinguishes them by a `print_error` code on the MQTT payload, which the sensor does not
+# carry; its `gcode_state` calls both `failed`. Both open a review either way, so the cost
+# is a word on a card a human is already reading — and inventing the distinction would put
+# a confident wrong label on the one path that exists for when nothing else spoke.
+_DERIVED_OUTCOMES = {
+    "finish": PrintJobState.FINISHED,
+    "failed": PrintJobState.FAILED,
+}
+
 # The per-tray attribute keys on the weight sensor, as upstream writes them. Strings in
 # an attribute dictionary with no schema and no version (docs/05 §5.8) — which is why
 # the translation is fixture-tested rather than believed.
@@ -226,6 +252,7 @@ class BambuLabGateway:
         self._unsubscribe: CALLBACK_TYPE | None = None
         self._unsubscribe_jobs: CALLBACK_TYPE | None = None
         self._unsubscribe_weights: CALLBACK_TYPE | None = None
+        self._unsubscribe_status: CALLBACK_TYPE | None = None
         # The last weight-sensor reading each machine *published with tray keys in it*,
         # held here because a single instant is not enough to read it — see
         # `_on_weight_state_change` for the measurements that forced this. Keyed by
@@ -259,6 +286,15 @@ class BambuLabGateway:
             entity_id: printer.serial
             for printer in discovery.printers
             if (entity_id := printer.sensors.get("print_weight")) is not None
+        }
+        # The fourth: a status change names an entity, and the ending it may describe
+        # belongs to exactly one machine. Same shape as the weights above, and resolved
+        # from the same discovery — `print_status` was already being read for the Printer
+        # tab, so this adds a subscription rather than a source.
+        self._printer_by_status = {
+            entity_id: printer.serial
+            for printer in discovery.printers
+            if (entity_id := printer.sensors.get("print_status")) is not None
         }
 
     @property
@@ -420,6 +456,14 @@ class BambuLabGateway:
             self._unsubscribe_weights = async_track_state_change_event(
                 self._hass, list(self._printer_by_weight), self._on_weight_state_change
             )
+        # The status sensors, for the same consumer and the reason `_DERIVED_OUTCOMES`
+        # gives: this is the path that speaks when the bus does not. Installed here rather
+        # than beside the trays because an ending has one receiver, and a gateway nobody
+        # asked for job events from has nobody to tell.
+        if self._unsubscribe_status is None and self._printer_by_status:
+            self._unsubscribe_status = async_track_state_change_event(
+                self._hass, list(self._printer_by_status), self._on_status_state_change
+            )
 
     async def current_trays(self) -> dict[TrayRef, TrayReading]:
         """Every machine's trays as last reported, keyed by reference, in tray order.
@@ -459,6 +503,9 @@ class BambuLabGateway:
         if self._unsubscribe_weights is not None:
             self._unsubscribe_weights()
             self._unsubscribe_weights = None
+        if self._unsubscribe_status is not None:
+            self._unsubscribe_status()
+            self._unsubscribe_status = None
         self._listeners.clear()
         self._job_listeners.clear()
         # Held observations die with the subscription that collected them. A reload builds
@@ -624,6 +671,86 @@ class BambuLabGateway:
                 key,
                 printer,
             )
+
+    @callback
+    def _on_status_state_change(self, event: Event[EventStateChangedData]) -> None:
+        """The second ending path: a status sensor arriving at a terminal state.
+
+        Runs inside Home Assistant's event loop, so it must never raise — `_derived_ending`
+        is built from the same total readers the bus path uses, and delivery happens in a
+        background task exactly as it does there.
+
+        **Only a transition counts.** The sensor rests in `finish` for as long as the
+        machine is idle, so the level says nothing on its own; what this reads is the
+        moment it arrived. An unchanged republish, a move to `running`, and the constant
+        `offline` flapping of a healthy print all leave here without a word.
+
+        A `finish → offline → finish` bounce *is* two arrivals, and the reference machine
+        did it five times in the ten minutes after one print ended. That is not filtered
+        here, because filtering it would need this callback to remember what it already
+        reported and a reload would forget. It is answered where the answer is durable
+        instead: a derived ending may only close a running job, so the first arrival closes
+        it and every later one finds nothing to do (`PrintEnded.derived`).
+        """
+        printer = self._printer_by_status.get(event.data["entity_id"])
+        if printer is None:  # unreachable: the tracker watches only resolved entities
+            return
+        old_state = event.data["old_state"]
+        new_state = event.data["new_state"]
+        if new_state is None:
+            return
+        outcome = _DERIVED_OUTCOMES.get(new_state.state)
+        if outcome is None or (old_state is not None and old_state.state == new_state.state):
+            return
+        self._hass.async_create_background_task(
+            self._deliver_job(self._derived_ending(printer, outcome)),
+            name=f"filament_ledger derived ending on {printer}",
+        )
+
+    def derived_ending(self, printer: PrinterSerial) -> PrintEnded | None:
+        """That machine's ending as its status sensor reads *right now*, or `None`.
+
+        The level, deliberately — where `_on_status_state_change` reads the arrival. This
+        is the reconciliation question rather than the live one: *the printer is sitting on
+        a finished print, is the ledger still holding it open?* Startup is the caller that
+        has to ask it, because a machine that stopped while Home Assistant was down
+        transitioned in front of nobody, and the port's own contract is that the printer
+        does not replay what happened while nothing was listening.
+
+        Reading a level is only safe because a derived ending cannot open a job: an idle
+        machine reads `finish` all day, and every answer here is discarded unless the
+        ledger independently holds a running row for that printer.
+        """
+        state = self._sensor_state(printer, "print_status")
+        if state is None:
+            return None
+        outcome = _DERIVED_OUTCOMES.get(state.state)
+        if outcome is None:
+            return None
+        return self._derived_ending(printer, outcome)
+
+    def _derived_ending(self, printer: PrinterSerial, outcome: PrintJobState) -> PrintEnded:
+        """One inferred ending, read through the very same sensors the bus path reads.
+
+        Identical to `_translate_job_event`'s ending in every figure — the counters, the
+        plan, the machine's own timestamps — and different in exactly one field. Sharing
+        the readers is the point: a second path that sampled the printer differently would
+        charge a different number depending on which signal happened to win.
+        """
+        return PrintEnded(
+            outcome=outcome,
+            name=self._job_name(printer),
+            printer=printer,
+            layer_reached=self._layer(printer, "current_layer"),
+            total_layers=self._total_layers(printer),
+            progress=self._progress(printer),
+            reported_usage=self._plan_at_ending(printer),
+            raw_gcode_state=self._text_state(printer, "print_status"),
+            raw_print_error=self._error_code(printer),
+            printer_started_at=self._moment(printer, "start_time"),
+            printer_ended_at=self._moment(printer, "end_time"),
+            derived=True,
+        )
 
     def _translate_job_event(self, printer: PrinterSerial, event_type: object) -> PrintEvent | None:
         """One machine's bus event into domain terms, reading that machine's sensors.
