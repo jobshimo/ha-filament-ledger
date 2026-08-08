@@ -1725,10 +1725,14 @@ class FilamentLedgerPanel extends HTMLElement {
    */
   header() {
     const t = this._t;
+    // Only Review carries one, and the distinction is what a badge means. Review is a
+    // queue: the number is how many decisions are waiting, acting on them clears it, and
+    // reaching zero is the point. *Needs weighing* was neither — it is derived state, it
+    // cannot be cleared by working through it, and as a bare number in the same style it
+    // claimed to be a queue while answering no question the reader could ask of it. The
+    // same figure is already on the Inventory summary card one line below, under the
+    // words that say what it counts.
     const badges = {
-      inventory: this._stock?.needs_weighing
-        ? `<span class="count">${esc(this._stock.needs_weighing)}</span>`
-        : "",
       review: this._reviews.length ? `<span class="count">${esc(this._reviews.length)}</span>` : "",
     };
     return `

@@ -124,9 +124,16 @@ class TrackPrintJob:
             layer_reached=event.layer_reached,
             total_layers=event.total_layers,
             progress=event.progress,
-            # The ending's figures win when present; otherwise the plan captured at start
+            # The ending's figures win when present; otherwise whatever the start knew
             # survives — for an interrupted job those totals are exactly what the
             # estimator scales by progress (docs/07-consumption-estimation.md §7.3).
+            #
+            # **The Bambu gateway now knows nothing at the start**, deliberately: its
+            # weight sensor is republished after the start event, so a plan captured
+            # there would be the previous job's. That makes this fallback inert for the
+            # only adapter shipped today — kept because the port permits a gateway that
+            # genuinely knows the plan up front, and because a `None` ending must not
+            # erase a figure such a gateway supplied.
             reported_usage=(
                 event.reported_usage if event.reported_usage is not None else job.reported_usage
             ),

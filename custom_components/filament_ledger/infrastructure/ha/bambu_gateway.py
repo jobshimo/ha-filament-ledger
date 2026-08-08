@@ -225,6 +225,18 @@ class BambuLabGateway:
         self._job_listeners: list[PrintListener] = []
         self._unsubscribe: CALLBACK_TYPE | None = None
         self._unsubscribe_jobs: CALLBACK_TYPE | None = None
+        self._unsubscribe_weights: CALLBACK_TYPE | None = None
+        # The last weight-sensor reading each machine *published with tray keys in it*,
+        # held here because a single instant is not enough to read it — see
+        # `_on_weight_state_change` for the measurements that forced this. Keyed by
+        # serial, so two machines printing at once can never read each other's figures,
+        # and emptied both by `detach` and by each machine's own print starting.
+        self._observations: dict[PrinterSerial, _WeightObservation] = {}
+        # Which machines this gateway watched *start* the job they are now running. It is
+        # the difference between "nothing was published during this job" and "this
+        # gateway was not alive when the job began", and `_plan_at_ending` says why those
+        # two absences must be answered differently.
+        self._started: set[PrinterSerial] = set()
         discovery = _discover(hass)
         self._printers = {printer.serial: printer for printer in discovery.printers}
         self._unnamed_printers = discovery.unnamed
@@ -241,6 +253,13 @@ class BambuLabGateway:
             for tray, entity_id in printer.trays.items()
         }
         self._tray_by_entity = {entity_id: tray for tray, entity_id in self._entity_by_tray.items()}
+        # The third index: a weight-sensor change names an entity, and the plan it carries
+        # belongs to exactly one machine.
+        self._printer_by_weight = {
+            entity_id: printer.serial
+            for printer in discovery.printers
+            if (entity_id := printer.sensors.get("print_weight")) is not None
+        }
 
     @property
     def dormant(self) -> bool:
@@ -389,6 +408,18 @@ class BambuLabGateway:
             self._unsubscribe_jobs = self._hass.bus.async_listen(
                 BAMBU_LAB_EVENT, self._on_job_event
             )
+        # The weight sensors are followed for the same reason the trays are: what they say
+        # has to be *observed over the job*, not sampled when it ends. Installed with the
+        # bus listener because the held plan has exactly one consumer — the job events —
+        # and a gateway nobody asked for job events from has nothing to hold.
+        #
+        # This only ever sees changes from here on, which is precisely why
+        # `_plan_at_ending` keeps a live read for the job that was already running when
+        # this subscription was made.
+        if self._unsubscribe_weights is None and self._printer_by_weight:
+            self._unsubscribe_weights = async_track_state_change_event(
+                self._hass, list(self._printer_by_weight), self._on_weight_state_change
+            )
 
     async def current_trays(self) -> dict[TrayRef, TrayReading]:
         """Every machine's trays as last reported, keyed by reference, in tray order.
@@ -425,8 +456,16 @@ class BambuLabGateway:
         if self._unsubscribe_jobs is not None:
             self._unsubscribe_jobs()
             self._unsubscribe_jobs = None
+        if self._unsubscribe_weights is not None:
+            self._unsubscribe_weights()
+            self._unsubscribe_weights = None
         self._listeners.clear()
         self._job_listeners.clear()
+        # Held observations die with the subscription that collected them. A reload builds
+        # a new gateway, and a plan carried across it would describe a job nobody is
+        # watching any more.
+        self._observations.clear()
+        self._started.clear()
 
     # -- trays -------------------------------------------------------------------------
 
@@ -486,6 +525,106 @@ class BambuLabGateway:
             except Exception:
                 LOGGER.exception("print listener failed for %s", type(event).__name__)
 
+    def _plan_at_ending(self, printer: PrinterSerial) -> dict[TrayRef, Grams] | None:
+        """The per-tray breakdown a finishing job is charged with, or `None`.
+
+        The held reading first: it is the last one published *during* this job, and the
+        start discarded whatever preceded it.
+
+        **With nothing held, the answer depends on whether this gateway saw the job
+        begin**, because the two absences mean opposite things:
+
+        - *We watched it start.* Then nothing has been published since the start, and the
+          sensor still carries the figures of the job before this one. Reading it live
+          would charge this print with its predecessor's plan — the exact defect this
+          whole mechanism exists to end. The honest answer is `None`, and UC-04's
+          missing-figure branch opens a review.
+        - *We did not.* A config-entry reload — which every options change performs — or a
+          restart mid-print builds a new gateway, and
+          `async_track_state_change_event` only ever fires for *future* changes. So the
+          held reading is empty while the correct plan is sitting in `hass.states` right
+          now, published during a job this process was not alive for. Reading it live is
+          a strict improvement: the sensor has been updated during this job, so it yields
+          either this job's real figures or the shape-B nothing that was already
+          tolerated. Without this branch a reload mid-print silently reports no usage,
+          which is the very failure being fixed, reintroduced by the fix.
+
+        Seeding the held reading at subscription time would answer the same case, and is
+        deliberately not done: it would freeze a setup-time snapshot that the tracker
+        immediately supersedes anyway, and it would still need the distinction above to
+        avoid adopting a stale plan as though it had been observed. One live read, at the
+        one moment the figure is consumed, is the same information later and in one place.
+        """
+        held = self._observations.get(printer)
+        if held is not None:
+            return held.plan
+        if printer in self._started:
+            return None
+        state = self._sensor_state(printer, "print_weight")
+        if state is None:
+            return None
+        observation = _tray_plan(printer, state)
+        return observation.plan if observation is not None else None
+
+    @callback
+    def _on_weight_state_change(self, event: Event[EventStateChangedData]) -> None:
+        """Keep the last per-tray breakdown this machine actually published.
+
+        Runs inside Home Assistant's event loop, so it must never raise: `_tray_plan` is
+        total, and nothing here awaits or writes.
+
+        **This exists because the sensor cannot be read at an instant.** Measured on the
+        reference machine's recorder rows (docs/12-field-notes.md, 2026-08-08): the
+        sensor is republished in occasional bursts — about eight over the three hours of
+        one 220-layer print — and each burst is a *pair* of rows one to four seconds
+        apart, the state value unchanged, one carrying the breakdown
+        (`AMS 1 Tray 1: 31.33`) and one carrying no tray key at all. Sampling when a job
+        ends therefore returned the breakdown or nothing depending on which half of a
+        pair the event landed beside — that 220-layer two-colour print was charged
+        nothing.
+
+        So a shape without tray keys is treated as **a non-observation, never a
+        correction**: it leaves whatever was last seen standing. The sensor going
+        unavailable is the same silence. Only a reading that speaks the per-tray dialect
+        replaces the held one.
+
+        **The dedupe key is the whole observation**, not the tray half of it: an
+        external-spool figure that changes while the AMS trays stand still is news, and
+        comparing only the plan would swallow exactly the reading the warning below
+        exists to announce.
+        """
+        printer = self._printer_by_weight.get(event.data["entity_id"])
+        if printer is None:  # unreachable: the tracker watches only resolved entities
+            return
+        state = event.data["new_state"]
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+        observation = _tray_plan(printer, state)
+        if observation is None or self._observations.get(printer) == observation:
+            return
+        self._observations[printer] = observation
+        # Both warnings are raised here rather than inside the translation, so each one
+        # fires once per *new* observation. Inside, they would repeat on every republish
+        # for the length of a print, which is how a real warning becomes scenery.
+        if observation.external is not None:
+            # The domain keys usage by tray (docs/02 §2.3); an external-spool figure has
+            # no tray to land in. A spool on the direct feed now has a *location* that
+            # names its machine, which is a different question from a consumption figure
+            # having a tray to be deducted through — so this stays dropped, and dropping
+            # it silently would be the optimistic lie this project exists to prevent.
+            LOGGER.warning(
+                "printer %s reports %r g on the external spool; this ledger tracks AMS "
+                "consumption only, so the figure is not recorded",
+                printer,
+                observation.external,
+            )
+        for key in observation.other_ams:
+            LOGGER.warning(
+                "per-tray figure for %r on printer %s ignored; one AMS per printer is tracked",
+                key,
+                printer,
+            )
+
     def _translate_job_event(self, printer: PrinterSerial, event_type: object) -> PrintEvent | None:
         """One machine's bus event into domain terms, reading that machine's sensors.
 
@@ -494,14 +633,35 @@ class BambuLabGateway:
         whichever job sensor discovery happened to keep would put one printer's layer count
         and one printer's grams on the other printer's job.
 
-        The figures are captured *now* because the ending is the last moment they
-        describe this job: the counters reset when the next print starts.
+        The counters — layers, progress, error, the job name — are captured *now* because
+        the ending is the last moment they describe this job: they reset when the next
+        print starts. **The per-tray breakdown is not among them.** It is the reading held
+        by `_on_weight_state_change`, for the two measured reasons stated there and here:
+        the sensor flickers, and it is republished *after* the start event rather than
+        before it.
         """
         if event_type == EVENT_PRINT_STARTED:
+            # A new job inherits nothing. Upstream updates the weight sensor about
+            # three-quarters of a minute *after* the start fires — measured: a job that
+            # started at 13:49 saw its sensor update at 13:49:45 — so whatever stands
+            # there now is the *previous* job's plan, and keeping it is how a 937-layer
+            # print got charged the 2.1 g of the print before it. The plan is therefore
+            # not known yet, and stays that way until this job's own reading arrives.
+            #
+            # **A republish landing in that gap would be held**, and it would be the old
+            # job's figures. The measurements show no republish there (none between
+            # 11:44:17 and the next job's 13:49:45), and the case is self-correcting
+            # because the ending consumes the *last* good reading: the real plan arrives
+            # later in the job and overwrites the stale one. It would only bite a print
+            # that ended before its own plan was ever published — which lands in
+            # `_plan_at_ending`'s honest-absence branch anyway, one job's figures being
+            # wrong in the same direction the review queue exists to catch.
+            self._observations.pop(printer, None)
+            self._started.add(printer)
             return PrintStarted(
                 name=self._job_name(printer),
                 printer=printer,
-                plan=self._per_tray_weights(printer),
+                plan=None,
                 printer_started_at=self._moment(printer, "start_time"),
             )
         outcome = _OUTCOMES.get(event_type) if isinstance(event_type, str) else None
@@ -514,7 +674,7 @@ class BambuLabGateway:
             layer_reached=self._layer(printer, "current_layer"),
             total_layers=self._total_layers(printer),
             progress=self._progress(printer),
-            reported_usage=self._per_tray_weights(printer),
+            reported_usage=self._plan_at_ending(printer),
             raw_gcode_state=self._text_state(printer, "print_status"),
             raw_print_error=self._error_code(printer),
             printer_started_at=self._moment(printer, "start_time"),
@@ -638,60 +798,6 @@ class BambuLabGateway:
         if state is None:
             return None
         return PrinterError(active=state.state == STATE_ON, code=self._error_code(printer))
-
-    def _per_tray_weights(self, printer: PrinterSerial) -> dict[TrayRef, Grams] | None:
-        """The weight sensor's per-tray figures, translated — or `None`, never a zero.
-
-        `None` covers the whole Q4-open path: no sensor, an unavailable sensor, and
-        attributes carrying no per-tray keys all mean the breakdown never materialised.
-        An attribute dictionary that *does* speak the per-tray dialect translates to a
-        mapping — possibly empty, which is the printer naming no AMS trays and is a
-        different fact from silence (docs/04-use-cases.md UC-04).
-        """
-        state = self._sensor_state(printer, "print_weight")
-        if state is None:
-            return None
-        weights: dict[TrayRef, Grams] = {}
-        recognised = False
-        for key, value in state.attributes.items():
-            if key == _EXTERNAL_SPOOL_KEY:
-                recognised = True
-                # The domain keys usage by tray (docs/02 §2.3); an external-spool figure
-                # has no tray to land in. A spool on the direct feed now has a *location*
-                # that names its machine, which is a different question from a consumption
-                # figure having a tray to be deducted through — so this stays dropped, and
-                # dropping it silently would be the optimistic lie this project exists to
-                # prevent.
-                LOGGER.warning(
-                    "printer %s reports %r g on the external spool; this ledger tracks AMS "
-                    "consumption only, so the figure is not recorded",
-                    printer,
-                    value,
-                )
-                continue
-            match = _TRAY_WEIGHT_KEY.fullmatch(key)
-            if match is None:
-                continue
-            recognised = True
-            ams, slot = int(match.group(1)), int(match.group(2))
-            if ams != TRACKED_AMS.value:
-                LOGGER.warning(
-                    "per-tray figure for %r on printer %s ignored; one AMS per printer is tracked",
-                    key,
-                    printer,
-                )
-                continue
-            grams = _weight(value)
-            if grams is None:
-                LOGGER.debug("per-tray figure for %r reads %r; skipped", key, value)
-                continue
-            try:
-                tray = TrayRef(printer=printer, ams=TRACKED_AMS, slot=SlotIndex(slot))
-            except InvalidValueError:
-                LOGGER.debug("per-tray key %r names a slot outside 1..4; skipped", key)
-                continue
-            weights[tray] = grams
-        return weights if recognised else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1009,11 +1115,91 @@ def _colour(value: object) -> Colour | None:
 
 def _weight(value: object) -> Grams | None:
     """A per-tray figure: a non-negative number, or nothing. Negative consumption and
-    non-numeric shapes are upstream noise, not data."""
+    non-numeric shapes are upstream noise, not data.
+
+    **Total, including the shapes a type check waves through.** `Grams.of` raises
+    `InvalidOperation` on `inf`, `-inf` and figures too large to quantise, and
+    `ValueError` on `NaN` — all four are floats, so the guard above admits every one of
+    them. That gap was survivable while this ran twice per job, from a coroutine; it is
+    not now that it runs on every republish from `_on_weight_state_change`, which is a
+    `@callback` promising the event loop it never raises. Caught the same way
+    `_reel_weight` catches it, for the same reason.
+    """
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    grams = Grams.of(value)
+    try:
+        grams = Grams.of(value)
+    except ArithmeticError, ValueError:
+        LOGGER.debug("per-tray figure %r is not a usable quantity; skipped", value)
+        return None
     return None if grams.is_negative else grams
+
+
+@dataclass(frozen=True, slots=True)
+class _WeightObservation:
+    """One weight-sensor reading, whole — the unit the gateway holds and compares.
+
+    Everything the reading said, not merely the part that is consumed: `plan` is what a
+    job is charged with, and the other two are what has to be *announced* about it. They
+    travel together because they are deduped together — a reading whose trays stand still
+    while its external-spool figure moves is a new observation, and comparing the plan
+    alone would silently drop the one reading the warning exists for.
+    """
+
+    plan: dict[TrayRef, Grams]
+    #: The external-spool figure, verbatim, when the reading named one.
+    external: object | None = None
+    #: The keys naming an AMS this ledger does not track, verbatim, in reading order.
+    other_ams: tuple[str, ...] = ()
+
+
+def _tray_plan(printer: PrinterSerial, state: State) -> _WeightObservation | None:
+    """One weight-sensor reading, translated — or `None` when it said nothing.
+
+    Total by construction, like `_read`: every malformed shape becomes a skipped key or a
+    `None`, so the caller can run bare inside the event loop.
+
+    `None` is **the shape that carries no per-tray key at all** — the other half of each
+    flicker pair, and a sensor that never had a breakdown. That is silence, and the
+    caller's whole job is to leave a real reading standing in its place. A shape that
+    *does* speak the dialect translates to an observation whose plan may be empty, which
+    is the printer naming no AMS trays and is a different fact from silence
+    (docs/04-use-cases.md UC-04).
+
+    Nothing here warns. Both of the things worth saying out loud — an external-spool
+    figure and a second AMS — ride out on the observation instead, so the caller can say
+    them once per new reading rather than once per republish.
+    """
+    weights: dict[TrayRef, Grams] = {}
+    external: object | None = None
+    other_ams: list[str] = []
+    recognised = False
+    for key, value in state.attributes.items():
+        if key == _EXTERNAL_SPOOL_KEY:
+            recognised = True
+            external = value
+            continue
+        match = _TRAY_WEIGHT_KEY.fullmatch(key)
+        if match is None:
+            continue
+        recognised = True
+        ams, slot = int(match.group(1)), int(match.group(2))
+        if ams != TRACKED_AMS.value:
+            other_ams.append(key)
+            continue
+        grams = _weight(value)
+        if grams is None:
+            LOGGER.debug("per-tray figure for %r reads %r; skipped", key, value)
+            continue
+        try:
+            tray = TrayRef(printer=printer, ams=TRACKED_AMS, slot=SlotIndex(slot))
+        except InvalidValueError:
+            LOGGER.debug("per-tray key %r names a slot outside 1..4; skipped", key)
+            continue
+        weights[tray] = grams
+    if not recognised:
+        return None
+    return _WeightObservation(plan=weights, external=external, other_ams=tuple(other_ams))
 
 
 def _reel_weight(value: object) -> Grams | None:

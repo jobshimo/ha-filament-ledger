@@ -354,6 +354,14 @@ an upstream refactor into a corrupted ledger.
   no version. Parsing them is a boundary concern and it is fixture-tested against payloads
   captured from a real printer ([09 §9.4](09-testing-strategy.md)) rather than against
   payloads someone believed were correct.
+- **That sensor cannot be sampled at an instant, so the gateway tracks it.** Measured on the
+  reference machine: upstream republishes it in occasional bursts — about eight across the
+  three hours of one print — and each burst is a *pair* of rows one to four seconds apart,
+  the state value unchanged, one carrying the breakdown and one carrying no tray key at all;
+  and it first updates about three-quarters of a minute *after* the start event fires. The gateway follows the sensor by state change and keeps the last reading that
+  actually carried tray keys, discarding it when a print starts so no job inherits the
+  previous one's figures. A shape without tray keys is a non-observation and never
+  overwrites a real one.
 - Tray numbering is *ours* to define. `AMS 1 Tray 1` maps to the tray reference for tray 1
   of AMS 1 **on the machine whose event is being translated**. An `External Spool` figure is
   still dropped with a warning: a spool on the direct feed now has a location that names its
