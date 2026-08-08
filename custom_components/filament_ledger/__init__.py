@@ -40,6 +40,7 @@ SCAN_INTERVAL = timedelta(minutes=15)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bool:
+    from homeassistant.helpers.start import async_at_started
     from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
     from .application.adjust_spool import AdjustSpool, DiscardFilament
@@ -75,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .infrastructure.estimation.linear_progress_estimator import LinearProgressEstimator
     from .infrastructure.ha.bambu_gateway import BambuLabGateway
     from .infrastructure.ha.event_bridge import HomeAssistantEventBus
+    from .infrastructure.ha.job_sync import JobSync
     from .infrastructure.ha.panel import async_register_panel
     from .infrastructure.ha.printer_state import ReadPrinterState
     from .infrastructure.ha.runtime import LedgerRuntime
@@ -241,6 +243,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # sync button and the `sync_trays` service run the very same wiring on demand.
     sync_trays = TraySync(gateway=gateway, detect_spool=use_cases.detect_spool, spools=spools)
 
+    # The job counterpart: an ending that happened while nothing was listening leaves a
+    # RUNNING row nothing else in the system will ever close. Constructed here beside the
+    # tray pass so both read the one gateway discovery resolved.
+    sync_jobs = JobSync(gateway=gateway, track_print_job=use_cases.track_print_job)
+
     # The Printer tab's read-only glance over the same gateway (docs/14 §14.5). It runs no
     # use case and writes nothing — the sync above stays the one mutation path. `queries`
     # rides along for the accumulated-hours total, which is a sum over the ledger's own job
@@ -285,6 +292,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # business, not startup's, so it is ignored here — a handful of bounded reads is a
     # cheaper price than a second code path through the same reconciliation.
     await sync_trays.execute()
+
+    # And one job pass — **deferred until Home Assistant has finished starting**, which is
+    # the one difference from the tray pass above and it is not a stylistic one.
+    #
+    # This pass reads the printer's sensors to decide what a finished job consumed. On a
+    # cold boot those sensors exist and report nothing: `ha-bambulab` is set up before this
+    # entry (`after_dependencies`) but its MQTT session connects asynchronously afterwards,
+    # so a pass running here would close the open job against an unreadable plan and record
+    # a print of no figures. `async_at_started` moves it past that window; on a reload,
+    # where Home Assistant is already up, it runs immediately — which is what makes
+    # reloading the entry the operator's way to trigger the pass by hand.
+    #
+    # It runs after the trays for a second reason: UC-04 deducts through whatever spool the
+    # ledger believes is in each tray, so a stale mounting would land the grams on the reel
+    # that was there yesterday.
+    async def _sync_jobs_when_started(_: HomeAssistant) -> None:
+        await sync_jobs.execute()
+        await coordinator.async_request_refresh()
+
+    entry.async_on_unload(async_at_started(hass, _sync_jobs_when_started))
 
     await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

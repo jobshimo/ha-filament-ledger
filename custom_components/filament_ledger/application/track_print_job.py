@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
+from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from ..domain.error import ReviewAlreadyPendingError
 from ..domain.model.print_job import PrintJob
@@ -37,6 +39,9 @@ from ..domain.value.review import ReviewReason
 from .record_print_consumption import RecordPrintConsumption
 from .review_queue import OpenPendingReview, OpenPendingReviewCommand
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
 LOGGER = logging.getLogger(__name__)
 
 # How far down **one machine's** recent-jobs listing the running job is looked for. The job
@@ -48,6 +53,21 @@ LOGGER = logging.getLogger(__name__)
 # job out of a shared window of ten and lose the correlation to a limit that was never
 # about it.
 CORRELATION_WINDOW = 10
+
+# How recently one machine's newest job must have stopped for a second ending to be read as
+# *the same ending, arriving twice* rather than as a new print nobody watched begin.
+#
+# Two independent signals now report an ending — the bus event and the status sensor
+# (docs/05 §5.8) — and on a healthy print they land in the same second. Whichever loses the
+# race arrives at a ledger with no RUNNING row left, which is the exact shape of the restart
+# case below; without this window that signal would open a second row for a print already
+# recorded and charge its grams twice. `consumption_recorded` does not cover it, because
+# that flag guards a *row*, and the duplicate is a different row.
+#
+# Five minutes is far longer than either signal's delay and far shorter than a print, and
+# the name has to match as well — so the branch that repairs a swallowed start still fires
+# for a genuinely new job, which is the whole reason it exists.
+DUPLICATE_ENDING_WINDOW = timedelta(minutes=5)
 
 # Why a review opens, keyed by how the job ended. `FINISHED` is deliberately absent:
 # a completed job needs no decision (docs/adr/0004-approval-queue-for-estimates.md).
@@ -65,7 +85,14 @@ class TrackPrintJob:
     clock: Clock
     uow: UnitOfWork
 
-    async def execute(self, event: PrintEvent) -> PrintJobId:
+    async def execute(self, event: PrintEvent) -> PrintJobId | None:
+        """The job this event landed on, or `None` when it deliberately landed on nothing.
+
+        Only an ending answers `None`, and only for the two shapes `_ended` refuses: an
+        inferred ending with no running job to close, and a second delivery of an ending
+        already recorded. Both are non-events by design rather than failures, so neither
+        raises — and neither has an id to give, because no row was written.
+        """
         match event:
             case PrintStarted():
                 return await self._started(event)
@@ -94,7 +121,7 @@ class TrackPrintJob:
             await self.jobs.save(job)
         return job.id
 
-    async def _ended(self, event: PrintEnded) -> PrintJobId:
+    async def _ended(self, event: PrintEnded) -> PrintJobId | None:
         """Close the running job with the moment's figures — creating the row first when
         a restart swallowed the start, because a review must never be lost to a restart.
 
@@ -103,10 +130,52 @@ class TrackPrintJob:
         would sort a print against reconciliations it never happened near. The machine's
         own pair is recorded in its own two columns instead, where nothing compares it to
         anything (`PrintJob` states the rule and the consequence).
+
+        **With no running row, the repair is not unconditional.** Two signals report an
+        ending now, so *no row left to close* has three causes, and only one of them wants
+        a new row:
+
+        - *An inferred ending.* It is read off a level that rests in `finish` between
+          prints, so with nothing running it is describing a print already closed —
+          usually the one the other signal just closed. `PrintEnded.derived` says why this
+          can never open a job.
+        - *The same ending, twice.* The other signal won the race moments ago and this one
+          arrived to find its own work done. `_already_ended` recognises it.
+        - *A start nobody saw.* The integration restarted mid-print. This is the case the
+          row-creating branch was written for, and it keeps it.
         """
         now = self.clock.now()
         job = await self._running_job(event.printer)
+        if job is not None and event.derived and not await self._is_newest(event.printer, job):
+            # A stale running row, and an inference has no business closing one. See
+            # `_is_newest` for the double charge this prevents.
+            LOGGER.debug(
+                "job %s (%s) on printer %s is a stale running row; a later job already "
+                "concluded there, so this inferred %s does not describe it",
+                job.id,
+                job.name,
+                event.printer,
+                event.outcome.value,
+            )
+            return None
         if job is None:
+            if event.derived:
+                LOGGER.debug(
+                    "%s inferred on printer %s with no running job; nothing to close",
+                    event.outcome.value,
+                    event.printer,
+                )
+                return None
+            duplicate = await self._already_ended(event, now)
+            if duplicate is not None:
+                LOGGER.debug(
+                    "job %s (%s) already ended at %s; duplicate %s ending ignored",
+                    duplicate.id,
+                    duplicate.name,
+                    duplicate.ended_at,
+                    event.outcome.value,
+                )
+                return None
             # The integration restarted mid-print: no RUNNING row exists for this ending on
             # this machine. The start time is gone; `now` is the honest lower bound for both
             # timestamps.
@@ -177,6 +246,61 @@ class TrackPrintJob:
                 event.outcome.value,
             )
         return ended.id
+
+    async def _is_newest(self, printer: PrinterSerial, job: PrintJob) -> bool:
+        """Whether this running row is the last thing that happened on the machine.
+
+        **A running row is not always the print a machine is running.** Upstream announces a
+        start per attempt, and it announced two for one job on the reference machine — 22:07:51
+        and 22:15:38 UTC on 2026-08-08, same file, no ending between them. The older row is
+        then a leftover: `_running_job` closes the newest, and the stale one is left standing,
+        which is what this ledger has always done with an ending that never arrived.
+
+        Left standing is harmless until something reads a *level* and offers to close it. The
+        startup pass does exactly that, on every restart, for as long as the row exists — so
+        without this check the first restart after that print finished would close the stale
+        row too and charge the machine's current plan a second time. One physical print, two
+        deductions, and no way to tell the duplicate from a real entry afterwards.
+
+        Announced endings are deliberately not subject to this. One of those is a discrete
+        event that just fired, so the newest running row *is* what it describes; an inference
+        is read off a level that says nothing about which of two rows it belongs to, and when
+        a later job has already concluded on that machine the level is describing the concluded
+        one.
+        """
+        recent = await self.jobs.list_recent(1, printer=printer)
+        return bool(recent) and recent[0].id == job.id
+
+    async def _already_ended(self, event: PrintEnded, now: datetime) -> PrintJob | None:
+        """This machine's newest job when it is the print this ending is already recorded
+        for — otherwise `None`, and the caller opens the row a swallowed start needs.
+
+        Three conditions, and each one is load-bearing:
+
+        - **Newest, and terminal.** A job still running is not what this asks about; the
+          caller looked for that first and found nothing.
+        - **Ended within `DUPLICATE_ENDING_WINDOW`.** The two signals race by seconds. A
+          job that stopped an hour ago is history, and a fresh ending naming it would be a
+          new print of the same file — which is a row, not a duplicate.
+        - **The same name.** Two prints can finish minutes apart, and the window alone
+          would swallow the second one's ending whole. The name is the only thing an
+          ending carries that distinguishes them.
+
+        `ended_at` is the ledger's own clock, the one `now` comes from, so the comparison
+        stays inside one clock — the printer's pair is deliberately not consulted here for
+        the reason `PrintJob` gives about foreign clocks.
+        """
+        recent = await self.jobs.list_recent(1, printer=event.printer)
+        if not recent:
+            return None
+        newest = recent[0]
+        if not newest.state.is_terminal or newest.ended_at is None:
+            return None
+        if newest.name != event.name:
+            return None
+        if now - newest.ended_at > DUPLICATE_ENDING_WINDOW:
+            return None
+        return newest
 
     async def _running_job(self, printer: PrinterSerial) -> PrintJob | None:
         """The newest RUNNING job **on this machine** — the one its terminal event belongs to.
