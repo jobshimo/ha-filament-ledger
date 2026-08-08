@@ -59,7 +59,11 @@ Software accounting is not one option among several. Confirmed.
 leading `#` is present and `Colour.parse` already strips it.
 
 **A spool can have no readable tag.** Tray 3 reports `tag_uid: 0000000000000000` and
-`tray_weight: "0"` — a third-party or refilled spool.
+`tray_weight: "0"` — a third-party or refilled spool. The tagged trays report their real
+figure (`"1000"`), which auto-registration opens the balance with; `"0"` is the tag
+declining to say, so it is read as absent and the configured default stands in. Note this
+is the reel's weight when **new** — the only thing the tag can know, since `remain` above
+is useless and the printer has no scale.
 
 The property belongs to the **spool, not the tray**. A tray is a position; the tag travels
 with the reel. Put a Bambu spool in tray 3 tomorrow and it reads fine. This distinction is

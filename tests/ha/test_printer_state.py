@@ -243,6 +243,7 @@ class TestPopulated:
             "name_hint",
             "material_hint",
             "colour_hint",
+            "weight_hint_g",
             "spool_id",
             "spool_name",
         }

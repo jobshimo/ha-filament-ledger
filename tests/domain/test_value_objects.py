@@ -12,6 +12,7 @@ import pytest
 
 from custom_components.filament_ledger.domain.error import DomainError, InvalidValueError
 from custom_components.filament_ledger.domain.value.colour import BLACK, WHITE, Colour
+from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     UNIDENTIFIED_PRINTER,
     AmsIndex,
@@ -170,6 +171,13 @@ class TestTrayReading:
         reading = TrayReading(tray=a_tray(3), tag=None, empty=False)
         assert not reading.empty
         assert reading.tag is None
+
+    @pytest.mark.parametrize("unusable", [Grams.zero(), Grams.of(-250)])
+    def test_a_weight_hint_of_nothing_is_refused_not_stored(self, unusable: Grams) -> None:
+        """The blank-string rule in mass: a reel holding nothing opens no balance, and
+        the boundary must send absence as `None` rather than as a zero."""
+        with pytest.raises(InvalidValueError, match="weight hint must be positive"):
+            TrayReading(tray=a_tray(2), tag=None, empty=False, weight=unusable)
 
     def test_an_empty_tray_cannot_carry_a_tag(self) -> None:
         """Contradictory data must fail at construction — the empty branch unmounts
