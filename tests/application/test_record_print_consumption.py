@@ -90,6 +90,7 @@ async def ran_to_completion(
     )
     ledger.clock.advance(minutes=42)
     job_id = await ledger.use_cases.track_print_job.execute(finished(reported_usage))
+    assert job_id is not None  # a finish with a running row always lands on it
     job = await SqlitePrintJobRepository(ledger.database).get(job_id)
     assert job is not None
     return job
@@ -185,6 +186,7 @@ class TestAutomaticDeduction:
                 printer_ended_at=a_year_late + timedelta(minutes=155),
             )
         )
+        assert job_id is not None  # a finish with a running row always lands on it
 
         [row] = await consumption_rows(ledger)
         assert row["occurred_at"] == ledger.clock.now().isoformat()

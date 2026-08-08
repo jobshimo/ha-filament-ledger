@@ -28,7 +28,11 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
-from custom_components.filament_ledger.domain.value.print_event import PrintEnded, PrintStarted
+from custom_components.filament_ledger.domain.value.print_event import (
+    PrintEnded,
+    PrintEvent,
+    PrintStarted,
+)
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import EstimatorKind, ReviewReason
 from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
@@ -72,11 +76,14 @@ def ended(
     printer_started_at: datetime | None = None,
     printer_ended_at: datetime | None = None,
     printer: PrinterSerial = A_PRINTER,
+    derived: bool = False,
+    name: str = "bracket_v3.gcode.3mf",
 ) -> PrintEnded:
     return PrintEnded(
         outcome=outcome,
-        name="bracket_v3.gcode.3mf",
+        name=name,
         printer=printer,
+        derived=derived,
         layer_reached=layer_reached,
         total_layers=total_layers,
         progress=Percentage.of(34),
@@ -90,6 +97,126 @@ def ended(
 
 async def stored_jobs(ledger: Ledger) -> list[PrintJob]:
     return await SqlitePrintJobRepository(ledger.database).list_recent(10)
+
+
+async def track(ledger: Ledger, event: PrintEvent) -> PrintJobId:
+    """`execute`, for the events that must land on a job — which is most of them.
+
+    The use case answers `None` for exactly two endings it drops on purpose: an inferred
+    one with nothing running, and a second delivery of one already recorded
+    (`TestTwoSignalsForOneEnding` drives both). Everywhere else a `None` would be the
+    failure under test, so asserting it here states that once instead of narrowing a type
+    at every call site.
+    """
+    job_id = await ledger.use_cases.track_print_job.execute(event)
+    assert job_id is not None
+    return job_id
+
+
+class TestTwoSignalsForOneEnding:
+    """Since v2.5 an ending reaches the ledger by two independent routes — the bus event
+    and the status sensor (`bambu_gateway._DERIVED_OUTCOMES`) — because the first one is
+    not delivered when a printer's connection drops across its own finish.
+
+    The redundancy is only worth having if the second arrival is harmless, and *harmless*
+    is not what the old code did: with no RUNNING row left it opened a new one, so the
+    loser of the race would have charged the same print's grams a second time. These pin
+    the guard from both sides — the duplicate must be swallowed, and a genuinely new print
+    must not be.
+    """
+
+    async def test_an_inferred_ending_with_nothing_running_closes_nothing(
+        self, ledger: Ledger
+    ) -> None:
+        """The level says `finish` on every idle machine. If inference could open a job,
+        every restart would mint a phantom print and charge the last plan again."""
+        job_id = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, derived=True)
+        )
+
+        assert job_id is None
+        assert await stored_jobs(ledger) == []
+
+    async def test_an_inferred_ending_closes_the_running_job_it_finds(self, ledger: Ledger) -> None:
+        """The tonight case: the bus never announced anything, so the sensor has to."""
+        started_id = await ledger.use_cases.track_print_job.execute(started())
+
+        job_id = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage={TRAY_1: Grams.of("248.41")}, derived=True)
+        )
+
+        assert job_id == started_id
+        [job] = await stored_jobs(ledger)
+        assert job.state is PrintJobState.FINISHED
+        assert job.reported_usage == {TRAY_1: Grams.of("248.41")}
+
+    async def test_the_signal_that_loses_the_race_opens_no_second_row(self, ledger: Ledger) -> None:
+        """Both routes report one finish seconds apart. The second finds the row already
+        closed — and must leave it closed rather than open another and charge again."""
+        await ledger.use_cases.track_print_job.execute(started())
+        first = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage={TRAY_1: Grams.of(38)})
+        )
+        ledger.clock.advance(seconds=2)
+
+        second = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage={TRAY_1: Grams.of(38)})
+        )
+
+        assert second is None
+        [job] = await stored_jobs(ledger)
+        assert job.id == first
+
+    async def test_a_reprint_of_the_same_file_beyond_the_window_opens_its_own_row(
+        self, ledger: Ledger
+    ) -> None:
+        """The guard must not eat a real print. Past the window the same name is a second
+        job — which is exactly the restart-mid-print repair the branch exists for."""
+        await ledger.use_cases.track_print_job.execute(started())
+        await ledger.use_cases.track_print_job.execute(ended(PrintJobState.FINISHED))
+        ledger.clock.advance(minutes=6)
+
+        second = await ledger.use_cases.track_print_job.execute(ended(PrintJobState.FINISHED))
+
+        assert second is not None
+        assert len(await stored_jobs(ledger)) == 2
+
+    async def test_a_different_print_ending_moments_later_is_not_a_duplicate(
+        self, ledger: Ledger
+    ) -> None:
+        """Two short prints can stop within the window. The name is what tells one
+        ending from the other, and without it the second job would vanish."""
+        await ledger.use_cases.track_print_job.execute(started())
+        await ledger.use_cases.track_print_job.execute(ended(PrintJobState.FINISHED))
+        ledger.clock.advance(seconds=30)
+
+        second = await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, name="a_different_part.gcode.3mf")
+        )
+
+        assert second is not None
+        assert [job.name for job in await stored_jobs(ledger)] == [
+            "a_different_part.gcode.3mf",
+            "bracket_v3.gcode.3mf",
+        ]
+
+    async def test_a_duplicate_never_charges_the_same_print_twice(self, ledger: Ledger) -> None:
+        """The whole point, measured where it hurts: the spool's balance."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        await ledger.use_cases.track_print_job.execute(started())
+        usage = {TRAY_1: Grams.of("248.41")}
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage=usage)
+        )
+        ledger.clock.advance(seconds=1)
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage=usage, derived=True)
+        )
+
+        detail = await ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of("751.59")
 
 
 class TestAStartingPrint:
@@ -291,11 +418,11 @@ class TestAnInterruptedPrint:
     async def test_an_ending_ends_the_newest_running_job(self, ledger: Ledger) -> None:
         """A stale RUNNING row — an ending that never arrived — must not swallow the
         ending of the print that actually just stopped."""
-        stale = await ledger.use_cases.track_print_job.execute(started())
+        stale = await track(ledger, started())
         ledger.clock.advance(days=1)
-        current = await ledger.use_cases.track_print_job.execute(started())
+        current = await track(ledger, started())
 
-        ended_id = await ledger.use_cases.track_print_job.execute(ended())
+        ended_id = await track(ledger, ended())
 
         assert ended_id == current
         by_id = {job.id: job for job in await stored_jobs(ledger)}
@@ -314,14 +441,12 @@ class TestCorrelationAcrossPrinters:
     async def test_each_ending_closes_its_own_machines_job(self, ledger: Ledger) -> None:
         """The newest RUNNING row belongs to the *second* machine; the first machine's
         ending must reach past it to the job that is actually its own."""
-        first = await ledger.use_cases.track_print_job.execute(started(printer=A_PRINTER))
+        first = await track(ledger, started(printer=A_PRINTER))
         ledger.clock.advance(minutes=10)
-        second = await ledger.use_cases.track_print_job.execute(started(printer=ANOTHER_PRINTER))
+        second = await track(ledger, started(printer=ANOTHER_PRINTER))
         ledger.clock.advance(minutes=10)
 
-        ended_id = await ledger.use_cases.track_print_job.execute(
-            ended(PrintJobState.FINISHED, printer=A_PRINTER)
-        )
+        ended_id = await track(ledger, ended(PrintJobState.FINISHED, printer=A_PRINTER))
 
         assert ended_id == first
         by_id = {job.id: job for job in await stored_jobs(ledger)}
@@ -426,9 +551,7 @@ class TestCorrelationAcrossPrinters:
         )
         ledger.clock.advance(minutes=42)
 
-        ended_id = await ledger.use_cases.track_print_job.execute(
-            ended(PrintJobState.CANCELLED, printer=A_PRINTER)
-        )
+        ended_id = await track(ledger, ended(PrintJobState.CANCELLED, printer=A_PRINTER))
 
         assert ended_id != PrintJobId("job-from-before-0008")
         by_id = {job.id: job for job in await stored_jobs(ledger)}

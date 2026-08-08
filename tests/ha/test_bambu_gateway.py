@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import State
 from homeassistant.helpers import entity_registry as er
 
@@ -55,6 +56,7 @@ from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import (
     UNKNOWN_JOB_NAME,
     BambuLabGateway,
 )
+from custom_components.filament_ledger.infrastructure.ha.job_sync import JobSync
 from custom_components.filament_ledger.infrastructure.ha.runtime import LedgerConfigEntry
 from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
     SqlitePrintJobRepository,
@@ -289,6 +291,21 @@ def fire_weight_change(
     """
     old_state = hass.states.get(entity_id)
     new_state = State(entity_id, state, attributes)
+    hass.states.by_entity_id[entity_id] = new_state
+    hass.bus.async_fire(
+        "state_changed",
+        {"entity_id": entity_id, "old_state": old_state, "new_state": new_state},
+    )
+
+
+def fire_status_change(hass: FakeHass, state: str, entity_id: str = STATUS) -> None:
+    """One move of the status sensor, the way the state machine makes it.
+
+    The value is the whole payload here: `gcode_state` is a bare string and the ending is
+    read off *arriving* at it, so the attributes never enter into it.
+    """
+    old_state = hass.states.get(entity_id)
+    new_state = State(entity_id, state, {})
     hass.states.by_entity_id[entity_id] = new_state
     hass.bus.async_fire(
         "state_changed",
@@ -1489,6 +1506,247 @@ class TestPrintLifecycleEndToEnd:
         assert (await harness.ledger.use_cases.queries.detail(mine)).summary.balance == Grams.of(
             1000
         )
+
+
+class TestEndingsTheBusNeverAnnounced:
+    """The second ending path, end to end — the failure of 2026-08-08 and its fix.
+
+    Measured on the reference instance that night: a seven-hour print reached `finish` at
+    21:12:29 UTC after its sensors went unavailable at 21:08:13, and **no terminal
+    `bambu_lab_event` was ever fired for it** — upstream guards that callback with
+    `previous_gcode_state != "unknown"`, and a reconnection resets exactly that. The recorder
+    holds 26 endings before it, every one announced correctly; the ledger held the
+    twenty-seventh open with 248.41 g never deducted.
+
+    These drive the recorded shapes rather than a tidied version of them: the sensor goes
+    unavailable and returns already finished, and then bounces `finish → offline → finish`
+    five times the way the machine did.
+    """
+
+    def wire(self, harness: Harness) -> BambuLabGateway:
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        for entity_id in PRINT_SENSORS:
+            harness.hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
+        gateway = BambuLabGateway(as_hass(harness.hass))
+
+        async def deliver(event: PrintEvent) -> None:
+            await harness.ledger.use_cases.track_print_job.execute(event)
+
+        gateway.subscribe_jobs(deliver)
+        return gateway
+
+    async def a_running_print(self, harness: Harness, grams: str = "248.41") -> SpoolId:
+        """A print under way with its plan published, and nothing announced about its end."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+        self.wire(harness)
+        fire_status_change(harness.hass, "running")
+        fire_job_event(harness.hass, "event_print_started")
+        await harness.hass.drain()
+        fire_weight_change(harness.hass, {"AMS 1 Tray 1": float(grams)}, state=grams)
+        await harness.hass.drain()
+        return spool_id
+
+    async def test_a_finish_the_bus_never_announced_still_deducts(self, harness: Harness) -> None:
+        """The night of 2026-08-08, replayed: unavailable across the ending, back already
+        finished, not one word on the bus. The grams must still leave the spool."""
+        spool_id = await self.a_running_print(harness)
+
+        fire_status_change(harness.hass, "unavailable")
+        fire_status_change(harness.hass, "finish")
+        await harness.hass.drain()
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.FINISHED
+        assert job.reported_usage == {a_tray(1): Grams.of("248.41")}
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of("751.59")
+
+    async def test_both_signals_for_one_ending_deduct_once(self, harness: Harness) -> None:
+        """The healthy print, where both routes speak within the same second. One job,
+        one movement — the redundancy must cost nothing."""
+        spool_id = await self.a_running_print(harness, grams="38.2")
+
+        fire_job_event(harness.hass, "event_print_finished")
+        fire_status_change(harness.hass, "finish")
+        await harness.hass.drain()
+
+        assert len(await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)) == 1
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of("961.8")
+
+    async def test_the_finish_offline_finish_flicker_deducts_once(self, harness: Harness) -> None:
+        """What the machine actually did after that print stopped: five arrivals at
+        `finish` in ten minutes. Each is a real transition; only the first has work."""
+        spool_id = await self.a_running_print(harness)
+
+        for _ in range(5):
+            fire_status_change(harness.hass, "finish")
+            fire_status_change(harness.hass, "offline")
+        await harness.hass.drain()
+
+        assert len(await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)) == 1
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of("751.59")
+
+    async def test_an_idle_machine_arriving_at_finish_mints_no_job(self, harness: Harness) -> None:
+        """No print was ever running. A machine reconnecting onto its resting `finish`
+        must write nothing at all — the phantom-job failure this path could have been."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+        self.wire(harness)
+
+        fire_status_change(harness.hass, "offline")
+        fire_status_change(harness.hass, "finish")
+        await harness.hass.drain()
+
+        assert await SqlitePrintJobRepository(harness.ledger.database).list_recent(10) == []
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of(1000)
+
+    async def test_a_print_still_running_is_left_alone(self, harness: Harness) -> None:
+        """`offline` is a fact about the connection, not about the job — that print
+        flickered offline and back dozens of times while printing perfectly well."""
+        await self.a_running_print(harness)
+
+        for _ in range(4):
+            fire_status_change(harness.hass, "offline")
+            fire_status_change(harness.hass, "running")
+        await harness.hass.drain()
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.RUNNING
+
+    async def test_one_machines_finish_does_not_end_anothers_print(self, harness: Harness) -> None:
+        """Two machines, two status sensors. An ending inferred from one must correlate
+        against that one — the same rule the bus path was given in v2.0."""
+        plant_registry(harness.hass, REGISTRY_ROWS + second_printer_rows())
+        for entity_id in PRINT_SENSORS:
+            harness.hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
+        harness.hass.states.by_entity_id[SECOND_STATUS] = State(SECOND_STATUS, "running", {})
+        harness.hass.states.by_entity_id[SECOND_WEIGHT] = State(SECOND_WEIGHT, "12.5", {})
+        gateway = BambuLabGateway(as_hass(harness.hass))
+
+        async def deliver(event: PrintEvent) -> None:
+            await harness.ledger.use_cases.track_print_job.execute(event)
+
+        gateway.subscribe_jobs(deliver)
+        fire_job_event(harness.hass, "event_print_started", device_id=SECOND_DEVICE)
+        await harness.hass.drain()
+
+        fire_status_change(harness.hass, "running")
+        fire_status_change(harness.hass, "finish")
+        await harness.hass.drain()
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.printer == ANOTHER_PRINTER
+        assert job.state is PrintJobState.RUNNING
+
+
+class TestJobSync:
+    """The startup pass: a machine that stopped while nobody was listening.
+
+    `TestEndingsTheBusNeverAnnounced` covers the ending that arrives while the integration
+    is up. This covers the one that already happened — the print finished during a restart,
+    a reload, or the dropout that swallowed its event, and the row has been open ever since
+    with nothing left in the system that would ever close it.
+
+    It reads a *level*, so the phantom-job case is the one that has to be nailed hardest:
+    an idle machine reads `finish` all day long.
+    """
+
+    def wire(self, harness: Harness, status: str, weight: dict[str, object] | None) -> JobSync:
+        """A freshly constructed gateway over a machine already in `status` — which is what
+        setup builds after a restart, with no history of how the printer got there."""
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        for entity_id in PRINT_SENSORS:
+            harness.hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
+        harness.hass.states.by_entity_id[STATUS] = State(STATUS, status, {})
+        if weight is not None:
+            harness.hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "248.41", weight)
+        return JobSync(
+            gateway=BambuLabGateway(as_hass(harness.hass)),
+            track_print_job=harness.ledger.use_cases.track_print_job,
+        )
+
+    async def an_open_job(self, harness: Harness) -> SpoolId:
+        """The row the night of 2026-08-08 left behind: RUNNING, never charged."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+        await harness.ledger.use_cases.track_print_job.execute(
+            PrintStarted(name=JOB_NAME, printer=A_PRINTER)
+        )
+        return spool_id
+
+    async def test_a_job_left_open_by_a_restart_is_closed_and_charged(
+        self, harness: Harness
+    ) -> None:
+        """The recovery this pass was written for. The machine is sitting on the finish
+        nobody heard, and the plan it published during the print is still on the sensor."""
+        spool_id = await self.an_open_job(harness)
+        sync = self.wire(harness, "finish", {"AMS 1 Tray 1": 248.41})
+
+        closed = await sync.execute()
+
+        assert len(closed) == 1
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.FINISHED
+        assert job.reported_usage == {a_tray(1): Grams.of("248.41")}
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of("751.59")
+
+    async def test_an_idle_machine_with_nothing_open_writes_nothing(self, harness: Harness) -> None:
+        """Every restart runs this pass, and the reference machine's captured resting
+        state *is* `finish`. Minting a job here would charge a print that never ran —
+        once per restart, forever."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+        sync = self.wire(harness, "finish", {"AMS 1 Tray 1": 248.41})
+
+        assert await sync.execute() == []
+
+        assert await SqlitePrintJobRepository(harness.ledger.database).list_recent(10) == []
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of(1000)
+
+    async def test_a_print_still_under_way_is_left_open(self, harness: Harness) -> None:
+        """Restarting mid-print is ordinary. The row stays RUNNING and its ending arrives
+        later, by whichever route speaks first."""
+        spool_id = await self.an_open_job(harness)
+        sync = self.wire(harness, "running", {"AMS 1 Tray 1": 248.41})
+
+        assert await sync.execute() == []
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.RUNNING
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of(1000)
+
+    async def test_a_failure_nobody_saw_opens_its_review(self, harness: Harness) -> None:
+        """The pass is not only about money. An interrupted print owes the user a
+        decision, and a restart must not be what loses it."""
+        await self.an_open_job(harness)
+        sync = self.wire(harness, "failed", {"AMS 1 Tray 1": 248.41})
+
+        assert len(await sync.execute()) == 1
+
+        [review] = await SqliteReviewRepository(harness.ledger.database).list_pending()
+        assert review.reason is ReviewReason.FAILED
+
+    async def test_an_unreadable_status_closes_nothing(self, harness: Harness) -> None:
+        """A sensor that is unavailable has not said the print stopped. Absence of data
+        is not absence of a job (docs/03 §3.8)."""
+        await self.an_open_job(harness)
+        sync = self.wire(harness, STATE_UNAVAILABLE, {"AMS 1 Tray 1": 248.41})
+
+        assert await sync.execute() == []
+
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.RUNNING
 
 
 class TestUnload:
