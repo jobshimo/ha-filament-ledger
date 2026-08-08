@@ -4381,7 +4381,17 @@ export const STYLES = `
    being amber, one line changes and nothing reads as a lie.
    =================================================================================== */
 :host {
-  display: block; height: 100%;
+  display: block;
+  /* The viewport, not the wrapper. Home Assistant's panel chain hands down a height that
+     is not the screen — measured live: a 996px host on an 854px viewport — so trusting
+     height:100% left the panel hanging past the bottom edge, the document as the real
+     scroller, and .view-scroll swallowing every wheel and touch over the content while
+     it had nothing of its own to scroll (its overscroll containment blocks the chain).
+     The host always sits at the viewport's top edge — a custom panel draws its own
+     header — so the viewport is the one honest reference. dvh tracks the phone's
+     retracting browser chrome; the vh line is the fallback for engines without it. */
+  height: 100vh;
+  height: 100dvh;
   /* Positioned so the ambient layer has something to be absolute against — see .ambient. */
   position: relative;
 
