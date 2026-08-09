@@ -293,12 +293,14 @@ class TestRemainingTime:
         of a discovered entity that has not reported: null, exactly as for any other."""
         assert machine(await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
 
-    @pytest.mark.parametrize("reading", ["-5", "soon", "97.0", ""])
+    @pytest.mark.parametrize("reading", ["-5", "soon", ""])
     async def test_a_reading_that_is_not_a_minute_count_is_dropped(
         self, ws: WsClient, harness: Harness, reading: str
     ) -> None:
-        """Upstream noise, in every shape it has: a negative countdown, a word, a decimal
-        the reader does not accept, and an empty string. Every one is an absent figure."""
+        """Upstream noise, in every shape it has: a negative countdown, a word, and an
+        empty string. Every one is an absent figure. A decimal is no longer noise — the
+        reference sensor speaks decimal hours, so the reader now parses floats and
+        converts by the declared unit; the gateway suite covers those shapes."""
         harness.hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, reading, {})
 
         assert machine(await ws.result_dict(PRINTER_STATE))["remaining_minutes"] is None
