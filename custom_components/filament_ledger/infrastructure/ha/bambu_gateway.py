@@ -125,6 +125,36 @@ PRINT_SENSOR_KEYS = frozenset(
     }
 )
 
+# Minutes per unit the `remaining_time` sensor may declare — every duration unit Home
+# Assistant defines (`UnitOfTime`: d, h, min, s, ms, µs), with the long spellings, the
+# `hr` abbreviation, the plain-ASCII `us`, and both micro glyphs (U+00B5 and U+03BC)
+# riding along. The empty string is a sensor declaring nothing, read as minutes because
+# minutes were this reader's original assumption. A unit absent from this table converts
+# nothing: `_remaining_minutes` drops the reading rather than guess.
+_MINUTES_PER_DECLARED_UNIT = {
+    "d": 1440.0,
+    "days": 1440.0,
+    "h": 60.0,
+    "hr": 60.0,
+    "hours": 60.0,
+    "min": 1.0,
+    "minutes": 1.0,
+    "": 1.0,
+    "s": 1 / 60,
+    "seconds": 1 / 60,
+    "ms": 1 / 60_000,
+    "milliseconds": 1 / 60_000,
+    "µs": 1 / 60_000_000,
+    "μs": 1 / 60_000_000,
+    "us": 1 / 60_000_000,
+    "microseconds": 1 / 60_000_000,
+}
+
+# A countdown a year long is not a countdown. Nothing a printer runs takes that long, so
+# a figure past this line is upstream noise — refused in the same spirit as `Grams.of`
+# refusing a figure too large to quantise.
+_MINUTES_IN_A_YEAR = 525_600
+
 # The one AMS this ledger follows **per printer**, by that printer's own numbering. The
 # registry's tray `unique_id` carries the AMS unit's *serial*, never its ordinal, and the
 # only place an ordinal is ever stated is the weight sensor's `AMS 1 Tray 4` attribute
@@ -847,6 +877,19 @@ class BambuLabGateway:
     def _remaining_minutes(self, printer: PrinterSerial) -> int | None:
         """How much longer the job in progress has, in whole minutes — or `None`.
 
+        **The sensor names its own unit, and this reader converts by it.** On the
+        reference instance the upstream sensor speaks decimal hours — measured
+        2026-08-09: state `"6.35"`, `unit_of_measurement: "h"` — so a reader assuming
+        whole minutes choked on every real print and this figure never reached the
+        screen. Every duration unit Home Assistant defines converts here — days, hours,
+        minutes, seconds, milliseconds, microseconds — spelling and case normalised
+        first. A sensor declaring **no unit at all** is read as minutes, the reader's
+        original assumption; a sensor declaring a unit the table does not hold is
+        dropped instead, because a figure converted by a guessed unit is confidently
+        wrong where a dash is merely silent — the module's under-claim rule again. The
+        result rounds to the nearest whole minute — the finest grain the screen shows —
+        and a figure past a year is refused as noise no real countdown could mean.
+
         **Zero is read as "no job", not as "any moment now".** Upstream parks this sensor
         at zero between prints, so a machine that finished last Tuesday reports the same
         zero as one whose last layer is going down — and of the two readings that a `0 min`
@@ -861,10 +904,22 @@ class BambuLabGateway:
         state = self._sensor_state(printer, "remaining_time")
         if state is None:
             return None
+        unit = str(state.attributes.get("unit_of_measurement") or "").strip().lower()
+        scale = _MINUTES_PER_DECLARED_UNIT.get(unit)
+        if scale is None:
+            LOGGER.debug("remaining_time declares %r, a unit this reader does not know", unit)
+            return None
         try:
-            minutes = int(state.state)
-        except ValueError:
-            LOGGER.debug("remaining_time reads %r, which is not a minute count", state.state)
+            minutes = round(float(state.state) * scale)
+        # A reading of "nan" or "inf" parses as a float but has no whole-minute reading,
+        # so `round` refusing it lands here with everything that never parsed at all.
+        except ValueError, OverflowError:
+            LOGGER.debug("remaining_time reads %r, which is not a duration", state.state)
+            return None
+        if minutes > _MINUTES_IN_A_YEAR:
+            LOGGER.debug(
+                "remaining_time reads %r %s, which no real countdown means", state.state, unit
+            )
             return None
         return minutes if minutes > 0 else None
 
