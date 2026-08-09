@@ -336,7 +336,7 @@ it is allowed to touch is written down rather than discovered during implementat
 | Job lifecycle | `bambu_lab_event` on the HA bus, `type` ∈ `event_print_started`, `event_print_finished`, `event_print_canceled`, `event_print_failed`, `event_print_error` |
 | Per-tray consumption | Attributes of the printer's `print_weight` sensor, keyed `AMS <n> Tray <m>` and `External Spool` |
 | Job progress | The `print_progress`, `current_layer` and `total_layers` sensors |
-| Job timing | The `remaining_time` sensor (whole minutes) and the `start_time` / `end_time` timestamp sensors |
+| Job timing | The `remaining_time` sensor, which declares its own unit — the reference machine speaks decimal hours — and is converted to whole minutes by that declaration; and the `start_time` / `end_time` timestamp sensors |
 | Raw state | The `print_status` sensor (a lowercased `gcode_state`) and the `print_error` sensor |
 | Tray identity | Attributes of the AMS tray sensors: `tag_uid`, `type`, `color`, `tray_uuid`, `remain` |
 | Connectivity | The printer device's availability |

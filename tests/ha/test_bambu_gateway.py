@@ -519,6 +519,94 @@ class TestDiscovery:
         assert BambuLabGateway(as_hass(two_printer_hass())).default_printer is None
 
 
+class TestRemainingTime:
+    """The `remaining_time` reader converting by the unit the sensor declares.
+
+    The reference instance publishes decimal hours — measured 2026-08-09: state `"6.35"`,
+    `unit_of_measurement: "h"` — a shape the original whole-minutes reader could never
+    parse, so the Printer tab's remaining-time field had shown a dash on every real print.
+    """
+
+    def reading(self, state: str, attributes: dict[str, object] | None = None) -> int | None:
+        hass = bambu_hass()
+        hass.states.by_entity_id[REMAINING_TIME] = State(REMAINING_TIME, state, attributes or {})
+        return BambuLabGateway(as_hass(hass)).current_job_status(A_PRINTER).remaining_minutes
+
+    async def test_decimal_hours_convert_to_whole_minutes(self) -> None:
+        """The reference machine's own reading: 6.35 hours is 381 minutes, not a dash."""
+        assert self.reading("6.35", {"unit_of_measurement": "h"}) == 381
+
+    async def test_a_sensor_speaking_minutes_passes_through_unconverted(self) -> None:
+        assert self.reading("383", {"unit_of_measurement": "min"}) == 383
+
+    async def test_a_sensor_speaking_seconds_rounds_to_whole_minutes(self) -> None:
+        assert self.reading("300", {"unit_of_measurement": "s"}) == 5
+
+    async def test_no_declared_unit_is_read_as_minutes_the_way_it_always_was(self) -> None:
+        """The legacy shape keeps its legacy reading: minutes were the reader's original
+        assumption, and an undeclared unit falls back to it rather than to a guess."""
+        assert self.reading("97") == 97
+
+    async def test_zero_hours_is_still_no_job(self) -> None:
+        """The parked-at-zero rule survives conversion: `0.0 h` rounds to zero minutes,
+        and zero is read as an idle machine, never as a countdown's last moment."""
+        assert self.reading("0.0", {"unit_of_measurement": "h"}) is None
+
+    async def test_an_unreadable_duration_is_dropped_not_invented(self) -> None:
+        assert self.reading("soon") is None
+
+    @pytest.mark.parametrize(
+        ("state", "unit", "minutes"),
+        [
+            pytest.param("2", "d", 2880, id="days"),
+            pytest.param("1.5", "hr", 90, id="hr-spelling"),
+            pytest.param("2", "hours", 120, id="hours-spelling"),
+            pytest.param("120000", "ms", 2, id="milliseconds"),
+            pytest.param("120000000", "µs", 2, id="microseconds"),
+        ],
+    )
+    async def test_every_duration_unit_home_assistant_defines_converts(
+        self, state: str, unit: str, minutes: int
+    ) -> None:
+        """The whole `UnitOfTime` table, not just the shapes the reference machine has
+        shown: upstream is free to reshape this sensor, and every unit it could legally
+        declare must land on the same whole-minute figure."""
+        assert self.reading(state, {"unit_of_measurement": unit}) == minutes
+
+    async def test_a_units_spelling_is_normalised_before_it_is_looked_up(self) -> None:
+        """Whitespace and case are presentation, not meaning: ` H ` is still hours."""
+        assert self.reading("6.35", {"unit_of_measurement": " H "}) == 381
+
+    async def test_a_declared_unit_this_reader_does_not_know_is_dropped_not_guessed(
+        self,
+    ) -> None:
+        """A declared unit outside the table converts nothing: a figure read by a guessed
+        unit is confidently wrong where a dash is merely silent — under-claim, the
+        module's standing rule. Only a sensor declaring *nothing* keeps the legacy
+        minutes reading."""
+        assert self.reading("6.35", {"unit_of_measurement": "fortnights"}) is None
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            pytest.param("inf", id="infinity"),
+            pytest.param("-inf", id="negative-infinity"),
+            pytest.param("nan", id="not-a-number"),
+        ],
+    )
+    async def test_a_figure_no_countdown_can_hold_is_skipped_not_raised(self, state: str) -> None:
+        """All three parse as floats, so `float` waves them through and `round` refuses —
+        the same trap `Grams.of` guards in the weight reader, and the guard is the
+        difference between an honest dash and an exception."""
+        assert self.reading(state, {"unit_of_measurement": "min"}) is None
+
+    async def test_a_countdown_longer_than_a_year_is_noise_not_a_figure(self) -> None:
+        """`1e30` rounds to a perfectly finite integer, so only a plausibility line
+        catches it: no print outlives a year, and past that line the honest reading is
+        that the sensor said nothing."""
+        assert self.reading("1e30", {"unit_of_measurement": "min"}) is None
+
+
 class TestCurrentTrays:
     async def test_a_tagged_tray_translates_completely(self) -> None:
         """Tag, presence and every hint — the register form pre-fills from these."""
