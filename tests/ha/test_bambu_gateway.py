@@ -101,6 +101,14 @@ PROGRESS = "sensor.a1_00000000testser_progreso_de_la_impresion"
 GCODE_FILE = "sensor.a1_00000000testser_archivo_gcode_descargado"
 PRINT_ERROR = "binary_sensor.a1_00000000testser_error_de_la_impresion"
 
+# The job-name fallback: `gcode_file_downloaded` speaks only at the moment a file is
+# downloaded and stays `unavailable` across a Home Assistant restart, while upstream
+# restores this sensor on reconnect. Deliberately absent from `print_sensors.json` for
+# the v1.4 trio's reason below — stateless in the base harness, planted by the tests
+# that mean it — and the value planted is the shape the reference instance publishes.
+GCODE_NAME = "sensor.a1_00000000testser_nombre_del_gcode"
+GCODE_NAME_VALUE = "80% + parts, ironning, 0.2mm layer,2 walls,8% infill.3mf"
+
 # The three job-time sensors frozen in v1.4. Their `translation_key`s were read off the
 # reference instance's registry before the constant was frozen (docs/13 — Traps); the
 # localised entity ids follow the pattern every other row on that instance shows, and
@@ -356,6 +364,23 @@ class TestDiscovery:
 
         assert gateway.current_job_status(A_PRINTER).remaining_minutes == 97
 
+    async def test_the_gcode_name_sensor_resolves_by_key_on_the_spanish_instance(self) -> None:
+        """The job-name fallback, discovered the only way anything here is.
+
+        The entity id reads `nombre_del_gcode` and nothing in the gateway contains that
+        string. The downloaded-file sensor is planted `unavailable` — the restart shape —
+        because the fallback answering is the only figure that proves the key resolved:
+        an unmatched key would leave the name reading unknown forever and look exactly
+        like a printer that never reported it.
+        """
+        hass = bambu_hass()
+        hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, STATE_UNAVAILABLE, {})
+        hass.states.by_entity_id[GCODE_NAME] = State(GCODE_NAME, GCODE_NAME_VALUE, {})
+
+        gateway = BambuLabGateway(as_hass(hass))
+
+        assert gateway.current_job_status(A_PRINTER).name == GCODE_NAME_VALUE
+
     async def test_the_first_ams_wins_when_the_registry_holds_two(self) -> None:
         """v1 tracks a single printer. Only the first unit's states exist here, so four
         readings prove the second group was never consulted."""
@@ -605,6 +630,56 @@ class TestRemainingTime:
         catches it: no print outlives a year, and past that line the honest reading is
         that the sensor said nothing."""
         assert self.reading("1e30", {"unit_of_measurement": "min"}) is None
+
+
+class TestJobName:
+    """The job-name reader falling back from the downloaded file to the gcode's name.
+
+    `gcode_file_downloaded` publishes only when the printer downloads a file and goes
+    `unavailable` across a Home Assistant restart, staying dead until the *next*
+    download — so mid-print after a restart, the Printer tab and every row opened in
+    that window read "unknown print" off a machine verifiably printing something. The
+    `gcode_name` sensor is restored on reconnect and carries the job's name through
+    exactly that gap.
+    """
+
+    def reading(self, downloaded: str, gcode_name: str | None) -> str:
+        """The name `current_job_status` reads with both sensors planted as given.
+
+        `None` for the gcode-name sensor leaves it stateless — the shape of a machine
+        that never reported it — while the downloaded-file sensor is always planted
+        explicitly, because every scenario here is about what it says or fails to say.
+        """
+        hass = bambu_hass()
+        hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, downloaded, {})
+        if gcode_name is not None:
+            hass.states.by_entity_id[GCODE_NAME] = State(GCODE_NAME, gcode_name, {})
+        return BambuLabGateway(as_hass(hass)).current_job_status(A_PRINTER).name
+
+    async def test_the_gcode_name_speaks_when_the_downloaded_file_is_dead(self) -> None:
+        """The restart shape: downloaded-file `unavailable`, gcode-name restored."""
+        assert self.reading(STATE_UNAVAILABLE, GCODE_NAME_VALUE) == GCODE_NAME_VALUE
+
+    async def test_both_sensors_silent_is_the_unknown_job_not_an_exception(self) -> None:
+        """Only when neither sensor speaks does the reader admit it does not know."""
+        assert self.reading(STATE_UNAVAILABLE, STATE_UNAVAILABLE) == UNKNOWN_JOB_NAME
+
+    async def test_the_downloaded_file_still_wins_when_both_speak(self) -> None:
+        """The `NNNN-name.gcode` form is the identity every historical row was named
+        with, so while it speaks it stays the name — a fallback that outranked it would
+        rename the same job between two glances."""
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE) == JOB_NAME
+
+    async def test_a_blank_downloaded_file_falls_back_not_through(self) -> None:
+        """Whitespace is silence, not a name: a sensor answering `"   "` yields to the
+        fallback rather than naming the job a blank string."""
+        assert self.reading("   ", GCODE_NAME_VALUE) == GCODE_NAME_VALUE
+
+    async def test_a_blank_gcode_name_is_silence_at_the_fallback_too(self) -> None:
+        """The same whitespace rule, applied to the second sensor: a fallback answering
+        `"   "` names nothing, and the reader admits the unknown job rather than
+        passing a blank string down as a name."""
+        assert self.reading(STATE_UNAVAILABLE, "   ") == UNKNOWN_JOB_NAME
 
 
 class TestCurrentTrays:
