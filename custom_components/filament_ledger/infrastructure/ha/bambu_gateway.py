@@ -106,10 +106,14 @@ _TRAY_MARKER = "_tray_"
 # entries because the job events on the bus name only a device.
 #
 # Every key here was read off the reference instance's entity registry **before** it was
-# frozen, which is the rule `FUTURE_PRINT_SENSOR_KEYS` below exists to explain. The last
-# three joined in v1.4: `remaining_time` is what the Printer tab shows for a job in
-# progress, and `start_time`/`end_time` are the machine's own answer to how long a print
-# actually took, as opposed to how long Home Assistant took to notice it.
+# frozen, which is the rule `FUTURE_PRINT_SENSOR_KEYS` below exists to explain. Three
+# joined in v1.4: `remaining_time` is what the Printer tab shows for a job in progress,
+# and `start_time`/`end_time` are the machine's own answer to how long a print actually
+# took, as opposed to how long Home Assistant took to notice it. `gcode_name` (the
+# reference instance's `nombre_del_gcode`) joined for `_job_name`'s fallback:
+# `gcode_file_downloaded` speaks only at the moment a file is downloaded and stays
+# `unavailable` across a Home Assistant restart, while upstream restores this one on
+# reconnect — the sensor still naming the job when the house comes back mid-print.
 PRINT_SENSOR_KEYS = frozenset(
     {
         "print_weight",
@@ -118,6 +122,7 @@ PRINT_SENSOR_KEYS = frozenset(
         "total_layers",
         "print_progress",
         "gcode_file_downloaded",
+        "gcode_name",
         "print_error",
         "remaining_time",
         "start_time",
@@ -849,10 +854,31 @@ class BambuLabGateway:
         return state
 
     def _job_name(self, printer: PrinterSerial) -> str:
-        state = self._sensor_state(printer, "gcode_file_downloaded")
-        if state is None or not state.state.strip():
-            return UNKNOWN_JOB_NAME
-        return state.state
+        """The running job's name, from whichever sensor still remembers it.
+
+        **`gcode_file_downloaded` wins whenever it speaks**, because it is the identity
+        every historical row was named with — the `NNNN-name.gcode` form the ledger has
+        written down since v1 — and preferring another source while it speaks would let
+        the same job answer to two names between two glances. But that sensor publishes
+        only at the moment the printer downloads a file: a Home Assistant restart
+        mid-print leaves it `unavailable` until the *next* download, so everything that
+        asks in that window — the Printer tab, a start, an ending — read an unknown
+        print off a machine that was verifiably printing something.
+
+        **`gcode_name` is the honest fallback for exactly that gap.** Upstream restores
+        it on reconnect, so after a restart it is the one sensor still carrying the
+        job's name. A blank or whitespace answer falls through rather than naming a job
+        the empty string, and only when both sensors are silent does this reader answer
+        `UNKNOWN_JOB_NAME` — the same under-claim every reader here applies, and never
+        an exception.
+        """
+        downloaded = self._sensor_state(printer, "gcode_file_downloaded")
+        if downloaded is not None and downloaded.state.strip():
+            return downloaded.state
+        restored = self._sensor_state(printer, "gcode_name")
+        if restored is not None and restored.state.strip():
+            return restored.state
+        return UNKNOWN_JOB_NAME
 
     def _text_state(self, printer: PrinterSerial, key: str) -> str | None:
         state = self._sensor_state(printer, key)

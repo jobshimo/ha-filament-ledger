@@ -70,6 +70,13 @@
     "device_id": "00000000000000000000000000testprn"
   },
   {
+    "entity_id": "sensor.a1_00000000testser_nombre_del_gcode",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_gcode_name",
+    "translation_key": "gcode_name",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
     "entity_id": "binary_sensor.a1_00000000testser_error_de_la_impresion",
     "platform": "bambu_lab",
     "unique_id": "00000000TESTSER_print_error",
