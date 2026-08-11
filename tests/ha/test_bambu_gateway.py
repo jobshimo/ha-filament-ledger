@@ -33,6 +33,7 @@ from custom_components.filament_ledger.domain.event import (
     UnknownSpoolDetected,
 )
 from custom_components.filament_ledger.domain.model.pending_review import ReviewCharge
+from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
@@ -100,6 +101,13 @@ TOTAL_LAYERS = "sensor.a1_00000000testser_cantidad_total_de_capas"
 PROGRESS = "sensor.a1_00000000testser_progreso_de_la_impresion"
 GCODE_FILE = "sensor.a1_00000000testser_archivo_gcode_descargado"
 PRINT_ERROR = "binary_sensor.a1_00000000testser_error_de_la_impresion"
+
+# The second lifecycle level, and the more specific of the two. `stage` speaks upstream's
+# `printing` / `idle` / `paused_*` vocabulary where `print_status` speaks `gcode_state`'s,
+# and the two go unavailable at different moments — which is the whole reason both are
+# watched. Stateless in the base harness for the same reason the job-time sensors are: it
+# was never in the captured `print_sensors.json`, so every test that means it plants it.
+STAGE = "sensor.a1_00000000testser_estado_actual"
 
 # The job-name fallback: `gcode_file_downloaded` speaks only at the moment a file is
 # downloaded and stays `unavailable` across a Home Assistant restart, while upstream
@@ -1784,7 +1792,14 @@ class TestEndingsTheBusNeverAnnounced:
 
     async def test_one_machines_finish_does_not_end_anothers_print(self, harness: Harness) -> None:
         """Two machines, two status sensors. An ending inferred from one must correlate
-        against that one — the same rule the bus path was given in v2.0."""
+        against that one — the same rule the bus path was given in v2.0.
+
+        Both machines report `running` here, so both get a row: the second one's was
+        announced on the bus, and the first one's is inferred from its own level, which is
+        what this gateway now does for a machine printing with no row to its name. The
+        assertion is per machine because that is the whole claim — the first one's `finish`
+        closes the first one's row and leaves the second one's print exactly where it was.
+        """
         plant_registry(harness.hass, REGISTRY_ROWS + second_printer_rows())
         for entity_id in PRINT_SENSORS:
             harness.hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
@@ -1803,9 +1818,173 @@ class TestEndingsTheBusNeverAnnounced:
         fire_status_change(harness.hass, "finish")
         await harness.hass.drain()
 
-        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
-        assert job.printer == ANOTHER_PRINTER
+        by_printer = {
+            job.printer: job
+            for job in await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        }
+        assert by_printer[ANOTHER_PRINTER].state is PrintJobState.RUNNING
+        assert by_printer[A_PRINTER].state is PrintJobState.FINISHED
+
+
+class TestStartsTheBusNeverAnnounced:
+    """The *first* edge, and the failure of 2026-08-11 — the mirror of the class above.
+
+    Upstream guards `event_print_started` with the same `previous_gcode_state != "unknown"`
+    it guards the finish with, and a reconnection resets exactly that. So a machine whose
+    connection drops before its own start announces nothing, the ledger opens no row, and
+    the ending — whenever it arrives — finds nothing to close and is discarded as an
+    inference about a print already recorded. The whole job disappears, grams and all.
+
+    Measured on the reference instance that night: `estado_de_la_impresion` went
+    `unavailable` at 22:38:28 and returned `running` at 22:38:40, and at 22:57 the machine
+    was 68 % through a 291.42 g print that had **no row in the ledger at all**. The 248.41 g
+    `MANUAL_ADJUSTMENT` of 2026-08-08 is the same hole, paid for by hand.
+
+    The hard case is not opening the row. It is opening exactly one: on a healthy print the
+    inference and the announcement race within the same second, and the machine bounces
+    `offline → running` ten times inside one job while printing perfectly well.
+    """
+
+    def wire(self, harness: Harness) -> BambuLabGateway:
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        for entity_id in PRINT_SENSORS:
+            harness.hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
+        gateway = BambuLabGateway(as_hass(harness.hass))
+
+        async def deliver(event: PrintEvent) -> None:
+            await harness.ledger.use_cases.track_print_job.execute(event)
+
+        gateway.subscribe_jobs(deliver)
+        return gateway
+
+    async def a_mounted_spool(self, harness: Harness) -> SpoolId:
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+        self.wire(harness)
+        return spool_id
+
+    async def jobs(self, harness: Harness) -> list[PrintJob]:
+        return await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+
+    async def test_a_start_the_bus_never_announced_opens_a_row(self, harness: Harness) -> None:
+        """22:38:28 to 22:38:40, replayed: away, back already printing, not one word on
+        the bus. The ledger must not be blind to that print."""
+        await self.a_mounted_spool(harness)
+
+        fire_status_change(harness.hass, "unavailable")
+        fire_status_change(harness.hass, "running")
+        await harness.hass.drain()
+
+        [job] = await self.jobs(harness)
         assert job.state is PrintJobState.RUNNING
+
+    async def test_the_print_it_opened_is_charged_when_it_ends(self, harness: Harness) -> None:
+        """The whole point. A row nobody opened is worth nothing on its own — what was
+        lost that night was the deduction, and this is the path that recovers it."""
+        spool_id = await self.a_mounted_spool(harness)
+
+        fire_status_change(harness.hass, "unavailable")
+        fire_status_change(harness.hass, "running")
+        await harness.hass.drain()
+        fire_weight_change(harness.hass, {"AMS 1 Tray 1": 291.42}, state="291.42")
+        await harness.hass.drain()
+        fire_status_change(harness.hass, "finish")
+        await harness.hass.drain()
+
+        [job] = await self.jobs(harness)
+        assert job.state is PrintJobState.FINISHED
+        assert job.reported_usage == {a_tray(1): Grams.of("291.42")}
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.balance == Grams.of("708.58")
+
+    async def test_the_healthy_start_opens_exactly_one_row(self, harness: Harness) -> None:
+        """Both signals, same moment — the shape of every ordinary print. The inference
+        opens the row and the announcement must find it already there, or UC-04 deducts
+        the same grams twice for the rest of time."""
+        await self.a_mounted_spool(harness)
+
+        fire_status_change(harness.hass, "running")
+        fire_job_event(harness.hass, "event_print_started")
+        await harness.hass.drain()
+
+        assert len(await self.jobs(harness)) == 1
+
+    async def test_the_announcement_first_then_the_inference_opens_one_row(
+        self, harness: Harness
+    ) -> None:
+        """The same race, lost the other way round. Neither order may duplicate."""
+        await self.a_mounted_spool(harness)
+
+        fire_job_event(harness.hass, "event_print_started")
+        fire_status_change(harness.hass, "running")
+        await harness.hass.drain()
+
+        assert len(await self.jobs(harness)) == 1
+
+    async def test_the_offline_running_flicker_opens_one_row(self, harness: Harness) -> None:
+        """What the machine actually did on 2026-08-10: ten `offline → running` arrivals
+        in the thirty-six minutes of one job, printing perfectly well throughout. Every one
+        is a real transition and a real re-read of the level; only the first has work."""
+        await self.a_mounted_spool(harness)
+        fire_status_change(harness.hass, "running")
+        await harness.hass.drain()
+
+        for _ in range(10):
+            fire_status_change(harness.hass, "offline")
+            fire_status_change(harness.hass, "running")
+        await harness.hass.drain()
+
+        assert len(await self.jobs(harness)) == 1
+
+    async def test_an_idle_machine_mints_no_job(self, harness: Harness) -> None:
+        """The phantom-job failure this path could have been. `idle` and `offline` are
+        where a machine rests, and it rests there for days."""
+        await self.a_mounted_spool(harness)
+
+        fire_status_change(harness.hass, "offline")
+        fire_status_change(harness.hass, "idle")
+        await harness.hass.drain()
+
+        assert await self.jobs(harness) == []
+
+    async def test_the_stage_sensor_alone_can_open_a_row(self, harness: Harness) -> None:
+        """The two levels fail separately, which is why both are watched. With
+        `print_status` still unavailable, `stage` is the one that answers."""
+        await self.a_mounted_spool(harness)
+
+        fire_status_change(harness.hass, "unavailable")
+        fire_status_change(harness.hass, "printing", entity_id=STAGE)
+        await harness.hass.drain()
+
+        [job] = await self.jobs(harness)
+        assert job.state is PrintJobState.RUNNING
+
+    async def test_a_paused_print_is_still_a_print(self, harness: Harness) -> None:
+        """A machine cannot pause what it is not running, so the whole `paused_*` family
+        opens a row. `paused_filament_runout` is the one an AMS ledger meets most."""
+        await self.a_mounted_spool(harness)
+
+        fire_status_change(harness.hass, "unavailable")
+        fire_status_change(harness.hass, "paused_filament_runout", entity_id=STAGE)
+        await harness.hass.drain()
+
+        [job] = await self.jobs(harness)
+        assert job.state is PrintJobState.RUNNING
+
+    async def test_a_stage_that_also_happens_when_idle_mints_no_job(self, harness: Harness) -> None:
+        """`heating_hotend` occurs inside a print *and* during a calibration a machine runs
+        while idle, and there is no third signal here to tell those apart. Refusing it costs
+        nothing — the stage reaches `printing` moments later, and this is a level that is
+        read again on every transition rather than an edge missed once and gone."""
+        await self.a_mounted_spool(harness)
+
+        fire_status_change(harness.hass, "unavailable")
+        fire_status_change(harness.hass, "heating_hotend", entity_id=STAGE)
+        await harness.hass.drain()
+
+        assert await self.jobs(harness) == []
 
 
 class TestJobSync:
@@ -1861,6 +2040,32 @@ class TestJobSync:
         assert job.reported_usage == {a_tray(1): Grams.of("248.41")}
         detail = await harness.ledger.use_cases.queries.detail(spool_id)
         assert detail.summary.balance == Grams.of("751.59")
+
+    async def test_a_machine_already_printing_at_startup_gets_a_row(self, harness: Harness) -> None:
+        """The reload mid-print, which every options change performs. The machine is
+        printing, its start fired in front of nobody, and `async_track_state_change_event`
+        only ever fires for *future* changes — so without this pass the ledger would stay
+        blind to that print until it ended, and then discard its ending too."""
+        spool_id = await a_spool(harness.ledger)
+        await harness.ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+        sync = self.wire(harness, "running", {"AMS 1 Tray 1": 291.42})
+
+        reconciled = await sync.execute()
+
+        assert len(reconciled) == 1
+        [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
+        assert job.state is PrintJobState.RUNNING
+
+    async def test_a_machine_printing_a_job_already_open_is_left_alone(
+        self, harness: Harness
+    ) -> None:
+        """The pass runs on every startup, and most of those find a print already tracked.
+        A second row here would charge one print twice, once per restart."""
+        await self.an_open_job(harness)
+        sync = self.wire(harness, "running", {"AMS 1 Tray 1": 291.42})
+
+        assert await sync.execute() == []
+        assert len(await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)) == 1
 
     async def test_an_idle_machine_with_nothing_open_writes_nothing(self, harness: Harness) -> None:
         """Every restart runs this pass, and the reference machine's captured resting

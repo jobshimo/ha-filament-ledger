@@ -64,10 +64,12 @@ class MachineSnapshot:
 
     printer: PrinterSerial
     job: JobStatus
-    # The three sensors docs/14 §14.5 names beyond the discovered set. They stay `None`
-    # until their upstream `translation_key`s are read off the reference instance and
-    # frozen into `PRINT_SENSOR_KEYS` — see `FUTURE_PRINT_SENSOR_KEYS` for why a guessed
-    # key is worse than an honest null.
+    # The three sensors docs/14 §14.5 names beyond the job set. They waited here through
+    # v1.4 and v2.5 for their upstream `translation_key`s to be *read* rather than guessed,
+    # and they were read on 2026-08-11 — two of the three guesses right, `connection_mode`
+    # wrong and actually `mqtt_mode`. `BambuLabGateway.MQTT_MODE_KEY` tells that story; the
+    # readers behind these three are total like every other one, so a null here still means
+    # exactly what it always did: the printer did not say.
     online: bool | None = None
     connection_mode: str | None = None
     active_tray: int | None = None
@@ -139,6 +141,9 @@ class ReadPrinterState:
                 MachineSnapshot(
                     printer=printer,
                     job=self.gateway.current_job_status(printer),
+                    online=self.gateway.online(printer),
+                    connection_mode=self.gateway.connection_mode(printer),
+                    active_tray=self.gateway.active_tray(printer),
                     trays=trays.get(printer, []),
                 )
                 for printer in self.gateway.printers
