@@ -161,6 +161,14 @@ class TrackPrintJob:
         number on it. Opening the new row is enough: the stale one stops being the newest,
         and `_is_newest` already refuses to let any inference close it — the same mechanism
         that protects the double-start case, reused rather than duplicated.
+
+        **And it goes to the review queue, which is what this detection was always for.**
+        Until v2.6 the discovery ended at the warning above: the ledger knew a print had
+        run and gone unaccounted, said so in a log nobody reads, and reported the filament
+        as never consumed. On the reference instance that fired ten times in nine days and
+        opened zero reviews. A silent zero is the one answer an inventory must never give —
+        a review says *this print ran and I do not know what it used*, which is true, and
+        puts it in front of the person who can settle it.
         """
         now = self.clock.now()
         open_job = await self._running_job(event.printer)
@@ -176,12 +184,13 @@ class TrackPrintJob:
         if open_job is not None:
             LOGGER.warning(
                 "printer %s is running a print that job %s (%s) does not describe; that "
-                "row's ending never arrived and it is left open for review, while the "
+                "row's ending never arrived, so it goes to the review queue while the "
                 "print now running gets a row of its own",
                 event.printer,
                 open_job.id,
                 open_job.name,
             )
+            await self._send_to_review(open_job)
         job = PrintJob(
             id=new_print_job_id(),
             name=event.name,
@@ -194,6 +203,42 @@ class TrackPrintJob:
         async with self.uow:
             await self.jobs.save(job)
         return job.id
+
+    async def _send_to_review(self, orphan: PrintJob) -> None:
+        """Queue a decision about a print that ran and was never accounted for.
+
+        `UNCLASSIFIED` is the reason, and it is the existing vocabulary rather than a new
+        member because it already says precisely this: *the job ended without a
+        recognisable event*. That is what happened — the machine has plainly moved on, so
+        the print is over, and no signal ever said how it went.
+
+        **The row stays `RUNNING`.** Its state is what the ledger *observed*, and the
+        ledger observed no ending; writing `FINISHED` would claim a completion nobody saw,
+        and `FAILED` or `CANCELLED` would be worse. The review is where the outcome gets
+        decided, by the one party who actually knows.
+
+        **No amounts are supplied**, so the queue estimates as it does for any other open
+        review — and with no ending there are no progress figures to scale, which leaves
+        the card asking rather than asserting. That is the honest shape: a zero presented
+        as a fact would be the very defect this method exists to end.
+
+        Nothing here may stop the print now running from getting its row. A queue that
+        refuses — because this orphan is already waiting, which is the ordinary outcome
+        when a start is announced twice — is not an error; and a queue that fails for any
+        other reason must still not cost the live print its tracking.
+        """
+        try:
+            await self.open_pending_review.execute(
+                OpenPendingReviewCommand(job=orphan, reason=ReviewReason.UNCLASSIFIED)
+            )
+        except ReviewAlreadyPendingError:
+            LOGGER.debug("job %s is already waiting in the review queue", orphan.id)
+        except Exception:
+            LOGGER.exception(
+                "could not queue a review for the unaccounted job %s; the print now "
+                "running is still tracked",
+                orphan.id,
+            )
 
     async def _ended(self, event: PrintEnded) -> PrintJobId | None:
         """Close the running job with the moment's figures — creating the row first when
