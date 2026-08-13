@@ -884,3 +884,108 @@ class TestThePhantomIsRetiredNotMerged:
 
         assert [s.spool.id for s in await ledger.use_cases.queries.overview()] == [older]
         assert len(ledger.events.of(SpoolDeleted)) == 1
+
+
+class TestTheOldestRowSurvivesWhicheverSideWasReadFirst:
+    """The defect v2.6 shipped, reproduced from the ledger it was found on.
+
+    v2.6 chose the survivor as `find_by_reel(...)[0]` — the oldest row **that had already
+    learned the reel**. Which rows have learned it is a fact about which trays the user
+    happened to use, not about which row is genuine, so a reel whose *twin* was read first
+    made the twin the survivor and queued the real row for retirement.
+
+    On the reference ledger that was live and loaded: the phantom minted on 13-08 held reel
+    `C53610CF…` because it sat in tray 4, while the genuine row from 10-08 sat in storage
+    having learned nothing. The next reading from an odd tray would have binned three weeks
+    of history and kept the row whose only entry was an opening balance.
+
+    Age decides, and it can decide because a twin exists only by being born later — the
+    reel had to already be in the ledger before it could cross into a tray of the other
+    parity and be met a second time.
+    """
+
+    def detection(self, ledger: Ledger) -> DetectSpool:
+        return DetectSpool(
+            spools=SqliteSpoolRepository(ledger.database),
+            events=ledger.events,
+            uow=ledger.database,
+            clock=ledger.clock,
+            auto_mount=True,
+            register_spool=ledger.use_cases.register_spool,
+            default_opening_weight=Grams.of(1000),
+            default_core_weight=Grams.of(250),
+            auto_register=True,
+        )
+
+    async def a_split_pair(self, ledger: Ledger) -> tuple[SpoolId, SpoolId]:
+        """One reel, two rows, one per side — the shape a pre-2.6 ledger arrives in."""
+        older = await a_spool(ledger, label="the real one", tag_uid=TAG_ODD_SIDE)
+        ledger.clock.advance(hours=72)
+        newer = await a_spool(ledger, label="the phantom", tag_uid=TAG_EVEN_SIDE)
+        return older, newer
+
+    async def test_the_twin_learning_the_reel_first_does_not_make_it_the_survivor(
+        self, ledger: Ledger
+    ) -> None:
+        """**The regression.** The even side is read first, so the younger row learns the
+        reel; the odd side follows. The older row must still be the one left standing."""
+        older, newer = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+
+        # Even tray first: the phantom is the only row that knows the reel.
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+        # Then the reel moves to an odd tray, which is where the twin finally surfaces.
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        survivors = [s.spool.id for s in await ledger.use_cases.queries.overview()]
+        assert survivors == [older], "the genuine row was retired in favour of its twin"
+        assert (await ledger.use_cases.queries.detail(newer)).summary.spool.is_deleted
+
+    async def test_the_surviving_row_ends_up_owning_the_reel(self, ledger: Ledger) -> None:
+        """It has to, or the next reading would resolve to nothing and register a third."""
+        older, _ = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        assert (await located(ledger, older)).reel_uid == REEL
+
+    async def test_the_reel_then_resolves_to_the_survivor_from_either_side(
+        self, ledger: Ledger
+    ) -> None:
+        """Both chips belong to the surviving row now, so neither side can mint anything."""
+        older, _ = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(2, tag=TAG_EVEN_SIDE, reel=REEL))
+        await detection.execute(a_full_reading(1, tag=TAG_ODD_SIDE, reel=REEL))
+
+        survivors = [s.spool.id for s in await ledger.use_cases.queries.overview()]
+        assert survivors == [older]
+
+    async def test_the_history_kept_is_the_older_rows(self, ledger: Ledger) -> None:
+        """The point of choosing by age, measured where it hurts: the row that survives is
+        the one carrying the movements."""
+        await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        [surviving] = await ledger.use_cases.queries.overview()
+        assert surviving.spool.label == "the real one"
+
+    async def test_reading_the_odd_side_first_reaches_the_same_answer(self, ledger: Ledger) -> None:
+        """Order of discovery must not change the outcome — that was the whole defect."""
+        older, newer = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        survivors = [s.spool.id for s in await ledger.use_cases.queries.overview()]
+        assert survivors == [older]
+        assert (await ledger.use_cases.queries.detail(newer)).summary.spool.is_deleted
