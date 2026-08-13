@@ -101,6 +101,13 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
         # Provenance, so the edit dialog knows whether the tag is the user's to change
         # (docs/14 §14.2). Null exactly when there is no tag.
         "tag_source": spool.tag_source.value if spool.tag_source else None,
+        # Which physical reel, as the printer names it. Read-only in the UI — there is no
+        # dialog that sets it, because a hand-typed reel id is a claim nobody can check.
+        "reel_uid": spool.reel_uid.value if spool.reel_uid else None,
+        # Why a spool is in the Trash when nobody put it there. Null for every deletion a
+        # user performed, which is what lets the Trash show the sentence only where there
+        # is one to show (docs/14 §14.4.3).
+        "deleted_reason": spool.deleted_reason,
         "movement_count": summary.movement_count,
         "last_movement_at": (
             summary.last_movement_at.isoformat() if summary.last_movement_at else None

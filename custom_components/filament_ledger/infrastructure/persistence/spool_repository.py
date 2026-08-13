@@ -16,6 +16,7 @@ from ...domain.value.identifiers import (
     UNIDENTIFIED_PRINTER,
     AmsIndex,
     PrinterSerial,
+    ReelUid,
     SlotIndex,
     SpoolId,
     TagSource,
@@ -29,7 +30,7 @@ from .database import Database
 COLUMNS = (
     "id, material, material_other, colour, vendor, label, opening_weight_mg, "
     "core_weight_mg, location_kind, location_printer, location_ams, location_slot, "
-    "tag_uid, tag_source, registered_at, discarded_at, deleted_at"
+    "tag_uid, tag_source, reel_uid, registered_at, discarded_at, deleted_at, deleted_reason"
 )
 
 # Both retirements, in one predicate. Every read that means "in inventory" uses this
@@ -100,6 +101,20 @@ def _tag_from(value: str | None) -> TagUid | None:
     return TagUid(value)
 
 
+def _reel_from(value: str | None) -> ReelUid | None:
+    """The reel id, hydrated — tolerating the sentinel exactly as `_tag_from` does.
+
+    Thirty-two zeros is what the printer reports for a reel it could not identify. The
+    gateway turns it into `None` on the way in and `ReelUid` refuses it, so a stored one
+    should not exist; a row that has one anyway — hand-inserted, or restored from a backup
+    written by a build that predates the refusal — hydrates as an unidentified reel rather
+    than failing every list and get, and with them the coordinator and the whole entry.
+    """
+    if not value or set(value) == {"0"}:
+        return None
+    return ReelUid(value)
+
+
 def _tag_source_from(value: str | None, tag: TagUid | None) -> TagSource | None:
     """The pairing, restored on the way out — the domain refuses a half-set pair.
 
@@ -140,8 +155,10 @@ def _to_spool(row: sqlite3.Row) -> Spool:
         label=row["label"],
         tag_uid=tag,
         tag_source=_tag_source_from(row["tag_source"], tag),
+        reel_uid=_reel_from(row["reel_uid"]),
         discarded_at=_parse(row["discarded_at"]),
         deleted_at=_parse(row["deleted_at"]),
+        deleted_reason=row["deleted_reason"],
     )
 
 
@@ -171,9 +188,40 @@ class SqliteSpoolRepository:
         is a menu that moves under the hand that is reaching for it.
         """
         rows = await self.database.fetch_all(
-            f"SELECT {COLUMNS} FROM spool WHERE tag_uid = ? AND {IN_INVENTORY} "
+            f"SELECT {COLUMNS} FROM spool "
+            f" WHERE ( tag_uid = ? "
+            f"      OR EXISTS (SELECT 1 FROM spool_tag "
+            f"                  WHERE spool_tag.spool_id = spool.id "
+            f"                    AND spool_tag.tag_uid = ?) ) "
+            f"   AND {IN_INVENTORY} "
+            f" ORDER BY registered_at, rowid",
+            (tag.value, tag.value),
+        )
+        return [_to_spool(row) for row in rows]
+
+    async def find_by_reel(self, reel: ReelUid) -> list[Spool]:
+        """Every **in-inventory** spool that is this physical reel.
+
+        The lookup automatic recognition leads with, and the one that ends the defect
+        `spool_tag` exists to survive: a reel answers with a different chip UID in an odd
+        tray than in an even one, but it reports one `tray_uuid` in every tray, so this
+        question has a stable answer where `find_by_tag`'s did not.
+
+        **Plural, and it should almost always return one.** Two rows naming one reel is not
+        a state this release can create — `DetectSpool` resolves by reel before it considers
+        registering — but it is a state a ledger *arrives* with: every pair minted under the
+        old rule becomes visible here the moment both halves learn their reel. Returning a
+        list rather than the first row is what lets the panel offer to merge them instead of
+        the ledger silently picking a winner and charging prints to it.
+
+        Ordered like `find_by_tag`, and for its reason: this list is a choice offered to a
+        user, and a menu that reorders itself between one detection and the next is a menu
+        that moves under the hand reaching for it.
+        """
+        rows = await self.database.fetch_all(
+            f"SELECT {COLUMNS} FROM spool WHERE reel_uid = ? AND {IN_INVENTORY} "
             f"ORDER BY registered_at, rowid",
-            (tag.value,),
+            (reel.value,),
         )
         return [_to_spool(row) for row in rows]
 
@@ -232,8 +280,9 @@ class SqliteSpoolRepository:
                 id, material, material_other, colour, vendor, label,
                 opening_weight_mg, core_weight_mg, location_kind, location_printer,
                 location_ams, location_slot,
-                tag_uid, tag_source, registered_at, discarded_at, deleted_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+                tag_uid, tag_source, reel_uid,
+                registered_at, discarded_at, deleted_at, deleted_reason, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 material = excluded.material,
                 material_other = excluded.material_other,
@@ -247,8 +296,10 @@ class SqliteSpoolRepository:
                 location_slot = excluded.location_slot,
                 tag_uid = excluded.tag_uid,
                 tag_source = excluded.tag_source,
+                reel_uid = excluded.reel_uid,
                 discarded_at = excluded.discarded_at,
                 deleted_at = excluded.deleted_at,
+                deleted_reason = excluded.deleted_reason,
                 updated_at = datetime('now')
             """,
             (
@@ -266,8 +317,46 @@ class SqliteSpoolRepository:
                 slot,
                 spool.tag_uid.value if spool.tag_uid else None,
                 spool.tag_source.value if spool.tag_source else None,
+                spool.reel_uid.value if spool.reel_uid else None,
                 _iso(spool.registered_at),
                 _iso(spool.discarded_at) if spool.discarded_at else None,
                 _iso(spool.deleted_at) if spool.deleted_at else None,
+                spool.deleted_reason,
             ),
+        )
+        # The chip index follows the entity, in the same unit of work, so the two can never
+        # disagree about whether a spool owns a chip. Done here rather than left to callers
+        # because `find_by_tag` reads the index: a caller that forgot would produce a spool
+        # with a tag the printer can no longer resolve, which is a defect with no symptom
+        # until the reel is next put in a tray.
+        #
+        # OR IGNORE, not upsert: re-saving a spool re-asserts a chip it already owns on
+        # every mount, unmount and adjustment, and `first_seen_at` means *first*.
+        if spool.tag_uid is not None:
+            await self.database.execute(
+                """
+                INSERT OR IGNORE INTO spool_tag (spool_id, tag_uid, first_seen_at)
+                VALUES (?, ?, datetime('now'))
+                """,
+                (spool.id, spool.tag_uid.value),
+            )
+
+    async def claim_tag(self, spool_id: SpoolId, tag: TagUid) -> None:
+        """Record that this reel also answers to this chip UID.
+
+        The second side of a reel, learned the first time the AMS reads it from a tray of
+        the opposite parity. Separate from `save` because it is not a property of the
+        entity: `Spool.tag_uid` remains the chip the spool was *registered* with, which is
+        what the panel shows and what `tag_source` qualifies, while this index is every
+        chip the reel is known to answer to.
+
+        Idempotent, for the reason `save`'s insert is: the detection path re-observes the
+        same chip on every republish.
+        """
+        await self.database.execute(
+            """
+            INSERT OR IGNORE INTO spool_tag (spool_id, tag_uid, first_seen_at)
+            VALUES (?, ?, datetime('now'))
+            """,
+            (spool_id, tag.value),
         )

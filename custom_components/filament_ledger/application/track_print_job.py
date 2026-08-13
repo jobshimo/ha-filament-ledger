@@ -69,6 +69,36 @@ CORRELATION_WINDOW = 10
 # for a genuinely new job, which is the whole reason it exists.
 DUPLICATE_ENDING_WINDOW = timedelta(minutes=5)
 
+# How far apart two readings of the machine's own `start_time` may be and still describe
+# **the same print** — the identity an inferred start correlates by.
+#
+# Exact equality does not work, and the reason is measured rather than defensive: upstream
+# publishes the figure truncated to the minute and corrects it seconds later. On the
+# reference instance (docs/12-field-notes.md, 2026-08-10) one job read `23:04:00` at
+# 01:04:34 local and `23:06:37` at 01:06:41 — the same print, two values, 2 m 37 s apart.
+# A comparison by equality would call the correction a new job and open a second row for a
+# print already being tracked.
+#
+# Five minutes is far wider than any correction observed and far narrower than the gap
+# between two prints of the same plate, which is the collision this has to stay clear of.
+JOB_IDENTITY_TOLERANCE = timedelta(minutes=5)
+
+# How recently this machine's open row must have been created for an **announced** start
+# that carries no printer timestamp to be read as *the same print, arriving twice* rather
+# than as a new job.
+#
+# The two starts race by seconds on a healthy print: the status sensor reaches `running` and
+# the bus fires `event_print_started` within the same moment, so the inference opens the row
+# and the announcement finds it already there. Without this window that announcement would
+# open a second row for the print already being tracked and UC-04 would deduct its grams
+# twice.
+#
+# Measured against the case it must **not** swallow: upstream announced two starts for one
+# job eight minutes apart on 2026-08-08, and the ledger has always answered that with two
+# rows. Five minutes keeps that answer, and keeps it by the same margin the ending path uses
+# for the same shape of question.
+SIMULTANEOUS_START_WINDOW = timedelta(minutes=5)
+
 # Why a review opens, keyed by how the job ended. `FINISHED` is deliberately absent:
 # a completed job needs no decision (docs/adr/0004-approval-queue-for-estimates.md).
 _REVIEW_REASONS = {
@@ -88,10 +118,14 @@ class TrackPrintJob:
     async def execute(self, event: PrintEvent) -> PrintJobId | None:
         """The job this event landed on, or `None` when it deliberately landed on nothing.
 
-        Only an ending answers `None`, and only for the two shapes `_ended` refuses: an
-        inferred ending with no running job to close, and a second delivery of an ending
-        already recorded. Both are non-events by design rather than failures, so neither
-        raises — and neither has an id to give, because no row was written.
+        Both moments can answer `None`, and every shape that does is a non-event by design
+        rather than a failure — so none of them raises, and none has an id to give, because
+        no row was written:
+
+        - *An inferred ending with no running job to close*, and *a second delivery of an
+          ending already recorded* — the two shapes `_ended` refuses.
+        - *An inferred start for a job already being tracked* — the level saying `printing`
+          about the very print whose row is already open. `_started` refuses it.
         """
         match event:
             case PrintStarted():
@@ -99,7 +133,7 @@ class TrackPrintJob:
             case PrintEnded():
                 return await self._ended(event)
 
-    async def _started(self, event: PrintStarted) -> PrintJobId:
+    async def _started(self, event: PrintStarted) -> PrintJobId | None:
         """A new job, a new identity. The upstream event carries no job id, so the row
         created here is what a later ending correlates back to (see `_running_job`).
 
@@ -107,12 +141,61 @@ class TrackPrintJob:
         lands beside it rather than over it. Everything the ledger orders itself by is
         stamped from one clock; the machine's report is a second fact about the same
         moment, and `PrintJob` says why the two must not be merged.
+
+        **No start opens a second row for a print already being tracked**, and the guard
+        covers the announced start as much as the inferred one. That symmetry is not
+        tidiness, it is the whole correctness of adding inference at all: on a healthy print
+        the two signals arrive within the same second — the status sensor reaches `running`
+        and the bus fires `event_print_started` — so a guard that exempted the announced one
+        would open a row for the inference and a second row for the announcement, every
+        single print. UC-04 would then deduct the same grams twice, which is the one failure
+        this module exists to prevent.
+
+        The identity is the machine's own `start_time` — not the level, not the name — and
+        `_same_print` says what happens when it is missing, which is where the announced and
+        the inferred start finally part company.
+
+        **A stale row is left standing rather than closed here.** When the printer is
+        plainly running a print the open row does not describe, that row belongs to a job
+        whose ending never arrived, and inventing an outcome for it would be a guess with a
+        number on it. Opening the new row is enough: the stale one stops being the newest,
+        and `_is_newest` already refuses to let any inference close it — the same mechanism
+        that protects the double-start case, reused rather than duplicated.
+
+        **And it goes to the review queue, which is what this detection was always for.**
+        Until v2.6 the discovery ended at the warning above: the ledger knew a print had
+        run and gone unaccounted, said so in a log nobody reads, and reported the filament
+        as never consumed. On the reference instance that fired ten times in nine days and
+        opened zero reviews. A silent zero is the one answer an inventory must never give —
+        a review says *this print ran and I do not know what it used*, which is true, and
+        puts it in front of the person who can settle it.
         """
+        now = self.clock.now()
+        open_job = await self._running_job(event.printer)
+        if open_job is not None and _same_print(open_job, event, now):
+            LOGGER.debug(
+                "printer %s reports a print that job %s (%s) already tracks; %s start ignored",
+                event.printer,
+                open_job.id,
+                open_job.name,
+                "inferred" if event.derived else "announced",
+            )
+            return None
+        if open_job is not None:
+            LOGGER.warning(
+                "printer %s is running a print that job %s (%s) does not describe; that "
+                "row's ending never arrived, so it goes to the review queue while the "
+                "print now running gets a row of its own",
+                event.printer,
+                open_job.id,
+                open_job.name,
+            )
+            await self._send_to_review(open_job)
         job = PrintJob(
             id=new_print_job_id(),
             name=event.name,
             state=PrintJobState.RUNNING,
-            started_at=self.clock.now(),
+            started_at=now,
             printer=event.printer,
             reported_usage=event.plan,
             printer_started_at=event.printer_started_at,
@@ -120,6 +203,42 @@ class TrackPrintJob:
         async with self.uow:
             await self.jobs.save(job)
         return job.id
+
+    async def _send_to_review(self, orphan: PrintJob) -> None:
+        """Queue a decision about a print that ran and was never accounted for.
+
+        `UNCLASSIFIED` is the reason, and it is the existing vocabulary rather than a new
+        member because it already says precisely this: *the job ended without a
+        recognisable event*. That is what happened — the machine has plainly moved on, so
+        the print is over, and no signal ever said how it went.
+
+        **The row stays `RUNNING`.** Its state is what the ledger *observed*, and the
+        ledger observed no ending; writing `FINISHED` would claim a completion nobody saw,
+        and `FAILED` or `CANCELLED` would be worse. The review is where the outcome gets
+        decided, by the one party who actually knows.
+
+        **No amounts are supplied**, so the queue estimates as it does for any other open
+        review — and with no ending there are no progress figures to scale, which leaves
+        the card asking rather than asserting. That is the honest shape: a zero presented
+        as a fact would be the very defect this method exists to end.
+
+        Nothing here may stop the print now running from getting its row. A queue that
+        refuses — because this orphan is already waiting, which is the ordinary outcome
+        when a start is announced twice — is not an error; and a queue that fails for any
+        other reason must still not cost the live print its tracking.
+        """
+        try:
+            await self.open_pending_review.execute(
+                OpenPendingReviewCommand(job=orphan, reason=ReviewReason.UNCLASSIFIED)
+            )
+        except ReviewAlreadyPendingError:
+            LOGGER.debug("job %s is already waiting in the review queue", orphan.id)
+        except Exception:
+            LOGGER.exception(
+                "could not queue a review for the unaccounted job %s; the print now "
+                "running is still tracked",
+                orphan.id,
+            )
 
     async def _ended(self, event: PrintEnded) -> PrintJobId | None:
         """Close the running job with the moment's figures — creating the row first when
@@ -328,3 +447,44 @@ class TrackPrintJob:
             if job.state is PrintJobState.RUNNING:
                 return job
         return None
+
+
+def _same_print(job: PrintJob, event: PrintStarted, now: datetime) -> bool:
+    """Whether the row already open describes the print this start is announcing.
+
+    **The machine's own `start_time` decides it whenever both sides carry one.** That figure
+    is the only job identity upstream publishes: it does not move for the length of a print,
+    and on the reference instance it held `2026-08-11T16:38:23+00:00` across both a
+    twelve-second dropout and a Home Assistant restart while the status sensor, the name
+    sensors and the bus events all reset (docs/12-field-notes.md, 2026-08-11).
+
+    **The name is deliberately not consulted**, on either path. It moves during a job —
+    `UNKNOWN_JOB_NAME` while every naming sensor is unavailable, the file name once one
+    speaks — so a row opened before its name resolved would fail an equality test against
+    its own print and be duplicated.
+
+    **With no timestamp to compare, the answer depends on who is speaking**, because the two
+    starts are wrong about different things:
+
+    - *Inferred.* The level says `printing` for the whole job and is re-read on every
+      transition, so an inference arriving at a machine that already has a row is
+      overwhelmingly that row's own print — ten `offline → running` bounces inside one
+      thirty-six-minute job on the reference machine, every one of them a fresh arrival at
+      `running`. It answers `True` and does nothing. The cost of being wrong is that the
+      ledger stays blind to one job, which is the state it was already in and which the next
+      announced event repairs. The cost of the opposite mistake is a duplicate row per
+      bounce, each charged in full.
+    - *Announced.* This is a discrete event that fired because the machine said a print
+      began, so it may open a row — unless it is racing the inference that just opened one
+      for the very same print, which on a healthy start it always is.
+      `SIMULTANEOUS_START_WINDOW` is that race, and the eight minutes between upstream's two
+      announcements for one job on 2026-08-08 is what it must stay clear of.
+
+    Under-claiming is the standing policy at this boundary; double-charging is the one
+    failure this module exists to prevent.
+    """
+    if job.printer_started_at is not None and event.printer_started_at is not None:
+        return abs(job.printer_started_at - event.printer_started_at) <= JOB_IDENTITY_TOLERANCE
+    if event.derived:
+        return True
+    return now - job.started_at <= SIMULTANEOUS_START_WINDOW

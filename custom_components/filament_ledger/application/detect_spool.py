@@ -36,22 +36,25 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from ..domain.error import DuplicateTagNotConfirmedError
+from ..domain.error import DomainError, DuplicateTagNotConfirmedError
 from ..domain.event import (
     AmbiguousTagDetected,
     DomainEvent,
     EventPublisher,
+    SpoolDeleted,
     SpoolDetected,
     SpoolMounted,
     SpoolUnmounted,
     UnknownSpoolDetected,
 )
+from ..domain.model.spool import Spool
+from ..domain.port.clock import Clock
 from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour_name import label_with_colour
 from ..domain.value.grams import Grams
 from ..domain.value.identifiers import TagSource, TagUid, TrayRef
-from ..domain.value.location import AmsSlot, Storage
+from ..domain.value.location import AmsSlot
 from ..domain.value.material import Material
 from ..domain.value.movement_type import MovementSource
 from ..domain.value.tray_reading import TrayReading
@@ -64,6 +67,38 @@ LOGGER = logging.getLogger(__name__)
 #: a tag plus name, material and colour — is what a Bambu tray reports about Bambu's own
 #: filament. A third-party reel carries no such tag, so it never reaches this path.
 BAMBU_VENDOR = "Bambu Lab"
+
+#: The caption on a row this release retires by itself, in the instance's language.
+#:
+#: Every word of it is aimed at the one person who will ever read it: somebody who opened the
+#: Trash and found a spool there they did not put there. It says what happened, it names the
+#: row that survived so they can check, and it says the undo out loud — because a deletion
+#: nobody asked for is only defensible if the person it happened to can reverse it without
+#: asking anyone how.
+_RETIRED_BY_UPGRADE: dict[str, str] = {
+    "en": (
+        "Retired automatically when this ledger learned to recognise reels by their own "
+        "identity instead of by the RFID chip the AMS happened to read. This row and "
+        "{survivor} were always one physical reel, met from its two sides. Restore it from "
+        "the Trash if that is wrong."
+    ),
+    "es": (
+        "Retirada automáticamente al aprender este inventario a reconocer las bobinas por su "
+        "identidad propia en vez de por el chip RFID que leyera el AMS. Esta fila y "
+        "{survivor} siempre fueron una sola bobina física, vista por sus dos caras. "
+        "Restáurala desde la Papelera si eso no es correcto."
+    ),
+}
+
+
+def _retired_reason(survivor: str, language: str) -> str:
+    """The caption, in Spanish for a Spanish instance and English for everything else —
+    the same fallback `colour_name` makes, and for the same reason: this is stored data,
+    written once, in the language the household spoke when it happened."""
+    template = _RETIRED_BY_UPGRADE[
+        "es" if language.replace("_", "-").split("-")[0].strip().lower() == "es" else "en"
+    ]
+    return template.format(survivor=survivor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +113,9 @@ class DetectSpool:
     spools: SpoolRepository
     events: EventPublisher
     uow: UnitOfWork
+    # Stamps the retirement of a phantom row. The same clock every other use case takes,
+    # so a Trash entry this module writes sorts against the ones the user wrote.
+    clock: Clock
     # A plain value, not a callable: changing options reloads the config entry (see
     # `_reload_on_options_change` in the package root), which rebuilds every use case with
     # fresh settings — so this can never go stale.
@@ -102,6 +140,11 @@ class DetectSpool:
             return
         if reading.tag is None:
             return  # unreadable tag: nothing automatic is possible — see the module docstring
+        # Before anything reads the inventory: a row that predates v2.6 knows its chip but
+        # not its reel, and every question below is asked of the reel first. Healing here
+        # means the rest of this use case sees one consistent world instead of each branch
+        # having to remember that legacy rows answer to a different question.
+        await self._adopt_reel(reading)
         # Before the mount/report decision, so a fully described unknown spool enters the
         # inventory whichever way `auto_mount` points: with it on the resolution below
         # mounts what was just registered, with it off the sighting is reported and the
@@ -113,7 +156,7 @@ class DetectSpool:
             # [ Mount ] button instead.
             await self.events.publish(SpoolDetected(tag_uid=reading.tag, tray=reading.tray))
             return
-        await self._tag_appeared(reading.tag, reading.tray)
+        await self._tag_appeared(reading, reading.tag, reading.tray)
 
     async def _tray_emptied(self, tray: TrayRef) -> None:
         """UC-03, automatic: the spool left the machine, so it is in storage now.
@@ -129,6 +172,134 @@ class DetectSpool:
         if occupant is not None:
             await self.events.publish(SpoolUnmounted(spool_id=occupant.id))
 
+    async def _adopt_reel(self, reading: TrayReading) -> None:
+        """Teach the ledger which physical reel a chip belongs to. Writes nothing else.
+
+        Two jobs, both of them healing, and both idempotent so the startup replay and every
+        republish can run them harmlessly:
+
+        **The second side.** A reel already known by its `reel_uid` turns up in a tray of
+        the opposite parity, so the AMS reads its other chip. That chip is recorded against
+        the reel, and from then on the reel resolves by either side even where no reel id is
+        reported.
+
+        **The legacy row.** A reel this ledger has never identified reports a chip that
+        resolves to exactly one spool with no reel id of its own. That spool *is* this reel:
+        it was registered before v2.6, when the ledger stored the chip and threw the reel
+        away. It learns its identity here rather than in a migration, because a migration
+        would have had to guess and this does not — the printer is holding the reel up and
+        naming it.
+
+        **Exactly one, or nothing.** An ambiguous chip is left alone: picking one of two
+        candidates to adopt the reel onto would be this method deciding the very question
+        `AmbiguousTagDetected` exists to refuse to decide. It stays ambiguous, and the user
+        resolves it.
+
+        Failure is not fatal. `identified_as` refuses to re-point a row that already names a
+        different reel, and that refusal means *this is not the reel I thought it was* — the
+        resolution below then treats it as an unknown reel, which registers rather than
+        corrupts.
+        """
+        if reading.reel is None or reading.tag is None:
+            return
+        retired: list[DomainEvent] = []
+        async with self.uow:
+            known = await self.spools.find_by_reel(reading.reel)
+            if known:
+                # The reel is ours. `find_by_reel` orders by `registered_at`, so the first
+                # row is the oldest — and the oldest is the genuine one by construction: a
+                # phantom could only ever have been born *later*, at the moment the reel
+                # first crossed into a tray of the other parity.
+                survivor, *already_known_phantoms = known
+                phantoms = list(already_known_phantoms)
+                # A row that answers to the chip we are about to claim, and is not the
+                # survivor, is the other half of this reel — the row that was minted when
+                # this side was first read. It never learned a reel of its own, which is
+                # precisely why `find_by_reel` above could not see it.
+                for other in await self.spools.find_by_tag(reading.tag):
+                    if other.id == survivor.id or any(p.id == other.id for p in phantoms):
+                        continue
+                    if other.reel_uid is not None and other.reel_uid != reading.reel:
+                        # It speaks for a different reel. Whatever that is, it is not this
+                        # reel's phantom, and retiring it would be this method destroying a
+                        # row on a guess.
+                        continue
+                    phantoms.append(other)
+                # Record the side we just read — a no-op if this is the chip the survivor
+                # was registered with. Claimed *after* the scan above, so the survivor's own
+                # row cannot be mistaken for a second claimant of its own chip.
+                await self.spools.claim_tag(survivor.id, reading.tag)
+                for phantom in phantoms:
+                    retirement = await self._retire_phantom(phantom, survivor)
+                    if retirement is not None:
+                        retired.append(retirement)
+            else:
+                await self._adopt_onto_legacy_row(reading)
+        # Published after the commit — never for a write that could still roll back.
+        for announcement in retired:
+            await self.events.publish(announcement)
+
+    async def _adopt_onto_legacy_row(self, reading: TrayReading) -> None:
+        """A reel nobody has identified, whose chip resolves to exactly one unidentified row.
+
+        That row *is* this reel: it was registered before v2.6, when the ledger stored the
+        chip and threw the reel away. It learns its identity from the printer holding the
+        reel up and naming it — which is why no migration had to guess one.
+
+        Runs inside the caller's unit of work.
+        """
+        if reading.reel is None or reading.tag is None:  # pragma: no cover - caller checked
+            return
+        candidates = await self.spools.find_by_tag(reading.tag)
+        if len(candidates) != 1:
+            return
+        spool = candidates[0]
+        if spool.reel_uid is not None:
+            return  # already speaks for another reel; not ours to re-point
+        try:
+            await self.spools.save(spool.identified_as(reading.reel))
+        except DomainError:
+            # Discarded, deleted, or already identified between the read and the write.
+            # Nothing to heal, and nothing that should stop the tray being resolved.
+            LOGGER.debug("could not identify %s as reel %s", spool.id, reading.reel)
+            return
+        await self.spools.claim_tag(spool.id, reading.tag)
+
+    async def _retire_phantom(self, phantom: Spool, survivor: Spool) -> SpoolDeleted | None:
+        """Send a row that was never a separate reel to the Trash, and say why.
+
+        **Deleted, not merged.** A merge would have to decide what happens to two opening
+        balances and two half-histories, and every rule for doing that is a rule invented
+        on the user's behalf about grams the ledger cannot weigh. Deletion decides nothing:
+        the row keeps its whole history, stops counting as stock, and sits in the Trash
+        where the user can read the caption and put it back in one click if this release
+        got it wrong. That reversibility is the entire licence for doing it unasked.
+
+        **What it costs, stated plainly.** Movements charged to the phantom go out of the
+        stock figures with it, so a reel whose printing was recorded against the phantom
+        will read high until it is weighed. That is a visible, correctable number, and the
+        *needs weighing* prompt already asks for exactly that — unlike a merged history
+        stitched from two opening balances, which would be wrong in a way nothing surfaces.
+
+        Anything already retired is left alone: a discarded or deleted row is out of
+        inventory and has no claim on the reel to give up.
+
+        Returns the event to announce, or `None` when there was nothing to retire. The
+        caller publishes it *after* the unit of work commits — never for a write that could
+        still roll back, which is this module's rule everywhere else too.
+        """
+        if not phantom.is_in_inventory:
+            return None
+        reason = _retired_reason(survivor.display_name, self.language)
+        await self.spools.save(phantom.deleted(self.clock.now(), reason))
+        LOGGER.info(
+            "retired %s: it and %s are one reel (%s)",
+            phantom.display_name,
+            survivor.display_name,
+            survivor.reel_uid,
+        )
+        return SpoolDeleted(spool_id=phantom.id, display_name=phantom.display_name)
+
     async def _register_unknown(self, reading: TrayReading) -> None:
         """UC-01 on the printer's say-so, when the reading describes the spool in full.
 
@@ -136,24 +307,59 @@ class DetectSpool:
         below owns displacement and the one-spool-per-tray index, and giving registration
         a second way into a tray would give that rule a second implementation.
 
-        The idempotence hinge is the *location-aware* lookup: a replayed reading finds
-        the spool it registered last time in this tray or in storage and does nothing,
-        while a match mounted only in other trays is a second reel of the same batch —
-        a Bambu tag identifies a batch, not a unit. The lookup runs *outside* this use case's
-        unit of work because `RegisterSpool` opens its own — one connection cannot hold
-        both — which leaves a window where someone else registers the same tag first.
-        `RegisterSpool`'s duplicate-tag guard closes it, and losing that race is not a
-        failure: the spool exists, which is all this method wants.
+        The idempotence hinge is the **reel** lookup, and that is the whole of this
+        release's correction. A reel the ledger already owns is recognised wherever it
+        sits — in this tray, in another tray, on a shelf — because `reel_uid` names the
+        reel rather than the side of it the AMS happened to reach. The rule it replaces
+        asked whether a *chip* matched something in this tray or in storage, and a reel
+        moved from an odd tray to an even one answered no to both while being the same reel:
+        that is how a ledger came to hold two rows, two opening balances and half a history
+        each (docs/12-field-notes.md).
+
+        **A reel with no identity keeps the old, weaker rule**, and keeps it knowingly.
+        Third-party and refilled reels report no `tray_uuid`, so a chip is all there is to
+        go on and the location heuristic is the best available answer — the same answer, and
+        the same limits, as before v2.6.
+
+        The lookups run *outside* this use case's unit of work because `RegisterSpool` opens
+        its own — one connection cannot hold both — which leaves a window where someone else
+        registers the same reel first. `RegisterSpool`'s duplicate-tag guard closes it, and
+        losing that race is not a failure: the spool exists, which is all this method wants.
         """
         if not self.auto_register or reading.tag is None:
             return
         if reading.material is None or reading.colour is None:
             return  # a spool the system cannot describe is a spool it must not invent
-        candidates = await self.spools.find_by_tag(reading.tag)
-        if any(spool.location in (AmsSlot(reading.tray), Storage()) for spool in candidates):
-            # A replay (already in this tray) or an ordinary move (waiting in storage):
-            # the resolution below handles both, and registering would mint a twin.
-            return
+        if reading.reel is not None:
+            if await self.spools.find_by_reel(reading.reel):
+                # We own this reel. Where it is standing is the resolution's business, not
+                # registration's — and asking would reintroduce the very question that made
+                # a moved reel look new.
+                return
+            candidates = await self.spools.find_by_tag(reading.tag)
+        else:
+            candidates = await self.spools.find_by_tag(reading.tag)
+            if candidates:
+                # A chip we know is a reel we know, wherever it is standing.
+                #
+                # This used to ask a further question — *is the match in this tray or in
+                # storage?* — and register a twin when the answer was no, on the ground
+                # that a Bambu tag identified a product batch and a match mounted elsewhere
+                # was therefore a second reel of that batch. That ground does not exist.
+                # A chip UID lives in block 0 of the tag, which is read-only and written by
+                # the chip's manufacturer, so it identifies one chip; and a chip is glued
+                # into one reel. Twelve reels on the reference machine carried twelve
+                # distinct chip UIDs, including three reels of one product in one colour
+                # (docs/12-field-notes.md). Nothing was ever observed to share one.
+                #
+                # So the location question could only ever produce the wrong answer, and it
+                # produced it in the most ordinary situation there is: a reel moved from one
+                # tray to another. The resolution below moves it instead.
+                #
+                # A user who genuinely wants two rows for one chip still gets them — by
+                # saying so in the register form, which is what `confirm_duplicate_tag` is
+                # for. What is gone is the *automatic* duplicate nobody asked for.
+                return
         try:
             await self.register_spool.execute(
                 RegisterSpoolCommand(
@@ -177,6 +383,10 @@ class DetectSpool:
                     # instance's language, decided now, because a label is stored data.
                     label=label_with_colour(reading.name, reading.colour, self.language),
                     tag_uid=reading.tag,
+                    # Born knowing which reel it is, so it is recognised from either side
+                    # of the hub from its very first mount — the healing path above exists
+                    # only for the rows that could not be.
+                    reel_uid=reading.reel,
                     # The serial came off the tray reading, not off a keyboard
                     # (docs/14 §14.2) — the same provenance the register-from-sync
                     # dialog states.
@@ -184,10 +394,11 @@ class DetectSpool:
                     # The opening balance is the configured default nobody confirmed
                     # today, and the history's provenance label must say so.
                     movement_source=MovementSource.AUTOMATIC,
-                    # Candidates mounted only in *other* trays mean this reading is a
-                    # second reel of the batch, so the duplicate is deliberate — the
-                    # resolution then sees both and asks (`AmbiguousTagDetected`)
-                    # instead of merging two physical reels into one ledger row.
+                    # Reaching here with candidates means the chip is spoken for but the
+                    # reel is genuinely new — two reels whose chip UIDs collide, or a
+                    # legacy row that speaks for a different reel. Either way the duplicate
+                    # is deliberate, and the resolution then sees both and asks
+                    # (`AmbiguousTagDetected`) instead of merging two reels into one row.
                     confirm_duplicate_tag=bool(candidates),
                 )
             )
@@ -204,18 +415,30 @@ class DetectSpool:
             # the gateway logs and drops readings, so nothing upstream would retry this.
             LOGGER.exception("auto-registration of tag %s failed", reading.tag)
 
-    async def _tag_appeared(self, tag: TagUid, tray: TrayRef) -> None:
-        """UC-02, automatic: resolve the tag, then mount — or ask.
+    async def _tag_appeared(self, reading: TrayReading, tag: TagUid, tray: TrayRef) -> None:
+        """UC-02, automatic: resolve the reel, then mount — or ask.
 
         The whole read-compute-write runs inside one unit of work: resolution and
         displacement must see the same inventory, or a concurrent mount could interleave
         between the lookup and the write.
+
+        **By reel when the printer named one, by chip otherwise.** The two are not
+        alternatives of equal standing: the reel id answers *which reel is this* and holds
+        still across trays, while the chip answers only *which side did the AMS read* and
+        changes with the tray's parity. Leading with the chip is what used to make a reel
+        that crossed from an odd tray to an even one resolve to nothing and be mounted as a
+        stranger. The chip remains the answer for reels that report no identity at all —
+        third-party and refilled — where it is the only fact available.
         """
         to_publish: list[DomainEvent] = []
         async with self.uow:
-            # `find_by_tag` already excludes discarded spools: a discarded spool is out of
-            # inventory, and a tag matching only discarded spools is an unknown tag.
-            candidates = await self.spools.find_by_tag(tag)
+            # Both lookups already exclude discarded and deleted spools: those are out of
+            # inventory, and a reel matching only retired rows is an unknown reel.
+            candidates = (
+                await self.spools.find_by_reel(reading.reel)
+                if reading.reel is not None
+                else await self.spools.find_by_tag(tag)
+            )
             if not candidates:
                 to_publish.append(UnknownSpoolDetected(tag_uid=tag, tray=tray))
             elif len(candidates) > 1:

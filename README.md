@@ -16,6 +16,41 @@ about to a review queue, and gives you a sidebar panel to weigh, correct and aud
 
 ---
 
+## What's new in 2.6
+
+**A reel is recognised by itself, not by the chip the AMS happened to read.** A Bambu spool's
+tag is readable from either side of its hub, and the AMS has two reader boards between four
+trays — slots 1 and 3 reach one chip, slots 2 and 4 the other. So the same reel reported a
+different `tag_uid` depending on which tray you put it in, and a ledger that recognised reels by
+that value met a stranger every time a reel changed side of the machine: a second row, a second
+opening balance of 1 kg, and half a history each. The printer had been reporting the right answer
+all along in a field nothing read — `tray_uuid`, what Bambu Studio shows as the spool's SN, which
+holds still across trays, removals and restarts. That is now the identity, with the chip kept as
+the fallback for third-party and refilled reels that report no `tray_uuid` at all.
+
+**If your ledger already has twins, it heals itself and shows its working.** Rows written before
+2.6 learn which reel they are the first time the printer reads them again — no migration guesses
+one. When two rows turn out to be one reel, the **older row survives** (the twin could only ever
+have been born later, at the moment the reel first crossed to a tray of the other parity) and the
+newer one goes to the **Trash**, carrying a sentence saying what happened and naming the row that
+survived. Restore it in one click if that is wrong. Nothing is merged and no history is rewritten:
+a merge would have to rule on two opening balances, and every rule for that is one the ledger
+would be inventing on your behalf.
+
+One consequence worth stating plainly: filament charged to the retired twin leaves the stock
+figures with it, so a reel whose printing was recorded against the twin will read high until you
+weigh it. The *needs weighing* prompt already asks for exactly that.
+
+**A print nobody saw end now reaches the review queue.** The ledger has always detected the shape
+— the printer is plainly running a print that the open row does not describe, so that row's
+ending never arrived — but the discovery stopped at a log line. On the reference instance that
+fired ten times in nine days and opened zero reviews, which meant a print could run, finish, and
+be reported as *no filament consumed* with nothing anywhere to say otherwise. It now opens a
+review instead. The row stays `RUNNING`, because that is what was observed and claiming a
+completion nobody saw would be worse; the review is where the outcome gets settled.
+
+---
+
 ## The problem
 
 Bambu Lab printers report a `remain` percentage per AMS tray. On the reference machine — an A1
@@ -379,7 +414,20 @@ exists — see [docs/12](docs/12-field-notes.md).
 **A tray shows tag `0000000000000000`. Is that a bug?**
 No — that is *no tag*. A third-party or refilled spool has nothing for the printer to read.
 Sixteen zeros is not an identity, and the integration treats it as absent rather than as a value
-to match on. Register the spool by hand; everything else works normally.
+to match on. Register the spool by hand; everything else works normally. The same goes for a
+reel id of thirty-two zeros, which is the same absence in the field that names the reel.
+
+**One spool of mine is in the Trash and I did not put it there.**
+Then 2.6 found that it and another row were the same physical reel, read from its two sides — see
+[What's new in 2.6](#whats-new-in-26). Open it and read the reason: it names the row that
+survived, so you can check the claim against your own shelf. If it is wrong, **Restore** puts it
+straight back with its history intact. Nothing was merged and nothing was rewritten.
+
+**Two rows appeared for one reel before I upgraded. Will 2.6 fix them?**
+It will retire the duplicate once the printer reads that reel again from either side, which is
+what teaches the ledger they were ever the same. Until then both rows stay exactly as they are.
+The filament charged to the retired row leaves the stock total with it, so weigh that reel
+afterwards — the balance is the one thing the ledger genuinely cannot recover here.
 
 **My Home Assistant is not in English. Do I need to change anything?**
 No. Filament Ledger resolves the printer's entities through the device registry, never by their
@@ -398,7 +446,10 @@ Three things must be true, and they fail in this order of likelihood:
 
 1. **The integration must be running when the print *ends*.** The per-tray figures are per-job
    state that upstream fills while it is watching, and they are read at the moment the job
-   finishes. Restart Home Assistant mid-print and that print's figures are gone.
+   finishes. Restart Home Assistant mid-print — or have `ha-bambulab` stop publishing for long
+   enough that the ending passes unseen — and that print's figures are gone. Since 2.6 that
+   print is not silent about it: the next time the printer starts something else, the ledger
+   notices the row it never closed and opens a review for it.
 2. **The spool must be registered and mounted** into the slot that fed the print. An
    unattributed slot does not silently pick a spool — it opens a review and asks you.
 3. **The printer must have reported a figure at all.** If it did not, the print appears in

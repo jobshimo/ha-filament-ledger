@@ -1,9 +1,23 @@
 """A physical reel of filament.
 
-Identity is a generated `SpoolId`, **not** the RFID tag. A Bambu tag identifies a product
-batch rather than a physical unit, so two identical black PLA spools can carry the same
-payload; using it as identity would silently merge two spools into one and corrupt both
-balances.
+Identity is a generated `SpoolId`, **not** anything the printer reports. The ledger owns
+its own identifiers, so a reel keeps one row through every firmware quirk, re-read and
+restore.
+
+Two printer-reported identifiers ride along, and the difference between them is the whole
+of docs/12-field-notes.md's correction:
+
+- `reel_uid` — Bambu's `tray_uuid`, which names **this reel**. Stable across trays,
+  removals and restarts, and the value automatic recognition resolves by.
+- `tag_uid` — the UID of the RFID **chip** that was read. A reel's tag is readable from
+  either side of its hub, the AMS has two reader boards between four trays, and slots 1
+  and 3 read the opposite side from slots 2 and 4 — so one reel answers with two different
+  chip UIDs depending on which tray it sits in. Recognising by this was the defect that let
+  a reel change tray and come back as a stranger.
+
+Both are optional, and for the same reason: third-party reels, refills and unreadable hubs
+carry neither. A reel with no `reel_uid` still resolves by chip, which is why the two live
+side by side rather than one replacing the other.
 """
 
 from __future__ import annotations
@@ -13,6 +27,7 @@ from datetime import datetime
 
 from ..error import (
     InvalidValueError,
+    ReelAlreadyIdentifiedError,
     SpoolDeletedError,
     SpoolDiscardedError,
     TagNotEditableError,
@@ -21,6 +36,7 @@ from ..value.colour import Colour
 from ..value.grams import Grams
 from ..value.identifiers import (
     PrinterSerial,
+    ReelUid,
     SpoolId,
     TagSource,
     TagUid,
@@ -53,12 +69,25 @@ class Spool:
     label: str | None = None
     tag_uid: TagUid | None = None
     tag_source: TagSource | None = None
+    # Which physical reel this is, as the printer knows it (module docstring). Null for
+    # every row written before v2.6 and for every reel with no factory RFID; `DetectSpool`
+    # adopts it onto a legacy row the first time the printer reads that reel again.
+    #
+    # Deliberately **not** paired with a source column the way `tag_uid` is. A reel id can
+    # only ever come from the printer — there is no dialog that asks the user to type a
+    # `tray_uuid`, because a hand-typed reel id is a claim nobody can check and the tag
+    # dialog already exists for the case a user wants to assert identity by hand.
+    reel_uid: ReelUid | None = None
     discarded_at: datetime | None = None
     # The registration, retracted (docs/14 §14.4.3). Stored separately from
     # `discarded_at` on purpose: a discard is a real-world event that counts as waste,
     # a deletion is a bookkeeping statement that counts as nothing, anywhere — and only
     # one of the two is meant to come back.
     deleted_at: datetime | None = None
+    # Why, when it was not a person who decided. Set only by the automatic retirement of a
+    # phantom row (see `deleted`); `None` for every deletion a user performed, and cleared
+    # again on restore.
+    deleted_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not self.opening_weight.is_positive:
@@ -188,7 +217,7 @@ class Spool:
         self._guard_in_inventory()
         return replace(self, location=Storage(), discarded_at=at)
 
-    def deleted(self, at: datetime) -> Spool:
+    def deleted(self, at: datetime, reason: str | None = None) -> Spool:
         """Retract the registration: the spool was never really here (docs/14 §14.4.3).
 
         **Frees the slot in the same breath.** Location is cleared to storage because a
@@ -200,9 +229,14 @@ class Spool:
         separation of location change from quantity change extends to it: the grams are
         not consumed, they simply stop being counted, and the spool's whole history comes
         back the moment it is restored.
+
+        `reason` is for the deletions **nobody asked for**: the phantom rows v2.6 retires
+        once it can see that two rows were one reel all along. A user deleting a spool
+        supplies none, because the Trash entry is already their own act and needs no
+        caption. A row that retired itself owes the user a sentence.
         """
         self._guard_in_inventory()
-        return replace(self, location=Storage(), deleted_at=at)
+        return replace(self, location=Storage(), deleted_at=at, deleted_reason=reason)
 
     def restored(self) -> Spool:
         """Bring a deleted spool back — and its history with it.
@@ -214,7 +248,10 @@ class Spool:
         if not self.is_deleted:
             msg = f"spool {self.id} is not deleted, so there is nothing to restore"
             raise InvalidValueError(msg)
-        return replace(self, deleted_at=None)
+        # The caption goes with the deletion it explained. A restored spool is in inventory
+        # again on the user's own say-so, and a row still carrying "retired by the upgrade"
+        # would be describing a state it is no longer in.
+        return replace(self, deleted_at=None, deleted_reason=None)
 
     def restored_from_discard(self) -> Spool:
         """The un-discard, used only by the void of a whole-spool `DISCARD`.
@@ -275,6 +312,34 @@ class Spool:
             raise InvalidValueError(msg)
         return replace(self, tag_uid=tag, tag_source=source)
 
+    def identified_as(self, reel: ReelUid) -> Spool:
+        """Learn which physical reel this row is — the healing step for a legacy row.
+
+        Every row written before v2.6 has no `reel_uid`, because the ledger never stored
+        the field. Rather than guess one in a migration, the row learns it the first time
+        the printer reads that reel again: the chip still resolves to this spool, and the
+        reading carries the reel id the chip belongs to.
+
+        **Write-once, and never re-written.** A row that already names a reel refuses a
+        different one instead of quietly re-pointing: a chip resolving to a spool that
+        claims another reel means either two reels genuinely share a chip UID or a hub was
+        swapped between reels, and both of those are situations where overwriting turns a
+        visible contradiction into an invisible one. The caller — `DetectSpool` — treats
+        the refusal as *this is not the reel I am looking at* and falls through to the
+        unknown-reel path, which registers rather than corrupts.
+
+        Idempotent for the reel it already names, because the detection path re-observes
+        the same reel on every republish and must not care.
+        """
+        self._guard_in_inventory()
+        if self.reel_uid is not None and self.reel_uid != reel:
+            msg = (
+                f"{self.display_name} is already reel {self.reel_uid} and cannot be "
+                f"re-identified as {reel}"
+            )
+            raise ReelAlreadyIdentifiedError(msg)
+        return replace(self, reel_uid=reel)
+
 
 def register(
     *,
@@ -288,6 +353,7 @@ def register(
     label: str | None = None,
     tag_uid: TagUid | None = None,
     tag_source: TagSource | None = None,
+    reel_uid: ReelUid | None = None,
 ) -> Spool:
     """Build a new spool, generating its identity.
 
@@ -314,4 +380,8 @@ def register(
         label=label,
         tag_uid=tag_uid,
         tag_source=((tag_source or TagSource.MANUAL) if tag_uid is not None else tag_source),
+        # No default and no inference: a reel id is either what the printer said or absent.
+        # Unlike `tag_source` there is nothing sensible to fall back to — a reel identity
+        # the ledger made up would be indistinguishable from one the machine reported.
+        reel_uid=reel_uid,
     )
