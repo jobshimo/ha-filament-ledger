@@ -49,6 +49,7 @@ from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_event import (
     PrintEnded,
     PrintEvent,
+    PrintPlanObserved,
     PrintStarted,
 )
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
@@ -242,6 +243,19 @@ class RecordingPrintListener:
 
     async def __call__(self, event: PrintEvent) -> None:
         self.received.append(event)
+
+    @property
+    def lifecycle(self) -> list[PrintEvent]:
+        """Starts and endings only — the two moments a job's *row* is created or closed.
+
+        Since 2.6.1 a third event travels the same channel: every per-tray reading the
+        machine publishes mid-print is forwarded so the row carries figures before an
+        ending that may never come. It is not part of the lifecycle and the scenarios that
+        pin the lifecycle should not have to count it, so they read this instead.
+        `TestThePlanIsPersistedWhileTheJobRuns` is where the observations themselves are
+        asserted.
+        """
+        return [e for e in self.received if not isinstance(e, PrintPlanObserved)]
 
 
 def plant_registry(hass: FakeHass, rows: list[dict[str, str]]) -> None:
@@ -1132,7 +1146,7 @@ class TestJobEventTranslation:
         fire_job_event(hass, "event_print_finished")
         await hass.drain()
 
-        started, ended = listener.received
+        started, ended = listener.lifecycle
         assert isinstance(started, PrintStarted)
         assert isinstance(ended, PrintEnded)
         assert started.plan is None
@@ -1210,7 +1224,7 @@ class TestJobEventTranslation:
         fire_job_event(hass, "event_print_finished")
         await hass.drain()
 
-        [ended] = listener.received
+        [ended] = listener.lifecycle
         assert isinstance(ended, PrintEnded)
         assert ended.reported_usage is None
 
@@ -1410,7 +1424,7 @@ class TestJobEventTranslation:
         fire_job_event(hass, "event_print_finished", device_id=SECOND_DEVICE)
         await hass.drain()
 
-        [event] = listener.received
+        [event] = listener.lifecycle
         assert isinstance(event, PrintEnded)
         assert event.printer == ANOTHER_PRINTER
         assert event.reported_usage == {a_tray(2, printer=ANOTHER_PRINTER): Grams.of("9.4")}
@@ -2168,3 +2182,88 @@ class TestUnload:
         for callback in harness.entry.unload_callbacks:
             callback()
         assert harness.hass.bus.listeners == []
+
+
+class TestFiguresAreForwardedWhileThePrintRuns:
+    """The gateway held every mid-print reading and forwarded none of them.
+
+    That was sound only while every job was guaranteed an ending to report on. A connection
+    that goes quiet across a finish leaves the row open and the held figures die with the
+    process or are overwritten by the next print — which is how 62.23 g across three trays
+    reached Home Assistant, sat in memory, and were never written anywhere the user could
+    see (docs/12-field-notes.md).
+    """
+
+    def subscribed(self, hass: FakeHass) -> RecordingPrintListener:
+        listener = RecordingPrintListener()
+        BambuLabGateway(as_hass(hass)).subscribe_jobs(listener)
+        return listener
+
+    def observations(self, listener: RecordingPrintListener) -> list[PrintPlanObserved]:
+        return [e for e in listener.received if isinstance(e, PrintPlanObserved)]
+
+    async def test_a_reading_that_names_trays_is_forwarded(self) -> None:
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 50.82, "AMS 1 Tray 2": 7.65})
+        await hass.drain()
+
+        [observed] = self.observations(listener)
+        assert observed.printer == A_PRINTER
+        assert observed.plan == {
+            a_tray(1): Grams.of("50.82"),
+            a_tray(2): Grams.of("7.65"),
+        }
+
+    async def test_it_carries_the_job_name_so_a_lagging_row_can_be_corrected(self) -> None:
+        """The file sensor is republished after the start, so the row may have opened with
+        the previous print's name. Every observation carries the current one."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 31.33})
+        await hass.drain()
+
+        [observed] = self.observations(listener)
+        assert observed.name == JOB_NAME
+
+    async def test_a_reading_with_no_tray_keys_is_silence(self) -> None:
+        """The other half of every burst. It leaves the held reading standing and must not
+        travel — an empty plan written over a real one is the defect, not the fix."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_weight_change(hass, {})
+        await hass.drain()
+
+        assert self.observations(listener) == []
+
+    async def test_the_same_reading_twice_is_forwarded_once(self) -> None:
+        """Upstream republishes without changing anything; the dedupe that protects the
+        held reading protects the ledger's writes too."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 31.33})
+        await hass.drain()
+        fire_weight_change(hass, {"AMS 1 Tray 1": 31.33})
+        await hass.drain()
+
+        assert len(self.observations(listener)) == 1
+
+    async def test_a_changed_reading_is_forwarded_again(self) -> None:
+        """Because the row must never be further behind than the last thing the machine
+        said."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 10.0})
+        await hass.drain()
+        fire_weight_change(hass, {"AMS 1 Tray 1": 31.33})
+        await hass.drain()
+
+        assert [o.plan for o in self.observations(listener)] == [
+            {a_tray(1): Grams.of(10)},
+            {a_tray(1): Grams.of("31.33")},
+        ]

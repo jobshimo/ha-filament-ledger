@@ -33,7 +33,12 @@ from ..domain.port.clock import Clock
 from ..domain.port.repositories import PrintJobRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.identifiers import PrinterSerial, PrintJobId, new_print_job_id
-from ..domain.value.print_event import PrintEnded, PrintEvent, PrintStarted
+from ..domain.value.print_event import (
+    PrintEnded,
+    PrintEvent,
+    PrintPlanObserved,
+    PrintStarted,
+)
 from ..domain.value.print_job_state import PrintJobState
 from ..domain.value.review import ReviewReason
 from .record_print_consumption import RecordPrintConsumption
@@ -132,6 +137,8 @@ class TrackPrintJob:
                 return await self._started(event)
             case PrintEnded():
                 return await self._ended(event)
+            case PrintPlanObserved():
+                return await self._plan_observed(event)
 
     async def _started(self, event: PrintStarted) -> PrintJobId | None:
         """A new job, a new identity. The upstream event carries no job id, so the row
@@ -204,6 +211,51 @@ class TrackPrintJob:
             await self.jobs.save(job)
         return job.id
 
+    async def _plan_observed(self, event: PrintPlanObserved) -> PrintJobId | None:
+        """Write the figures onto the running row while the job is still running.
+
+        Until 2.6.1 the plan reached the row only at the ending, and everything the gateway
+        learned in between lived in its own memory. An ending that never arrives — a
+        connection that goes quiet across the finish — therefore lost figures the machine
+        had already published: the row stayed open with `reported_usage` null, and the
+        review it eventually opened had nothing to show but a filename. Measured on the
+        reference instance: 62.23 g across three trays, published 24 seconds after the
+        start, held, and dropped.
+
+        Persisting each observation as it lands costs one small write per burst — eight or
+        so across a three-hour print — and buys a row that is never further behind the
+        machine than the last thing the machine said.
+
+        **The ending still wins.** `_ended` overwrites `reported_usage` with the ending's
+        figures whenever it has them and falls back to whatever the row already holds when
+        it does not, which is precisely what makes this useful rather than competing: the
+        fallback used to be null and is now the last real reading.
+
+        Nothing running, nothing to write. An observation with no open row is the sensor
+        republishing between prints, and inventing a row for it would mint a phantom job
+        out of a weight reading.
+        """
+        job = await self._running_job(event.printer)
+        if job is None:
+            LOGGER.debug(
+                "printer %s published per-tray figures with no running job; nothing to update",
+                event.printer,
+            )
+            return None
+        updated = replace(
+            job,
+            reported_usage=event.plan,
+            # The file sensor lags the start too, so the name a row opened with may be the
+            # previous print's. A named observation corrects it; an unnamed one leaves the
+            # stored name alone rather than blanking it.
+            name=event.name if event.name else job.name,
+        )
+        if updated == job:
+            return job.id
+        async with self.uow:
+            await self.jobs.save(updated)
+        return job.id
+
     async def _send_to_review(self, orphan: PrintJob) -> None:
         """Queue a decision about a print that ran and was never accounted for.
 
@@ -217,10 +269,18 @@ class TrackPrintJob:
         and `FAILED` or `CANCELLED` would be worse. The review is where the outcome gets
         decided, by the one party who actually knows.
 
-        **No amounts are supplied**, so the queue estimates as it does for any other open
-        review — and with no ending there are no progress figures to scale, which leaves
-        the card asking rather than asserting. That is the honest shape: a zero presented
-        as a fact would be the very defect this method exists to end.
+        **The machine's own figures are supplied when the row has them**, which since 2.6.1
+        it usually does — `_plan_observed` writes each reading onto the row as it lands.
+        Handing them over as `amounts` skips estimation, and skipping it is the point: the
+        estimator scales a plan by the progress an ending reported, an orphan has no ending
+        and therefore no progress, and scaling by nothing yields **zero**. A card reading
+        *0 g* is the silent zero this whole method exists to end, wearing a review's
+        clothing. The plan is the printer's own number for this job, offered for the user
+        to confirm or correct — not deducted behind their back.
+
+        With no figures on the row there is nothing to offer and the queue estimates as it
+        would for any other review, which for a job with no progress means a card that asks
+        rather than asserts. That is the honest floor, not the target.
 
         Nothing here may stop the print now running from getting its row. A queue that
         refuses — because this orphan is already waiting, which is the ordinary outcome
@@ -229,7 +289,11 @@ class TrackPrintJob:
         """
         try:
             await self.open_pending_review.execute(
-                OpenPendingReviewCommand(job=orphan, reason=ReviewReason.UNCLASSIFIED)
+                OpenPendingReviewCommand(
+                    job=orphan,
+                    reason=ReviewReason.UNCLASSIFIED,
+                    amounts=dict(orphan.reported_usage) if orphan.reported_usage else None,
+                )
             )
         except ReviewAlreadyPendingError:
             LOGGER.debug("job %s is already waiting in the review queue", orphan.id)

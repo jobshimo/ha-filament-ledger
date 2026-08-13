@@ -89,7 +89,12 @@ from ...domain.value.identifiers import (
     TrayRef,
 )
 from ...domain.value.percentage import Percentage
-from ...domain.value.print_event import PrintEnded, PrintEvent, PrintStarted
+from ...domain.value.print_event import (
+    PrintEnded,
+    PrintEvent,
+    PrintPlanObserved,
+    PrintStarted,
+)
 from ...domain.value.print_job_state import PrintJobState
 from ...domain.value.tray_reading import TrayReading
 
@@ -766,6 +771,26 @@ class BambuLabGateway:
         if observation is None or self._observations.get(printer) == observation:
             return
         self._observations[printer] = observation
+        # Held *and* persisted, since 2.6.1. Holding alone was enough only while every job
+        # was guaranteed an ending to report on: a connection that goes quiet across the
+        # finish leaves the row open, and these figures then die with the process or are
+        # overwritten by the next print. The reference instance lost 62.23 g that way —
+        # published, held, and never written anywhere the user could see.
+        #
+        # Only a plan that names trays travels. An observation whose plan is empty is the
+        # printer naming no AMS trays, and `PrintPlanObserved` refuses it rather than let a
+        # blank overwrite a real reading on the row.
+        if observation.plan:
+            self._hass.async_create_background_task(
+                self._deliver_job(
+                    PrintPlanObserved(
+                        printer=printer,
+                        plan=dict(observation.plan),
+                        name=self._job_name(printer),
+                    )
+                ),
+                name=f"filament_ledger plan {printer}",
+            )
         # Both warnings are raised here rather than inside the translation, so each one
         # fires once per *new* observation. Inside, they would repeat on every republish
         # for the length of a print, which is how a real warning becomes scenery.
