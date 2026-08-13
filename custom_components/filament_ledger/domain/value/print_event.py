@@ -58,12 +58,39 @@ class PrintStarted:
     the name says whose clock it is. The ledger stamps its own moment when it hears the
     event; these two are different facts and the field exists so neither has to pretend to
     be the other (docs/04-use-cases.md UC-04, docs/08-data-model.md §8.1).
+
+    **`derived` says whether the printer announced this start or the ledger inferred it**,
+    and it is the exact mirror of the flag `PrintEnded` carries — written here for the same
+    reason and enforced from the opposite side.
+
+    An announced start is a discrete event, and it means *a print began just now*: a row is
+    created unconditionally, because that is what the machine said happened.
+
+    An inferred start is read off a *level* — the stage sensor says `printing` for as long
+    as the job runs, and it flickers back into it on every reconnect. So it may only open a
+    row the ledger does **not** already hold, and it identifies the job by
+    `printer_started_at` rather than by the level being set. Without that limit every
+    `offline → printing` bounce would mint a phantom print, and the reference machine did
+    ten of those in the thirty-six minutes of one job (docs/12-field-notes.md, 2026-08-10).
+
+    Inference exists because the announced start is **not delivered when it is needed
+    most**, which is the same defect `_DERIVED_OUTCOMES` answers for the ending: upstream
+    guards `event_print_started` with `previous_gcode_state != "unknown"`
+    (`pybambu/models.py`), and a reconnection resets that to `unknown`. A machine whose
+    connection drops before its own start therefore announces nothing at all, the ledger
+    opens no row, and the ending that follows finds nothing to close — so the whole print,
+    and every gram it consumed, is lost in silence. Measured on the reference instance
+    (docs/12-field-notes.md, 2026-08-11): a 291.42 g job was running at 68 % with no row in
+    the ledger, after the integration dropped for 12.3 s at 22:38:28 and returned to
+    `running` at 22:38:40. The 248.41 g `MANUAL_ADJUSTMENT` of 2026-08-08 is the same
+    failure, paid for by hand.
     """
 
     name: str
     printer: PrinterSerial
     plan: dict[TrayRef, Grams] | None = None
     printer_started_at: datetime | None = None
+    derived: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():

@@ -299,3 +299,102 @@ the shape of the restart-mid-print case that opens a new row. `consumption_recor
 cover it — that flag guards a *row*, and the duplicate is a different row. So an ending is
 also refused when the machine's newest job is terminal, carries the same name, and stopped
 within five minutes.
+
+## 2026-08-11 — The start is not delivered either, and a print went unrecorded
+
+The mirror of the entry above, found by asking why the ledger had stopped agreeing with the
+machine. It had not stopped working. It had never been able to see this case at all.
+
+**What was measured.** At 22:57 local the reference machine was 68 % through a 291.42 g
+print — `2585574-0.28mm layer, 2 walls, 15% infill.gcode`, progress climbing once a
+minute — and `filament_ledger.db` held **no row for it**. The newest job in the ledger had
+ended at 2026-08-10T22:38:59Z. Nothing was open. Nothing was pending.
+
+The recorder says what happened:
+
+```
+22:38:28  estado_de_la_impresion  unavailable
+22:38:40  estado_de_la_impresion  running
+22:46:33  (Home Assistant restarts)
+```
+
+A 12.3-second dropout, and the machine returned already printing. No `event_print_started`
+was ever fired.
+
+**Why.** `pybambu` guards the start with the same `previous_gcode_state != "unknown"` it
+guards the finish with, and a reconnection resets exactly that. Everything the 08-08 entry
+says about the ending is true of the start, word for word — it had simply never been looked
+for, because a missed ending leaves a visible open row and a missed start leaves nothing at
+all.
+
+**And a missed start is the more expensive of the two.** With no `RUNNING` row, the ending —
+whenever it arrives, by whichever path — finds nothing to close and is discarded as an
+inference about a print already recorded. The whole job disappears: no row, no deduction, no
+review, no trace. The `MANUAL_ADJUSTMENT` of −248.41 g dated 2026-08-08 in the reference
+ledger is this hole, paid for by hand.
+
+**The scale of the dropouts.** Fourteen `unavailable` windows in seven days on
+`estado_de_la_impresion`: mostly 8–13 s, but also 207 s, 256 s, 372 s, 471 s and one of
+**4440 s** on 08-08. Any of them can land on a start.
+
+**`offline` is still not one of these.** It remains a fact about the connection: on 08-10 the
+machine went `running → offline → running` ten times between 21:11 and 21:47 while printing
+perfectly well. It is `unavailable` — the integration itself dropping — that costs edges.
+
+## 2026-08-11 — `start_time` is the job identity upstream never documented
+
+Reading a level tells you a print is running. It does not tell you *which* print, and
+without that an inferred start cannot know whether the open row is this job or the last one.
+
+`sensor.…_tiempo_de_inicio` answers it. Measured across both failures in one evening:
+
+```
+22:38:28  unavailable
+22:38:40  2026-08-11T16:38:23+00:00
+22:46:33  2026-08-11T16:38:23+00:00   (after the Home Assistant restart)
+```
+
+The value did not move — across a dropout *and* a restart — while the status sensor, both
+name sensors and the bus events all reset. Distinct per job, too: the prints before it read
+`2026-08-10T22:07:37Z`, `2026-08-10T17:55:05Z`, `2026-08-10T06:32:35Z`.
+
+**It cannot be compared by equality.** Upstream publishes it truncated to the minute and
+corrects it seconds later, sometimes by more than a minute:
+
+```
+01:04:34  2026-08-09T23:04:00+00:00
+01:06:41  2026-08-09T23:06:37+00:00   ← same print
+```
+
+So the comparison is a tolerance, and five minutes is both far wider than any correction
+observed and far narrower than the eight minutes between upstream's two announced starts for
+one job on 08-08 — which must keep resolving to two rows, as they always have.
+
+## 2026-08-11 — Two frozen `translation_key`s were transcribed, not captured
+
+Read from `/config/.storage/core.entity_registry` on the reference instance. The serial
+appears **uppercase** in every `unique_id` (`03900D640729564_stage`) and lowercase in the
+entity id, which is why a first pass matching on the entity id's spelling found nothing.
+
+| Sensor (localised entity id) | Frozen in code | Actually |
+| --- | --- | --- |
+| `sensor.…_nombre_del_gcode` | `gcode_name` | **`gcode_file`** |
+| `sensor.…_modo_de_conexion_mqtt` | `connection_mode` | **`mqtt_mode`** |
+| `binary_sensor.…_en_linea` | `online` | `online` ✓ |
+| `sensor.…_bandeja_activa` | `active_tray` | `active_tray` ✓ |
+
+**`gcode_name` cost a shipped fix.** v2.5 added it as `_job_name`'s fallback for the restart
+gap and froze a fixture row to match, so the tests agreed with themselves while production
+resolved nothing — every restart mid-print still wrote `unknown print`, which is what job
+`3e752c9c` in the reference ledger is called. The fixture had been written from the entity
+id rather than read from the registry. This is precisely the trap `docs/13 — Traps` names,
+sprung inside the module whose own comments warn about it.
+
+`connection_mode` never existed at all, and was still unfrozen — the caution paid off there.
+
+**Two keys worth having, found in the same read.** `stage` carries a 70-option enum
+(`printing`, `idle`, `offline`, and the whole `paused_*` family) and is the more specific
+answer to *is this machine printing*; `print_status` speaks `gcode_state`'s coarser words.
+They go unavailable at different moments, so both are watched and either is enough.
+`subtask_name` gives the job name without the `NNNNNN-` prefix, and parks on the literal
+`unknown` between prints — which a reader must refuse rather than pass through.

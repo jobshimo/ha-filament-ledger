@@ -656,17 +656,24 @@ def _stage_0004(staged: Path) -> None:
     (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def _stage_through_0008(staged: Path) -> None:
-    """Everything from 0005 to 0008, for the tests that read through the *current* mapper.
+#: The newest migration on disk. Derived rather than written down, so adding one does not
+#: silently leave every `_stage_remaining` test asserting a version that is no longer head.
+HEAD_VERSION = max(int(path.name.split("_", 1)[0]) for path in MIGRATIONS.glob("*.sql"))
 
-    A repository read is a read of today's code, and today's code speaks the shape 0008
-    left. Staging the rest of the chain keeps this suite's claim exactly where it was —
-    data written in the pre-0004 shape, read back through the real mapper — rather than
-    freezing an old mapper nobody ships. The tests that assert on the *column* stop at 4,
-    because that is where 0004's own rewrite is visible.
+
+def _stage_remaining(staged: Path) -> None:
+    """Everything not staged yet, for the tests that read through the *current* mapper.
+
+    A repository read is a read of today's code, and today's code speaks the shape head
+    left — since 0009 that includes columns and a table no earlier version has. Staging the
+    rest of the chain keeps each test's claim exactly where it was — data written in an old
+    shape, read back through the real mapper — rather than freezing an old mapper nobody
+    ships. The tests that assert on a *column* a specific migration rewrote stop at that
+    migration, because that is where its own rewrite is visible.
     """
-    for pattern in ("0005_*.sql", "0006_*.sql", "0007_*.sql", "0008_*.sql"):
-        source = next(MIGRATIONS.glob(pattern))
+    for source in sorted(MIGRATIONS.glob("*.sql")):
+        if (staged / source.name).exists():
+            continue
         (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
@@ -698,8 +705,8 @@ class TestMigration0004TurnsTheResolutionIntoAListOfCharges:
 
             _stage_0004(staged)
             assert await database.migrate() == 4
-            _stage_through_0008(staged)
-            assert await database.migrate() == 8
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             repository = SqliteReviewRepository(database)
             after = {}
@@ -755,8 +762,8 @@ class TestMigration0004TurnsTheResolutionIntoAListOfCharges:
             await _populate_in_the_old_shape(database)
             _stage_0004(staged)
             assert await database.migrate() == 4
-            _stage_through_0008(staged)
-            assert await database.migrate() == 8
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             repository = SqliteReviewRepository(database)
             review = await repository.get(ReviewId("pending-resolved"))
@@ -1183,6 +1190,26 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             _stage_0007(staged)
             assert await database.migrate() == 7
 
+            # 0007's own rewrite, read off the columns while 0007 is still the last word on
+            # them. This assertion has to come *before* the climb to head, unlike every
+            # other one in this class: 0008 deliberately names the direct feed's printer,
+            # so a check that the untrayed rows gained nothing would be reading 0008's
+            # answer to a question about 0007.
+            rows = await database.fetch_all(
+                "SELECT id, location_printer, location_ams FROM spool "
+                "WHERE location_kind != 'AMS_SLOT' ORDER BY id"
+            )
+            assert [(row["location_printer"], row["location_ams"]) for row in rows] == [
+                (None, None),
+                (None, None),
+            ]
+
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
+
             spools = SqliteSpoolRepository(database)
             mounted = await spools.get(SpoolId("mounted"))
             assert mounted is not None
@@ -1193,16 +1220,8 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             assert stored is not None
             assert external is not None
             assert stored.location == Storage()
+            # 0008 named it, which is that migration's business and is asserted there.
             assert external.location == ExternalSpool(UNIDENTIFIED_PRINTER)
-
-            rows = await database.fetch_all(
-                "SELECT id, location_printer, location_ams FROM spool "
-                "WHERE location_kind != 'AMS_SLOT' ORDER BY id"
-            )
-            assert [(row["location_printer"], row["location_ams"]) for row in rows] == [
-                (None, None),
-                (None, None),
-            ]
         finally:
             await database.close()
 
@@ -1323,6 +1342,12 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             await _populate_pre_0007(database)
             _stage_0007(staged)
             assert await database.migrate() == 7
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
             await database.execute(
                 "UPDATE spool SET discarded_at = datetime('now') WHERE id = 'mounted'"
             )
@@ -1362,6 +1387,12 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             # ship, and they read the column 0008 adds.
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             spools = await SqliteSpoolRepository(database).list(SpoolFilter())
             assert [spool.id for spool in spools] == ["mounted", "stored", "external"]
@@ -1387,6 +1418,12 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             await _populate_pre_0007(database)
             _stage_0007(staged)
             assert await database.migrate() == 7
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             await adopt_unidentified_trays(database, ())
 
@@ -1423,6 +1460,12 @@ class TestMigration0007GivesEveryTrayItsPrinter:
             # goes through the shipping mapper — so the fixture reaches head first.
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             await adopt_unidentified_trays(database, (A_PRINTER,))
 
@@ -1565,6 +1608,12 @@ class TestMigration0008FollowsMoreThanOnePrinter:
         try:
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             external = await SqliteSpoolRepository(database).get(SpoolId("external"))
             assert external is not None
@@ -1585,6 +1634,12 @@ class TestMigration0008FollowsMoreThanOnePrinter:
         try:
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             spools = SqliteSpoolRepository(database)
             here = await spools.get(SpoolId("external"))
@@ -1612,6 +1667,12 @@ class TestMigration0008FollowsMoreThanOnePrinter:
         try:
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             spools = SqliteSpoolRepository(database)
             first = await spools.get(SpoolId("external"))
@@ -1635,6 +1696,12 @@ class TestMigration0008FollowsMoreThanOnePrinter:
         try:
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             await adopt_unidentified_trays(database, (A_PRINTER,))
 
@@ -1662,6 +1729,12 @@ class TestMigration0008FollowsMoreThanOnePrinter:
         try:
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             await adopt_unidentified_trays(database, (A_PRINTER, ANOTHER_PRINTER))
 
@@ -1685,6 +1758,12 @@ class TestMigration0008FollowsMoreThanOnePrinter:
         try:
             _stage_0008(staged)
             assert await database.migrate() == 8
+            # And on to head before reading through today's mapper, for the reason
+            # `_stage_remaining` gives: a repository read is a read of shipping code,
+            # and shipping code speaks head's shape. This migration's own rewrite is
+            # what the assertions below are about.
+            _stage_remaining(staged)
+            assert await database.migrate() == HEAD_VERSION
 
             spools = await SqliteSpoolRepository(database).list(SpoolFilter())
             assert [spool.id for spool in spools] == ["mounted", "stored", "external"]

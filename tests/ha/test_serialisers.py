@@ -131,6 +131,12 @@ class TestSpoolSummaryShape:
             "tag_uid": "A1B2C3D4",
             # A tag typed at registration is the user's, so the edit dialog may change it.
             "tag_source": "MANUAL",
+            # Null here because this spool was registered by hand: only the printer names a
+            # reel, and nobody put this one in a tray.
+            "reel_uid": None,
+            # Null for every spool that is not in the Trash, and for every one a user put
+            # there — the caption exists only for the rows v2.6 retires by itself.
+            "deleted_reason": None,
             "movement_count": 1,
             "last_movement_at": EPOCH.isoformat(),
             "has_anomaly": False,

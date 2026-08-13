@@ -168,11 +168,18 @@ ABSENT_TAG_SENTINEL = "0000000000000000"
 
 @dataclass(frozen=True, slots=True)
 class TagUid:
-    """The RFID serial read from a spool.
+    """The UID of one RFID **chip**, read from a spool.
 
-    Optional on a `Spool`: third-party and refilled spools have none. Crucially it is
-    *not* identity — a Bambu tag identifies a product batch, so two physical spools can
-    carry the same payload. See docs/02-domain-model.md §2.3.
+    A chip, not a reel — and the distinction is the whole reason `ReelUid` exists below.
+    A Bambu spool carries a tag readable from either side of its hub, and the AMS has only
+    two reader boards between four trays: slots 1 and 3 read one side, slots 2 and 4 the
+    other. So the *same* reel reports one UID in an odd tray and a different one in an even
+    tray. Keying a spool's identity on this value makes a reel that changes tray look like a
+    reel that was just unwrapped. See docs/12-field-notes.md.
+
+    Optional on a `Spool`: third-party and refilled spools have none. A reel may own more
+    than one of these — see `SpoolRepository.find_by_tag`, which answers with the reel that
+    has claimed the chip rather than with whatever row happened to record it first.
 
     Sixteen zeros is refused outright. The printer reports `0000000000000000` for a tray
     whose spool has no readable tag, so it denotes *absence*, not identity — matching on it
@@ -190,6 +197,55 @@ class TagUid:
         if self.value == ABSENT_TAG_SENTINEL:
             msg = (
                 f"TagUid {ABSENT_TAG_SENTINEL!r} denotes an absent tag, not an identity; "
+                f"represent it as None"
+            )
+            raise InvalidValueError(msg)
+
+    def __str__(self) -> str:
+        return self.value
+
+
+# What the printer reports for a reel it could not identify — the same "nothing was read"
+# that `ABSENT_TAG_SENTINEL` denotes, in the thirty-two-character dialect `tray_uuid` speaks.
+# Public for the same reason: the gateway translates it to `None` on the way in, and
+# hydration tolerates it in rows written before `ReelUid` refused it.
+ABSENT_REEL_SENTINEL = "0" * 32
+_REEL_UID_LENGTH = 32
+
+
+@dataclass(frozen=True, slots=True)
+class ReelUid:
+    """The identity of one physical reel, as the printer knows it — Bambu's `tray_uuid`.
+
+    **This is the field a reel is recognised by**, and `TagUid` is not. A reel's two
+    readable sides carry two different chip UIDs, so `tag_uid` answers *which side did the
+    AMS see*; `tray_uuid` answers *which reel is this*, and it holds still across trays,
+    across removals, and across restarts. It is the value Bambu Studio shows as the spool's
+    SN. Measured on the reference machine: one reel reported a single `tray_uuid` over eight
+    days in three different trays while its `tag_uid` changed with the tray's parity
+    (docs/12-field-notes.md).
+
+    Optional on a `Spool`, and absent for exactly the reels that have no factory RFID to
+    ask: third-party reels, refills, and anything the reader could not get a clean read
+    from. Those still resolve by `TagUid` when they carry a readable chip, which is why
+    both live on the entity rather than one replacing the other.
+
+    Thirty-two zeros is refused for the reason sixteen zeros is: it denotes absence, and an
+    absence used as identity merges every unidentifiable reel into one. The length is not
+    checked beyond being non-blank — a stricter rule would be this value object deciding
+    what the printer is allowed to say, and a firmware that pads differently would then
+    lose a real identity to a validation error.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value.strip():
+            msg = "ReelUid cannot be blank"
+            raise InvalidValueError(msg)
+        if set(self.value) == {"0"}:
+            msg = (
+                f"ReelUid {self.value!r} denotes an unidentified reel, not an identity; "
                 f"represent it as None"
             )
             raise InvalidValueError(msg)
