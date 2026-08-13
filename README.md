@@ -29,13 +29,19 @@ holds still across trays, removals and restarts. That is now the identity, with 
 the fallback for third-party and refilled reels that report no `tray_uuid` at all.
 
 **If your ledger already has twins, it heals itself and shows its working.** Rows written before
-2.6 learn which reel they are the first time the printer reads them again — no migration guesses
-one. When two rows turn out to be one reel, the **older row survives** (the twin could only ever
-have been born later, at the moment the reel first crossed to a tray of the other parity) and the
-newer one goes to the **Trash**, carrying a sentence saying what happened and naming the row that
-survived. Restore it in one click if that is wrong. Nothing is merged and no history is rewritten:
-a merge would have to rule on two opening balances, and every rule for that is one the ledger
-would be inventing on your behalf.
+2.6 learn which reel they are the first time the printer reads them — no migration guesses one.
+
+**Reuniting a pair takes one reading from each side of the hub, so put the reel in an odd tray
+and an even one.** Each row knows only its own chip, and the printer reports one chip at a time,
+so the twin stays invisible until the AMS reads the side that twin was born from. Trays 1 and 3
+read one side; trays 2 and 4 the other. Nothing else is needed and no order is required.
+
+When the pair does meet, the **older row survives** — a twin could only ever have been born
+later, at the moment the reel first crossed to a tray of the other parity — and the newer goes to
+the **Trash**, carrying a sentence saying what happened and naming the row that survived. Restore
+it in one click if that is wrong. Nothing is merged and no history is rewritten: a merge would
+have to rule on two opening balances, and every rule for that is one the ledger would be
+inventing on your behalf.
 
 One consequence worth stating plainly: filament charged to the retired twin leaves the stock
 figures with it, so a reel whose printing was recorded against the twin will read high until you
@@ -48,6 +54,13 @@ fired ten times in nine days and opened zero reviews, which meant a print could 
 be reported as *no filament consumed* with nothing anywhere to say otherwise. It now opens a
 review instead. The row stays `RUNNING`, because that is what was observed and claiming a
 completion nobody saw would be worse; the review is where the outcome gets settled.
+
+**And that review carries the machine's own figures.** The per-tray totals a print publishes
+while it runs used to reach the ledger only at the ending, so a job that never got one kept them
+nowhere and the card showed a filename and a blank. They are written onto the row as the printer
+publishes them now — which also corrects the filename, because the file sensor is republished
+after the start and a row opened at the first `prepare` otherwise carries the *previous* print's
+name.
 
 ---
 

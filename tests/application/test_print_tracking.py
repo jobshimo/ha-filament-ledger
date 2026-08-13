@@ -31,6 +31,7 @@ from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_event import (
     PrintEnded,
     PrintEvent,
+    PrintPlanObserved,
     PrintStarted,
 )
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
@@ -779,3 +780,122 @@ class TestAPrintNobodySawEndGoesToTheQueue:
 
         reasons = [r.reason for r in await SqliteReviewRepository(ledger.database).list_pending()]
         assert ReviewReason.UNCLASSIFIED not in reasons
+
+
+def plan_observed(
+    plan: dict[TrayRef, Grams] | None = None,
+    *,
+    name: str | None = None,
+    printer: PrinterSerial = A_PRINTER,
+) -> PrintPlanObserved:
+    return PrintPlanObserved(
+        printer=printer,
+        plan=plan if plan is not None else {TRAY_1: Grams.of("50.82")},
+        name=name,
+    )
+
+
+class TestThePlanIsPersistedWhileTheJobRuns:
+    """Figures the machine published mid-print used to live only in the gateway's memory.
+
+    They reached the row at the ending and nowhere else, so a job whose ending never
+    arrived kept `reported_usage` null — and the review it eventually opened had a filename
+    and nothing else on it. On the reference instance that was 62.23 g across three trays,
+    published 24 seconds after the start, held, and dropped.
+    """
+
+    async def test_the_running_row_carries_the_figures(self, ledger: Ledger) -> None:
+        job_id = await ledger.use_cases.track_print_job.execute(started())
+
+        await ledger.use_cases.track_print_job.execute(
+            plan_observed({TRAY_1: Grams.of("50.82"), TRAY_2: Grams.of("7.65")})
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.id == job_id
+        assert job.reported_usage == {TRAY_1: Grams.of("50.82"), TRAY_2: Grams.of("7.65")}
+        assert job.state is PrintJobState.RUNNING, "observing figures does not end a job"
+
+    async def test_a_later_reading_supersedes_an_earlier_one(self, ledger: Ledger) -> None:
+        """The sensor is republished in bursts through the print; the last one is the
+        machine's current answer."""
+        await ledger.use_cases.track_print_job.execute(started())
+        await ledger.use_cases.track_print_job.execute(plan_observed({TRAY_1: Grams.of(10)}))
+
+        await ledger.use_cases.track_print_job.execute(plan_observed({TRAY_1: Grams.of(31)}))
+
+        [job] = await stored_jobs(ledger)
+        assert job.reported_usage == {TRAY_1: Grams.of(31)}
+
+    async def test_the_name_is_corrected_when_the_file_sensor_catches_up(
+        self, ledger: Ledger
+    ) -> None:
+        """The file sensor lags the start too, so a row opened at the first `prepare`
+        carries the previous print's filename until something refreshes it."""
+        await ledger.use_cases.track_print_job.execute(started())
+
+        await ledger.use_cases.track_print_job.execute(
+            plan_observed(name="2429842-Royal Crest.gcode")
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.name == "2429842-Royal Crest.gcode"
+
+    async def test_an_unnamed_observation_leaves_the_name_alone(self, ledger: Ledger) -> None:
+        """`None` is *the sensor did not say*, never a blank name."""
+        await ledger.use_cases.track_print_job.execute(started())
+
+        await ledger.use_cases.track_print_job.execute(plan_observed(name=None))
+
+        [job] = await stored_jobs(ledger)
+        assert job.name == "bracket_v3.gcode.3mf"
+
+    async def test_figures_with_no_running_job_write_nothing(self, ledger: Ledger) -> None:
+        """The sensor republishes between prints. Inventing a row for that would mint a
+        phantom job out of a weight reading."""
+        job_id = await ledger.use_cases.track_print_job.execute(plan_observed())
+
+        assert job_id is None
+        assert await stored_jobs(ledger) == []
+
+    async def test_the_ending_still_wins(self, ledger: Ledger) -> None:
+        """The ending's own figures overwrite whatever the row was carrying — this feeds
+        the fallback, it does not compete with the ending."""
+        await ledger.use_cases.track_print_job.execute(started())
+        await ledger.use_cases.track_print_job.execute(plan_observed({TRAY_1: Grams.of(10)}))
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.CANCELLED, reported_usage={TRAY_1: Grams.of(209)})
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.reported_usage == {TRAY_1: Grams.of(209)}
+
+    async def test_an_ending_with_no_figures_keeps_the_observed_ones(self, ledger: Ledger) -> None:
+        """The whole point of the fallback: it used to fall back to null."""
+        await ledger.use_cases.track_print_job.execute(started())
+        await ledger.use_cases.track_print_job.execute(plan_observed({TRAY_1: Grams.of(31)}))
+
+        await ledger.use_cases.track_print_job.execute(ended(PrintJobState.CANCELLED))
+
+        [job] = await stored_jobs(ledger)
+        assert job.reported_usage == {TRAY_1: Grams.of(31)}
+
+    async def test_the_orphans_review_is_no_longer_empty(self, ledger: Ledger) -> None:
+        """**The user-visible point.** A print whose ending nobody saw now reaches the
+        queue carrying the machine's own per-tray figures, so the card asks a question the
+        user can answer instead of showing a filename and a blank."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        await ledger.use_cases.track_print_job.execute(started())
+        orphan = (await stored_jobs(ledger))[0].id
+        await ledger.use_cases.track_print_job.execute(plan_observed({TRAY_1: Grams.of("62.23")}))
+        ledger.clock.advance(minutes=8)
+
+        # The next print begins; the row nobody closed is discovered and queued.
+        await ledger.use_cases.track_print_job.execute(started())
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.job_id == orphan
+        assert review.estimated_usage != {}, "the card would be blank"
+        assert review.charges == [(TRAY_1, ReviewCharge(spool_id, Grams.of("62.23")))]

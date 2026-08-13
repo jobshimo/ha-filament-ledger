@@ -206,31 +206,50 @@ class DetectSpool:
         async with self.uow:
             known = await self.spools.find_by_reel(reading.reel)
             if known:
-                # The reel is ours. `find_by_reel` orders by `registered_at`, so the first
-                # row is the oldest — and the oldest is the genuine one by construction: a
-                # phantom could only ever have been born *later*, at the moment the reel
-                # first crossed into a tray of the other parity.
-                survivor, *already_known_phantoms = known
-                phantoms = list(already_known_phantoms)
-                # A row that answers to the chip we are about to claim, and is not the
-                # survivor, is the other half of this reel — the row that was minted when
-                # this side was first read. It never learned a reel of its own, which is
-                # precisely why `find_by_reel` above could not see it.
+                # Everything this reel could be, gathered before anything is chosen.
+                #
+                # `known` is only the rows that have *learned* the reel, and a row learns it
+                # by being read — so which rows are in here is a fact about which trays the
+                # user happened to use, not about which row is genuine. A twin answers to
+                # the hub's other chip and therefore cannot be in `known` at all: it turns
+                # up through `find_by_tag` below, on the reading that finally comes from its
+                # side.
+                candidates = list(known)
                 for other in await self.spools.find_by_tag(reading.tag):
-                    if other.id == survivor.id or any(p.id == other.id for p in phantoms):
+                    if any(c.id == other.id for c in candidates):
                         continue
                     if other.reel_uid is not None and other.reel_uid != reading.reel:
                         # It speaks for a different reel. Whatever that is, it is not this
-                        # reel's phantom, and retiring it would be this method destroying a
+                        # reel's twin, and retiring it would be this method destroying a
                         # row on a guess.
                         continue
-                    phantoms.append(other)
-                # Record the side we just read — a no-op if this is the chip the survivor
-                # was registered with. Claimed *after* the scan above, so the survivor's own
-                # row cannot be mistaken for a second claimant of its own chip.
+                    candidates.append(other)
+                # **The oldest row survives, and it is chosen from the whole set.**
+                #
+                # This is the correction v2.6 needed. That release took `known[0]` — the
+                # oldest row that had learned the reel — and a reel whose twin learned it
+                # first therefore made the *twin* the survivor and retired the genuine row.
+                # On the reference ledger that was live: the phantom minted on 13-08 held
+                # the reel while the real row from 10-08 had learned nothing, so the next
+                # reading from the other side would have binned three weeks of history.
+                #
+                # Age decides because age cannot be anything else: a twin exists only
+                # because the reel crossed into a tray of the other parity *after* the
+                # genuine row was already there, so it is always the younger of the two.
+                survivor, *twins = sorted(candidates, key=lambda spool: spool.registered_at)
+                # The survivor may be a row that never learned the reel — that is exactly
+                # the case v2.6 got wrong. Teach it *first*, so the next reading resolves
+                # straight to it and so the sentence written on each retired twin names a
+                # row that already speaks for this reel.
+                if survivor.reel_uid is None:
+                    survivor = survivor.identified_as(reading.reel)
+                    await self.spools.save(survivor)
+                # Record the side we just read, onto whichever row survives. Claimed after
+                # the scan above so the survivor's own row cannot be mistaken for a second
+                # claimant of its own chip.
                 await self.spools.claim_tag(survivor.id, reading.tag)
-                for phantom in phantoms:
-                    retirement = await self._retire_phantom(phantom, survivor)
+                for twin in twins:
+                    retirement = await self._retire_phantom(twin, survivor)
                     if retirement is not None:
                         retired.append(retirement)
             else:
