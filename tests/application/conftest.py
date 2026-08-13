@@ -193,6 +193,7 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
                 spools,
                 events,
                 database,
+                clock,
                 auto_mount=True,
                 register_spool=register_spool,
                 default_opening_weight=Grams.of(1000),

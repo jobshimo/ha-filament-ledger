@@ -40,6 +40,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     UNIDENTIFIED_PRINTER,
     AmsIndex,
     PrinterSerial,
+    ReelUid,
     SpoolId,
     TagUid,
 )
@@ -93,6 +94,14 @@ TRAY_4 = "sensor.a1_00000000testser_ams_1_bandeja_4"
 TRAY_1_TAG = TagUid("3C45C3DB00000100")
 TRAY_2_TAG = TagUid("3CDDA20200000100")
 TRAY_4_TAG = TagUid("4289A97100000100")
+
+# The reel each tray's fixture names. Distinct from the tags above on purpose, because that
+# is the fact the whole identity model turns on: the chip says which side the AMS reached,
+# the reel says which reel it is (docs/12-field-notes.md). Tray 3 carries the all-zero
+# sentinel in the fixture and therefore has no reel here — the same absence as its tag.
+TRAY_1_REEL = ReelUid("00000000000000000000000000TEST01")
+TRAY_2_REEL = ReelUid("00000000000000000000000000TEST02")
+TRAY_4_REEL = ReelUid("00000000000000000000000000TEST04")
 
 WEIGHT = "sensor.a1_00000000testser_peso_de_la_impresion"
 STATUS = "sensor.a1_00000000testser_estado_de_la_impresion"
@@ -699,6 +708,7 @@ class TestCurrentTrays:
             tray=a_tray(1),
             tag=TRAY_1_TAG,
             empty=False,
+            reel=TRAY_1_REEL,
             name="Bambu PLA Basic",
             material="PLA",
             colour=Colour(0x5E, 0x43, 0xB7, 0xFF),
@@ -824,6 +834,7 @@ class TestSubscription:
                 tray=a_tray(4),
                 tag=TRAY_4_TAG,
                 empty=False,
+                reel=TRAY_4_REEL,
                 name="Bambu PLA Matte",
                 material="PLA",
                 colour=Colour(255, 255, 255, 255),

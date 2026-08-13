@@ -83,6 +83,7 @@ from ...domain.value.identifiers import (
     UNIDENTIFIED_PRINTER,
     AmsIndex,
     PrinterSerial,
+    ReelUid,
     SlotIndex,
     TagUid,
     TrayRef,
@@ -1453,6 +1454,11 @@ def _read(tray: TrayRef, state: State | None) -> TrayReading | None:
         tray=tray,
         tag=_tag(attributes.get("tag_uid")),
         empty=False,
+        # The field that says *which reel*, read at last. `tag_uid` names the chip the AMS
+        # reached, and which chip that is follows the tray's parity — so a ledger keyed on
+        # it lost a reel every time the reel changed side of the machine. `tray_uuid` is
+        # what Bambu Studio shows as the reel's SN and it does not move (docs/12).
+        reel=_reel(attributes.get("tray_uuid")),
         name=_text(attributes.get("name")),
         material=_text(attributes.get("type")),
         colour=_colour(attributes.get("color")),
@@ -1472,6 +1478,26 @@ def _tag(value: object) -> TagUid | None:
     if not text or text == ABSENT_TAG_SENTINEL:
         return None
     return TagUid(text)
+
+
+def _reel(value: object) -> ReelUid | None:
+    """Thirty-two zeros means the reel was not identified — absence, never an identity.
+
+    The same translation `_tag` performs one field over, and it has to be performed here
+    for the same reason: `ReelUid` refuses the sentinel, so a boundary that passed it
+    through would raise inside a `@callback` that promised the event loop it never would.
+
+    Any all-zero string is treated as the sentinel rather than only the exact
+    thirty-two-character one. The width is firmware's to choose, absence is not, and a
+    reading padded to a different length must not become an identity that merges every
+    unidentifiable reel in the ledger into one.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or set(text) == {"0"}:
+        return None
+    return ReelUid(text)
 
 
 def _text(value: object) -> str | None:

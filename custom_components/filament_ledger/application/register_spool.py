@@ -17,7 +17,7 @@ from ..domain.port.repositories import MovementRepository, SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import SpoolId, TagSource, TagUid
+from ..domain.value.identifiers import ReelUid, SpoolId, TagSource, TagUid
 from ..domain.value.location import Location, Storage
 from ..domain.value.material import Material
 from ..domain.value.movement_type import MovementSource, MovementType
@@ -36,6 +36,10 @@ class RegisterSpoolCommand:
     # register-from-sync path says DETECTED, because the serial it forwards came off the
     # tray reading rather than off the keyboard (docs/14 §14.2).
     tag_source: TagSource = TagSource.MANUAL
+    # Which physical reel this is, when the printer named one. Set only by the paths that
+    # register from a tray reading; the interactive form leaves it `None` because there is
+    # no field for it and a hand-typed reel id is a claim nobody can check.
+    reel_uid: ReelUid | None = None
     location: Location | None = None
     confirm_duplicate_tag: bool = False
     # Provenance of the opening balance, for the history's *automatic* / *confirmed by
@@ -74,6 +78,7 @@ class RegisterSpool:
                 # Provenance describes a tag, so an untagged spool carries none — the
                 # command's default would otherwise fail the entity's pairing check.
                 tag_source=command.tag_source if command.tag_uid is not None else None,
+                reel_uid=command.reel_uid,
             )
 
             await self.spools.save(spool)
