@@ -25,6 +25,7 @@ from ..value.identifiers import (
     MovementId,
     PrinterSerial,
     PrintJobId,
+    ReelUid,
     ReviewId,
     SpoolId,
     TagUid,
@@ -63,18 +64,51 @@ class SpoolRepository(Protocol):
         ...
 
     async def find_by_tag(self, tag: TagUid) -> list[Spool]:
-        """Every **in-inventory** spool carrying this tag — neither discarded nor deleted.
+        """Every **in-inventory** spool known to answer to this chip UID.
 
-        Returns a **list**, not an optional single spool. A Bambu tag identifies a product
-        batch rather than a physical unit, so two spools may legitimately carry the same
-        payload; a port returning one would force the adapter to pick, silently, and deduct
-        from a spool the user never loaded. The port returns what is true and the use case
-        decides what to do with an ambiguous answer — which is to ask.
+        Answers from the whole set of chips a reel owns, not merely the one it was
+        registered with — a reel has a readable side in odd trays and another in even ones,
+        and this question has to mean *whose chip is this* rather than *whose registration
+        card says this* (docs/12-field-notes.md).
+
+        The **fallback** lookup since v2.6: `find_by_reel` leads, and this answers for the
+        reels that have no `tray_uuid` to lead with — third-party, refilled, and any hub the
+        reader could not get a clean identity from.
+
+        Returns a **list**, not an optional single spool. Two spools can still answer to one
+        chip UID: a ledger written under the old rule may hold a pair, and a user may
+        deliberately confirm a duplicate for two reels whose chips collide. A port returning
+        one would force the adapter to pick, silently, and deduct from a spool the user
+        never loaded. The port returns what is true and the use case decides what to do with
+        an ambiguous answer — which is to ask.
 
         Deleted spools are excluded for the same reason discarded ones are, and it matters
         in one concrete way: a spool retracted as never-registered must not go on blocking
         its tag, or re-registering the reel the user actually owns demands a
         duplicate-confirmation about a spool that no longer exists anywhere in the UI.
+        """
+        ...
+
+    async def find_by_reel(self, reel: ReelUid) -> list[Spool]:
+        """Every **in-inventory** spool that is this physical reel.
+
+        The lookup automatic recognition leads with. A reel reports one `tray_uuid` in every
+        tray it is ever put in, so unlike `find_by_tag` this question has an answer that
+        does not move when the reel does.
+
+        Plural for one reason only: a ledger can *arrive* holding two rows for one reel,
+        minted by the pre-v2.6 rule and revealed the moment both halves learn their reel.
+        Nothing in this release creates that state. Returning the list is what lets the
+        panel offer a merge rather than have the ledger pick a winner unasked.
+        """
+        ...
+
+    async def claim_tag(self, spool_id: SpoolId, tag: TagUid) -> None:
+        """Record that this reel also answers to this chip UID.
+
+        Called when a reel resolved by `reel_uid` turns out to be sitting in a tray that
+        reads its other side. Idempotent: the detection path re-observes the same chip on
+        every republish and must not care.
         """
         ...
 

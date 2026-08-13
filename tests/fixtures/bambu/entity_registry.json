@@ -72,8 +72,22 @@
   {
     "entity_id": "sensor.a1_00000000testser_nombre_del_gcode",
     "platform": "bambu_lab",
-    "unique_id": "00000000TESTSER_gcode_name",
-    "translation_key": "gcode_name",
+    "unique_id": "00000000TESTSER_gcode_file",
+    "translation_key": "gcode_file",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_nombre_de_la_tarea",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_subtask_name",
+    "translation_key": "subtask_name",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_estado_actual",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_stage",
+    "translation_key": "stage",
     "device_id": "00000000000000000000000000testprn"
   },
   {
@@ -116,6 +130,13 @@
     "platform": "bambu_lab",
     "unique_id": "00000000TESTSER_online",
     "translation_key": "online",
+    "device_id": "00000000000000000000000000testprn"
+  },
+  {
+    "entity_id": "sensor.a1_00000000testser_modo_de_conexion_mqtt",
+    "platform": "bambu_lab",
+    "unique_id": "00000000TESTSER_mqtt_mode",
+    "translation_key": "mqtt_mode",
     "device_id": "00000000000000000000000000testprn"
   }
 ]

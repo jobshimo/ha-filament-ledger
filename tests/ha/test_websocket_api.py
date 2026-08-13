@@ -1534,6 +1534,7 @@ class TestTraysSync:
                 SqliteSpoolRepository(harness.ledger.database),
                 harness.ledger.events,
                 harness.ledger.database,
+                harness.ledger.clock,
                 auto_mount=auto_mount,
                 register_spool=harness.ledger.use_cases.register_spool,
                 default_opening_weight=Grams.of(1000),

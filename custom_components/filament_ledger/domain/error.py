@@ -45,10 +45,26 @@ class SpoolDeletedError(DomainError):
 
 
 class DuplicateTagNotConfirmedError(DomainError):
-    """Registering a spool whose tag already belongs to another, without saying so.
+    """Registering a spool whose chip UID already belongs to another, without saying so.
 
-    Duplicates are legal - a Bambu tag identifies a batch, not a unit - but they must be
-    deliberate, never accidental.
+    Still legal, still deliberate-only — but since v2.6 it is a far rarer thing to mean.
+    Automatic recognition resolves by `reel_uid`, so the everyday case this used to
+    guard — one reel read from its other side — no longer reaches registration at all.
+    What is left is the genuine article: a reel with no readable `tray_uuid` whose chip
+    UID collides with another's, and a user asserting by hand that the two really are
+    different reels (docs/12-field-notes.md).
+    """
+
+
+class ReelAlreadyIdentifiedError(DomainError):
+    """A spool that already names one physical reel was asked to name a different one.
+
+    Raised only by `Spool.identified_as`, whose whole job is to let a pre-v2.6 row learn
+    the reel it belongs to. Learning is write-once: a chip that resolves to a spool
+    claiming some *other* reel is a contradiction — two reels sharing a chip UID, or a hub
+    moved between reels — and overwriting would replace a contradiction the user can see
+    with one they cannot. `DetectSpool` reads this as *not the reel I am looking at* and
+    falls through to the unknown-reel path.
     """
 
 

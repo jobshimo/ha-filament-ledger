@@ -83,6 +83,7 @@ from ...domain.value.identifiers import (
     UNIDENTIFIED_PRINTER,
     AmsIndex,
     PrinterSerial,
+    ReelUid,
     SlotIndex,
     TagUid,
     TrayRef,
@@ -106,29 +107,70 @@ _TRAY_MARKER = "_tray_"
 # entries because the job events on the bus name only a device.
 #
 # Every key here was read off the reference instance's entity registry **before** it was
-# frozen, which is the rule `FUTURE_PRINT_SENSOR_KEYS` below exists to explain. Three
-# joined in v1.4: `remaining_time` is what the Printer tab shows for a job in progress,
-# and `start_time`/`end_time` are the machine's own answer to how long a print actually
-# took, as opposed to how long Home Assistant took to notice it. `gcode_name` (the
-# reference instance's `nombre_del_gcode`) joined for `_job_name`'s fallback:
-# `gcode_file_downloaded` speaks only at the moment a file is downloaded and stays
-# `unavailable` across a Home Assistant restart, while upstream restores this one on
-# reconnect — the sensor still naming the job when the house comes back mid-print.
+# frozen. Three joined in v1.4: `remaining_time` is what the Printer tab shows for a job in
+# progress, and `start_time`/`end_time` are the machine's own answer to how long a print
+# actually took, as opposed to how long Home Assistant took to notice it.
+#
+# **`gcode_file` is the key `gcode_name` was meant to be, and the correction is the point.**
+# v2.5 added a fallback for `_job_name` keyed on `gcode_name` and froze a fixture row to
+# match. No such key exists. The reference instance's `sensor.…_nombre_del_gcode` — the very
+# sensor that fallback was written for — reads `translation_key: "gcode_file"`
+# (docs/12-field-notes.md, 2026-08-11, read from `core.entity_registry`). The fixture was
+# transcribed rather than captured, so the tests agreed with themselves while production
+# resolved nothing and every restart mid-print still wrote `unknown print` — which is
+# exactly what job `3e752c9c` in the reference ledger is called. This is the failure mode
+# the block below names, caught in this module's own code.
+#
+# `stage`, `subtask_name`, `online`, `active_tray` and `mqtt_mode` joined in the same pass,
+# from the same read of the same registry. `stage` is the one that matters most: see
+# `_PRINTING_STAGE` below and `BambuLabGateway._is_printing`.
 PRINT_SENSOR_KEYS = frozenset(
     {
         "print_weight",
         "print_status",
+        "stage",
         "current_layer",
         "total_layers",
         "print_progress",
         "gcode_file_downloaded",
-        "gcode_name",
+        "gcode_file",
+        "subtask_name",
         "print_error",
         "remaining_time",
         "start_time",
         "end_time",
+        "online",
+        "active_tray",
+        "mqtt_mode",
     }
 )
+
+# The stages that mean **a print is in progress on this machine**, off the `stage` sensor's
+# own enum — 70-odd options, read verbatim from the reference instance's entity registry
+# (docs/12-field-notes.md, 2026-08-11).
+#
+# `printing` is the unambiguous one. The `paused_*` family — `paused_user`,
+# `paused_filament_runout`, `paused_nozzle_clog` and the rest — is admitted by prefix
+# because a paused print is a print: it has a row's worth of job in front of it, and a
+# machine cannot pause what it is not running.
+#
+# **Everything else is refused, including the stages that plainly happen during a print.**
+# `heating_hotend`, `filament_loading`, `calibrating_extrusion` and their neighbours occur
+# inside a job *and* during a calibration a machine runs while idle, and there is no third
+# signal here to tell those apart. Admitting them would let an idle calibration mint a
+# phantom job — the exact failure `PrintStarted.derived` is bounded to prevent — while
+# refusing them costs nothing at all: the stage reaches `printing` moments later, and the
+# inference is a level that is read again on every transition rather than an edge that is
+# missed once and gone.
+_PRINTING_STAGE = "printing"
+_PAUSED_STAGE_PREFIX = "paused_"
+
+# The same question asked of `print_status`, whose vocabulary is upstream's `gcode_state`.
+# Both sensors are consulted and **either one is enough**, because they fail separately: a
+# reconnect leaves them unavailable at different moments, and the reading that survives is
+# the one that answers. Neither can say `printing` about an idle machine, so the union
+# widens availability without widening what is claimed.
+_RUNNING_STATUSES = frozenset({"running", "pause"})
 
 # Minutes per unit the `remaining_time` sensor may declare — every duration unit Home
 # Assistant defines (`UnitOfTime`: d, h, min, s, ms, µs), with the long spellings, the
@@ -218,21 +260,22 @@ _EXTERNAL_SPOOL_KEY = "External Spool"
 UNKNOWN_JOB_NAME = "unknown print"
 
 # The three sensors docs/14 §14.5 names for the Printer tab — active tray, online,
-# connection mode — are **deliberately not in `PRINT_SENSOR_KEYS` yet**.
+# connection mode — waited here through v1.4 and v2.5 for their keys to be read rather than
+# guessed. They were read on 2026-08-11, off the reference instance's `core.entity_registry`
+# (docs/12-field-notes.md), and they are in `PRINT_SENSOR_KEYS` above.
 #
-# Discovery here resolves by `platform` + `translation_key`, never by entity id, and the
-# spec's own rule is that such a key is read off the reference instance's entity registry
-# *before* the constant is frozen (docs/13 — Traps). Guessing a key would break silently
-# for every user: an unmatched key discovers nothing, and the tab would report "no printer
-# reported this" forever without anybody noticing it was our typo.
+# **Two of the three guesses were right and the third was not**, which is the whole argument
+# for having waited. `active_tray` and `online` are upstream's keys verbatim — `online` on a
+# `binary_sensor` rather than a `sensor`, which discovery does not care about because it
+# matches on platform and key. `connection_mode` does not exist anywhere in upstream: the
+# reference instance's `sensor.…_modo_de_conexion_mqtt` reads `translation_key: "mqtt_mode"`.
+# A constant frozen on the plausible-sounding guess would have discovered nothing and
+# reported "the printer did not say" forever, for every user, with no error anywhere to
+# suggest the key was ours rather than theirs.
 #
-# So the Printer tab serialises all three as `null` today — the standing policy for an
-# undiscovered sensor, applied honestly — and freezing them is one line each here plus one
-# reader, once the keys are confirmed. `tests/fixtures/bambu/entity_registry.json` already
-# carries rows whose keys read `active_tray` and `online`; `connection_mode` was never
-# captured. That asymmetry is the reason the trio waits together rather than shipping two
-# thirds of a verified constant.
-FUTURE_PRINT_SENSOR_KEYS = frozenset({"active_tray", "online", "connection_mode"})
+# `MQTT_MODE_KEY` names the survivor of that correction so the reader below and the
+# serialiser agree on one spelling.
+MQTT_MODE_KEY = "mqtt_mode"
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,14 +365,20 @@ class BambuLabGateway:
             for printer in discovery.printers
             if (entity_id := printer.sensors.get("print_weight")) is not None
         }
-        # The fourth: a status change names an entity, and the ending it may describe
-        # belongs to exactly one machine. Same shape as the weights above, and resolved
-        # from the same discovery — `print_status` was already being read for the Printer
-        # tab, so this adds a subscription rather than a source.
+        # The fourth: a lifecycle *level* changed, and the edge it may describe — an ending
+        # or a start — belongs to exactly one machine. Same shape as the weights above, and
+        # resolved from the same discovery.
+        #
+        # **Both level sensors are indexed, and either one firing is enough.** They report
+        # the same fact in two vocabularies and they fail separately: a reconnect leaves
+        # them unavailable at different moments, and whichever recovers first is the one
+        # that gets the ledger looking. `_on_status_state_change` answers each question from
+        # the level rather than from the payload, so which of the two woke it never matters.
         self._printer_by_status = {
             entity_id: printer.serial
             for printer in discovery.printers
-            if (entity_id := printer.sensors.get("print_status")) is not None
+            for key in ("print_status", "stage")
+            if (entity_id := printer.sensors.get(key)) is not None
         }
 
     @property
@@ -445,6 +494,38 @@ class BambuLabGateway:
             error=self._printer_error(printer),
             remaining_minutes=self._remaining_minutes(printer),
         )
+
+    def online(self, printer: PrinterSerial) -> bool | None:
+        """Whether upstream considers this machine reachable — `None` when it did not say.
+
+        A binary sensor, so the reading is `STATE_ON` against anything else; an absent or
+        unavailable one is `None` rather than `False`, because *the sensor is not there* and
+        *the printer is unreachable* are different facts and the tab renders them
+        differently. Note the asymmetry with the print levels: a machine can be `online` and
+        idle, so this answers nothing about whether a job is running (`_is_printing` does).
+        """
+        state = self._sensor_state(printer, "online")
+        return None if state is None else state.state == STATE_ON
+
+    def connection_mode(self, printer: PrinterSerial) -> str | None:
+        """How upstream is talking to this machine — `mqtt_mode`, verbatim.
+
+        The key `FUTURE_PRINT_SENSOR_KEYS` guessed as `connection_mode`, which exists
+        nowhere; `MQTT_MODE_KEY` carries the correction and the reason it mattered. The
+        value travels verbatim because its vocabulary is upstream's and this boundary has no
+        business translating a word it has not captured the full set of.
+        """
+        return self._text_state(printer, MQTT_MODE_KEY)
+
+    def active_tray(self, printer: PrinterSerial) -> int | None:
+        """Which AMS slot is feeding right now, or `None` when the machine did not say.
+
+        Read through the same total reader every other counter uses, so an unavailable
+        sensor and an unparseable one are both `None` — the standing under-claim. The figure
+        is *not* bounded to 1..4 here: the domain's `SlotIndex` owns that rule, and a tab
+        that silently dropped a fifth slot would hide exactly the surprise worth seeing.
+        """
+        return self._layer(printer, "active_tray")
 
     def subscribe(self, listener: TrayListener) -> None:
         """Register a listener for tray changes. Registration itself does no I/O.
@@ -709,23 +790,35 @@ class BambuLabGateway:
 
     @callback
     def _on_status_state_change(self, event: Event[EventStateChangedData]) -> None:
-        """The second ending path: a status sensor arriving at a terminal state.
+        """The inferred lifecycle: a level moved, so ask what the machine is doing now.
 
-        Runs inside Home Assistant's event loop, so it must never raise — `_derived_ending`
-        is built from the same total readers the bus path uses, and delivery happens in a
+        Runs inside Home Assistant's event loop, so it must never raise — both builders are
+        assembled from the same total readers the bus path uses, and delivery happens in a
         background task exactly as it does there.
 
-        **Only a transition counts.** The sensor rests in `finish` for as long as the
-        machine is idle, so the level says nothing on its own; what this reads is the
-        moment it arrived. An unchanged republish, a move to `running`, and the constant
-        `offline` flapping of a healthy print all leave here without a word.
+        **Only a transition counts**, and the transition is only the trigger. What is
+        *reported* is read off the level afterwards, which is what makes this pass converge
+        rather than merely react: an edge that was missed is repaired by the next unrelated
+        edge, because every one of them re-reads the same truth. The bus events remain the
+        fast path; this is the contract.
+
+        Two questions, asked in this order and for a reason:
+
+        - **Did it stop?** Answered from `print_status` alone (`_DERIVED_OUTCOMES`), because
+          only that vocabulary tells a finish from a failure. `stage` reaches `idle` for
+          both, and closing a failed print as `FINISHED` would skip the review its owner
+          needs — so a `stage` change simply never matches here and falls through to the
+          second question.
+        - **Is it running something the ledger has no row for?** Answered from the level by
+          `derived_start`, which is bounded by `PrintStarted.derived` on the far side.
 
         A `finish → offline → finish` bounce *is* two arrivals, and the reference machine
         did it five times in the ten minutes after one print ended. That is not filtered
         here, because filtering it would need this callback to remember what it already
         reported and a reload would forget. It is answered where the answer is durable
-        instead: a derived ending may only close a running job, so the first arrival closes
-        it and every later one finds nothing to do (`PrintEnded.derived`).
+        instead: a derived ending may only close a running job and a derived start may only
+        open one the ledger does not hold, so the first arrival does the work and every
+        later one finds nothing to do.
         """
         printer = self._printer_by_status.get(event.data["entity_id"])
         if printer is None:  # unreachable: the tracker watches only resolved entities
@@ -734,13 +827,77 @@ class BambuLabGateway:
         new_state = event.data["new_state"]
         if new_state is None:
             return
+        if old_state is not None and old_state.state == new_state.state:
+            return
         outcome = _DERIVED_OUTCOMES.get(new_state.state)
-        if outcome is None or (old_state is not None and old_state.state == new_state.state):
+        if outcome is not None:
+            self._hass.async_create_background_task(
+                self._deliver_job(self._derived_ending(printer, outcome)),
+                name=f"filament_ledger derived ending on {printer}",
+            )
+            return
+        start = self.derived_start(printer)
+        if start is None:
             return
         self._hass.async_create_background_task(
-            self._deliver_job(self._derived_ending(printer, outcome)),
-            name=f"filament_ledger derived ending on {printer}",
+            self._deliver_job(start), name=f"filament_ledger derived start on {printer}"
         )
+
+    def derived_start(self, printer: PrinterSerial) -> PrintStarted | None:
+        """That machine's print in progress as its levels read *right now*, or `None`.
+
+        The mirror of `derived_ending`, and it exists for the mirror reason. Upstream guards
+        `event_print_started` with `previous_gcode_state != "unknown"` exactly as it guards
+        the finish, and a reconnection resets that to `unknown` — so a machine whose
+        connection drops before its own start announces nothing, no row is opened, and the
+        ending that follows finds nothing to close and is discarded. The whole print, and
+        every gram it consumed, disappears in silence. `PrintStarted.derived` carries the
+        measurements.
+
+        Reading a level is only safe because a derived start cannot duplicate a job: a
+        machine prints for hours and reads `printing` throughout, and every answer here is
+        discarded unless the ledger independently holds *no* row for the print it names
+        (`TrackPrintJob._started`). This is the same bargain the ending path makes, taken
+        from the other end.
+
+        **`plan` is `None`, and the held observation is deliberately left alone.** An
+        announced start clears `_observations` and joins `_started`, because it knows the
+        sensor still carries the previous job's figures. This one knows the opposite: the
+        job has been running for some unknown while, so the weight sensor has already been
+        republished *during* it, and the figures standing there are this print's own. Not
+        touching either piece of state is what routes `_plan_at_ending` into its live-read
+        branch — the branch written for a reload mid-print, which is the same situation
+        arrived at by a different road.
+        """
+        if not self._is_printing(printer):
+            return None
+        return PrintStarted(
+            name=self._job_name(printer),
+            printer=printer,
+            plan=None,
+            printer_started_at=self._moment(printer, "start_time"),
+            derived=True,
+        )
+
+    def _is_printing(self, printer: PrinterSerial) -> bool:
+        """Whether this machine has a print in progress, by either level that can say so.
+
+        `stage` first, because its vocabulary is the specific one: `printing` means exactly
+        that, and the `paused_*` family is a print that is still a print. `print_status`
+        answers the same question in `gcode_state`'s coarser words and is consulted when the
+        first said nothing — an unavailable sensor is silence here, never a denial.
+
+        Neither sensor can say `printing` about an idle machine, so consulting both widens
+        what is *available* without widening what is claimed. `_PRINTING_STAGE` explains why
+        the stages that merely happen during a print are refused.
+        """
+        stage = self._text_state(printer, "stage")
+        if stage is not None and (
+            stage == _PRINTING_STAGE or stage.startswith(_PAUSED_STAGE_PREFIX)
+        ):
+            return True
+        status = self._text_state(printer, "print_status")
+        return status is not None and status in _RUNNING_STATUSES
 
     def derived_ending(self, printer: PrinterSerial) -> PrintEnded | None:
         """That machine's ending as its status sensor reads *right now*, or `None`.
@@ -865,19 +1022,33 @@ class BambuLabGateway:
         asks in that window — the Printer tab, a start, an ending — read an unknown
         print off a machine that was verifiably printing something.
 
-        **`gcode_name` is the honest fallback for exactly that gap.** Upstream restores
-        it on reconnect, so after a restart it is the one sensor still carrying the
-        job's name. A blank or whitespace answer falls through rather than naming a job
-        the empty string, and only when both sensors are silent does this reader answer
-        `UNKNOWN_JOB_NAME` — the same under-claim every reader here applies, and never
-        an exception.
+        **`gcode_file` is the honest fallback for exactly that gap** — the key v2.5 wrote
+        as `gcode_name`, which resolves to nothing (`PRINT_SENSOR_KEYS` tells that story).
+        Upstream restores it on reconnect, so after a restart it is the one sensor still
+        carrying the job's name. It answers in the slicer's own form — `0.28mm layer, 2
+        walls, 15% infill.3mf` where the downloaded file reads `2585574-0.28mm layer, 2
+        walls, 15% infill.gcode` — which is why it is a fallback and not a preference.
+
+        **`subtask_name` is the last resort, and the one reading it must refuse is
+        `unknown`.** The sensor parks on that literal between prints — measured at 18:20:11
+        on 2026-08-11 — so passing it through would name a job the word *unknown* while
+        claiming a sensor had spoken. Falling through to `UNKNOWN_JOB_NAME` says the same
+        thing and says it as this module's own admission rather than as the printer's.
+
+        A blank or whitespace answer falls through at every step rather than naming a job
+        the empty string, and only when all three are silent does this reader answer
+        `UNKNOWN_JOB_NAME` — the same under-claim every reader here applies, and never an
+        exception.
         """
         downloaded = self._sensor_state(printer, "gcode_file_downloaded")
         if downloaded is not None and downloaded.state.strip():
             return downloaded.state
-        restored = self._sensor_state(printer, "gcode_name")
+        restored = self._sensor_state(printer, "gcode_file")
         if restored is not None and restored.state.strip():
             return restored.state
+        subtask = self._sensor_state(printer, "subtask_name")
+        if subtask is not None and subtask.state.strip() and subtask.state.strip() != "unknown":
+            return subtask.state
         return UNKNOWN_JOB_NAME
 
     def _text_state(self, printer: PrinterSerial, key: str) -> str | None:
@@ -1283,6 +1454,11 @@ def _read(tray: TrayRef, state: State | None) -> TrayReading | None:
         tray=tray,
         tag=_tag(attributes.get("tag_uid")),
         empty=False,
+        # The field that says *which reel*, read at last. `tag_uid` names the chip the AMS
+        # reached, and which chip that is follows the tray's parity — so a ledger keyed on
+        # it lost a reel every time the reel changed side of the machine. `tray_uuid` is
+        # what Bambu Studio shows as the reel's SN and it does not move (docs/12).
+        reel=_reel(attributes.get("tray_uuid")),
         name=_text(attributes.get("name")),
         material=_text(attributes.get("type")),
         colour=_colour(attributes.get("color")),
@@ -1302,6 +1478,26 @@ def _tag(value: object) -> TagUid | None:
     if not text or text == ABSENT_TAG_SENTINEL:
         return None
     return TagUid(text)
+
+
+def _reel(value: object) -> ReelUid | None:
+    """Thirty-two zeros means the reel was not identified — absence, never an identity.
+
+    The same translation `_tag` performs one field over, and it has to be performed here
+    for the same reason: `ReelUid` refuses the sentinel, so a boundary that passed it
+    through would raise inside a `@callback` that promised the event loop it never would.
+
+    Any all-zero string is treated as the sentinel rather than only the exact
+    thirty-two-character one. The width is firmware's to choose, absence is not, and a
+    reading padded to a different length must not become an identity that merges every
+    unidentifiable reel in the ledger into one.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or set(text) == {"0"}:
+        return None
+    return ReelUid(text)
 
 
 def _text(value: object) -> str | None:

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from ..error import InvalidValueError
 from .colour import Colour
 from .grams import Grams
-from .identifiers import TagUid, TrayRef
+from .identifiers import ReelUid, TagUid, TrayRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +44,11 @@ class TrayReading:
     tray: TrayRef
     tag: TagUid | None
     empty: bool
+    #: Which physical reel the printer says this is — its `tray_uuid`. `None` for an empty
+    #: tray and for a reel with no factory identity to report. **This is what recognition
+    #: resolves by**; `tag` above says only which side of the hub the AMS happened to read,
+    #: and that changes with the tray's parity (docs/12-field-notes.md).
+    reel: ReelUid | None = None
     name: str | None = None
     material: str | None = None
     colour: Colour | None = None
@@ -55,6 +60,12 @@ class TrayReading:
         # while a tag says a spool is present would act on a reading that refutes itself.
         if self.empty and self.tag is not None:
             msg = f"an empty tray cannot carry tag {self.tag}"
+            raise InvalidValueError(msg)
+        # Same contradiction, in the field that now decides identity. Stated separately
+        # rather than folded into the check above because the two travel independently: a
+        # reel can report an identity with no readable chip, and a chip with no identity.
+        if self.empty and self.reel is not None:
+            msg = f"an empty tray cannot carry reel {self.reel}"
             raise InvalidValueError(msg)
         for field_name in ("name", "material"):
             hint = getattr(self, field_name)

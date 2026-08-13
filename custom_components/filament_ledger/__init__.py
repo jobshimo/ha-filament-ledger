@@ -173,6 +173,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             spools,
             events,
             database,
+            clock,
             auto_mount=bool(settings.get(CONF_AUTO_MOUNT_ON_RFID, DEFAULT_AUTO_MOUNT_ON_RFID)),
             register_spool=register_spool,
             default_opening_weight=Grams.of(default_opening_weight_g),

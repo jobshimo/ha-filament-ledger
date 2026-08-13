@@ -671,3 +671,111 @@ class TestDuplicateEndings:
         # claims, and the queue still holds exactly the one decision.
         [job] = await stored_jobs(ledger)
         assert job.state is PrintJobState.CANCELLED
+
+
+class TestAPrintNobodySawEndGoesToTheQueue:
+    """The gap this release closes, measured on the reference instance.
+
+    `_started` has always detected the shape: the machine is plainly running a print that
+    the open row does not describe, so that row's ending never arrived. It fired ten times
+    in nine days on the reference machine — 08-12 15:30 through 08-13 23:37 — and opened
+    zero reviews, because the discovery ended at a `LOGGER.warning`.
+
+    The user's symptom was the consequence: a print ran, its filament was never deducted,
+    and the ledger said nothing at all. A silent zero is the one answer an inventory must
+    never give.
+    """
+
+    async def test_the_unaccounted_job_lands_in_the_review_queue(self, ledger: Ledger) -> None:
+        await ledger.use_cases.track_print_job.execute(started())
+        orphan = (await stored_jobs(ledger))[0].id
+        ledger.clock.advance(minutes=8)
+
+        await ledger.use_cases.track_print_job.execute(started())
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.job_id == orphan
+
+    async def test_the_reason_says_no_ending_was_ever_recognised(self, ledger: Ledger) -> None:
+        """`UNCLASSIFIED` already means exactly *the job ended without a recognisable
+        event*, so it is reused rather than joined by a near-synonym."""
+        await ledger.use_cases.track_print_job.execute(started())
+        ledger.clock.advance(minutes=8)
+
+        await ledger.use_cases.track_print_job.execute(started())
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.reason is ReviewReason.UNCLASSIFIED
+
+    async def test_the_orphan_row_stays_running_because_that_is_what_was_observed(
+        self, ledger: Ledger
+    ) -> None:
+        """Its state is the ledger's own observation, and the ledger observed no ending.
+        `FINISHED` would claim a completion nobody saw; the outcome is the review's to
+        settle, by the one party who actually knows."""
+        await ledger.use_cases.track_print_job.execute(started())
+        ledger.clock.advance(minutes=8)
+
+        await ledger.use_cases.track_print_job.execute(started())
+
+        states = [job.state for job in await stored_jobs(ledger)]
+        assert states == [PrintJobState.RUNNING, PrintJobState.RUNNING]
+
+    async def test_the_review_is_announced(self, ledger: Ledger) -> None:
+        """Same event any other review raises, so an existing notification automation
+        covers this without knowing it is new."""
+        await ledger.use_cases.track_print_job.execute(started())
+        orphan = (await stored_jobs(ledger))[0].id
+        ledger.clock.advance(minutes=8)
+
+        await ledger.use_cases.track_print_job.execute(started())
+
+        [opened] = ledger.events.of(ReviewOpened)
+        assert isinstance(opened, ReviewOpened)
+        assert opened.job_id == orphan
+
+    async def test_the_print_now_running_still_gets_its_row(self, ledger: Ledger) -> None:
+        """The queue must never cost the live print its tracking — that would trade one
+        unaccounted print for the next one."""
+        await ledger.use_cases.track_print_job.execute(started())
+        ledger.clock.advance(minutes=8)
+
+        current = await ledger.use_cases.track_print_job.execute(started())
+
+        assert current is not None
+        assert current == (await stored_jobs(ledger))[0].id
+
+    async def test_a_third_start_does_not_queue_the_same_orphan_twice(self, ledger: Ledger) -> None:
+        """Upstream announces a start per attempt. The orphan is already waiting, and a
+        queue that refuses a duplicate is the ordinary outcome, not an error."""
+        await ledger.use_cases.track_print_job.execute(started())
+        ledger.clock.advance(minutes=8)
+        await ledger.use_cases.track_print_job.execute(started())
+        ledger.clock.advance(minutes=8)
+
+        third = await ledger.use_cases.track_print_job.execute(started())
+
+        assert third is not None
+        pending = await SqliteReviewRepository(ledger.database).list_pending()
+        assert len(pending) == 2, "one per orphan, never two for the same one"
+
+    async def test_a_healthy_print_never_looks_unaccounted(self, ledger: Ledger) -> None:
+        """The guard that keeps this from firing on every ordinary print: a closed job is
+        not an open row, so the next start finds nothing to send anywhere.
+
+        Asserted on the *reason* rather than on an empty queue, because a finished print
+        that reported no figures opens an `UNMAPPED_USAGE` review of its own — long-
+        standing, correct, and none of this method's business.
+        """
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        await ledger.use_cases.track_print_job.execute(started({TRAY_1: Grams.of(209)}))
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage={TRAY_1: Grams.of(209)})
+        )
+        ledger.clock.advance(hours=2)
+
+        await ledger.use_cases.track_print_job.execute(started())
+
+        reasons = [r.reason for r in await SqliteReviewRepository(ledger.database).list_pending()]
+        assert ReviewReason.UNCLASSIFIED not in reasons

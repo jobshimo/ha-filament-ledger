@@ -25,6 +25,7 @@ from custom_components.filament_ledger.application.register_spool import (
 from custom_components.filament_ledger.domain.error import DuplicateTagNotConfirmedError
 from custom_components.filament_ledger.domain.event import (
     AmbiguousTagDetected,
+    SpoolDeleted,
     SpoolDetected,
     SpoolMounted,
     SpoolRegistered,
@@ -36,6 +37,7 @@ from custom_components.filament_ledger.domain.port.repositories import SpoolFilt
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    ReelUid,
     SpoolId,
     TagSource,
     TagUid,
@@ -54,6 +56,18 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
 from .conftest import Ledger, a_tray
 
 TAG = TagUid("A1B2C3D4")
+
+# One physical reel, read from its two sides. A Bambu reel's tag is readable from either
+# side of the hub and the AMS has two reader boards between four trays, so trays 1 and 3
+# reach one chip and trays 2 and 4 the other — the reel is the same, the chip UID is not.
+# Measured on the reference machine, three reels out of three (docs/12-field-notes.md).
+REEL = ReelUid("C53610CFFA094C67AABC13AD9B661C04")
+TAG_ODD_SIDE = TagUid("8C55BC6400000100")
+TAG_EVEN_SIDE = TagUid("2C9CB8DD00000100")
+
+# A different reel entirely, for the scenarios that must still tell two reels apart.
+OTHER_REEL = ReelUid("1BCE3430A9864C73A21C16A72232E17F")
+OTHER_TAG = TagUid("EC1325E200000100")
 
 
 async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
@@ -228,6 +242,7 @@ class TestAutoMountDisabled:
             spools=SqliteSpoolRepository(ledger.database),
             events=ledger.events,
             uow=ledger.database,
+            clock=ledger.clock,
             auto_mount=False,
             register_spool=ledger.use_cases.register_spool,
             default_opening_weight=Grams.of(1000),
@@ -264,16 +279,23 @@ def a_full_reading(
     material: str = "PLA",
     name: str = "Bambu PLA Basic",
     weight: Grams | None = None,
+    tag: TagUid = TAG,
+    reel: ReelUid | None = None,
 ) -> TrayReading:
     """What a Bambu reel actually produces: tag, name, material and colour, all present.
 
     `weight` defaults absent, which is the tag declining to say — the boundary turns
     `tray_weight: "0"` into exactly that, and the configured default stands in.
+
+    `reel` defaults absent so that every scenario written before v2.6 goes on describing
+    exactly what it always described: a reel with no reported identity, resolved by its
+    chip. The scenarios that are *about* the reel pass one.
     """
     return TrayReading(
         tray=a_tray(slot),
-        tag=TAG,
+        tag=tag,
         empty=False,
+        reel=reel,
         name=name,
         material=material,
         colour=Colour.parse("00FF00FF"),
@@ -317,6 +339,7 @@ class TestAutoRegister:
             spools=SqliteSpoolRepository(ledger.database),
             events=ledger.events,
             uow=ledger.database,
+            clock=ledger.clock,
             auto_mount=auto_mount,
             register_spool=(
                 register_spool if register_spool is not None else ledger.use_cases.register_spool
@@ -438,26 +461,37 @@ class TestAutoRegister:
         [event] = ledger.events.of(SpoolDetected)
         assert event == SpoolDetected(tag_uid=TAG, tray=a_tray(2))
 
-    async def test_a_second_tray_with_the_same_batch_tag_is_a_second_reel(
+    async def test_the_same_chip_in_a_second_tray_is_the_same_reel_moved(
         self, ledger: Ledger
     ) -> None:
-        """A Bambu tag identifies a batch, not a unit: the same unregistered tag in two
-        trays is two physical reels. The second registers as a deliberate duplicate and
-        the resolution asks — merging both into one row would let tray 2 silently steal
-        tray 1's spool."""
+        """**Reversed in v2.6, on evidence.** This test used to assert the opposite — that
+        one chip UID seen in two trays was two reels of a shared product batch, registered
+        as a deliberate duplicate for the user to disambiguate.
+
+        That premise was never measured and is false. A chip UID lives in block 0 of the
+        tag, which is read-only and written by the chip's manufacturer, so it names one
+        chip; and a chip is glued into one reel. On the reference machine twelve reels
+        carried twelve distinct chip UIDs — including three reels of the same product in
+        the same colour, which is precisely the case the batch story predicted would
+        collide (docs/12-field-notes.md).
+
+        What the old rule actually produced, every time, was a duplicate for the most
+        ordinary event there is: a reel moved from one tray to another. So a recognised chip
+        now means a recognised reel, and the reel is mounted where it was found.
+
+        A user who really wants two rows for one chip still gets them, by saying so in the
+        register form — `confirm_duplicate_tag`. What is gone is the automatic duplicate
+        nobody asked for.
+        """
         detection = self.detection(ledger)
         await detection.execute(a_full_reading(1))
 
         await detection.execute(a_full_reading(2))
 
-        summaries = await ledger.use_cases.queries.overview()
-        assert len(summaries) == 2
-        # The first reel stays where it was mounted; the second waits in storage.
-        assert {s.spool.location for s in summaries} == {AmsSlot(a_tray(1)), Storage()}
-        [event] = ledger.events.of(AmbiguousTagDetected)
-        assert event.tray == a_tray(2)
-        assert len(event.candidates) == 2
-        assert ledger.events.of(SpoolUnmounted) == []
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.location == AmsSlot(a_tray(2))
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+        assert ledger.events.of(AmbiguousTagDetected) == []
 
     async def test_a_replayed_reading_registers_nothing_twice(self, ledger: Ledger) -> None:
         """Startup replays every tray. The second pass finds the tag it registered on the
@@ -498,6 +532,7 @@ class TestAtomicityOfDetection:
             spools=UnsavableSpools(SqliteSpoolRepository(ledger.database), fail_after=1),
             events=ledger.events,
             uow=ledger.database,
+            clock=ledger.clock,
             auto_mount=True,
             register_spool=ledger.use_cases.register_spool,
             default_opening_weight=Grams.of(1000),
@@ -526,6 +561,15 @@ class UnsavableSpools:
     async def find_by_tag(self, tag: TagUid) -> list[Spool]:
         return await self.inner.find_by_tag(tag)
 
+    async def find_by_reel(self, reel: ReelUid) -> list[Spool]:
+        return await self.inner.find_by_reel(reel)
+
+    async def claim_tag(self, spool_id: SpoolId, tag: TagUid) -> None:
+        # Passed through rather than counted against `fail_after`: the injected crash this
+        # double exists to stage is the one *between the two location writes*, and a chip
+        # index that failed alongside it would blur which write the assertions are about.
+        await self.inner.claim_tag(spool_id, tag)
+
     async def find_by_location(self, location: Location) -> Spool | None:
         return await self.inner.find_by_location(location)
 
@@ -538,3 +582,305 @@ class UnsavableSpools:
             raise RuntimeError(msg)
         self.fail_after -= 1
         await self.inner.save(spool)
+
+
+class TestAReelIsNotItsChip:
+    """docs/12-field-notes.md — the defect this release exists to end.
+
+    A Bambu reel's RFID is readable from either side of its hub, and the AMS has two reader
+    boards serving four trays: slots 1 and 3 reach one chip, slots 2 and 4 the other. So a
+    reel that changes tray across that boundary reports a **different `tag_uid`** while
+    remaining the same reel — and a ledger that recognised reels by chip therefore met a
+    stranger every time a reel moved, opened it a second balance, and split its history.
+
+    `tray_uuid` was in every one of those readings and nothing read it. It names the reel,
+    it does not move, and it is what recognition leads with now.
+    """
+
+    def detection(self, ledger: Ledger, *, auto_register: bool = True) -> DetectSpool:
+        return DetectSpool(
+            spools=SqliteSpoolRepository(ledger.database),
+            events=ledger.events,
+            uow=ledger.database,
+            clock=ledger.clock,
+            auto_mount=True,
+            register_spool=ledger.use_cases.register_spool,
+            default_opening_weight=Grams.of(1000),
+            default_core_weight=Grams.of(250),
+            auto_register=auto_register,
+        )
+
+    async def test_the_same_reel_read_from_its_other_side_is_not_a_new_spool(
+        self, ledger: Ledger
+    ) -> None:
+        """**The regression.** Tray 3 reads one chip, tray 4 reads the other, and it is one
+        reel: it moves, it does not multiply. Before v2.6 this produced two rows, two
+        opening balances of 1 kg and an `AmbiguousTagDetected` the user had to clean up by
+        hand."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.location == AmsSlot(a_tray(4))
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+        assert ledger.events.of(AmbiguousTagDetected) == []
+        assert ledger.events.of(UnknownSpoolDetected) == []
+
+    async def test_the_reel_is_recognised_by_either_side_once_both_are_known(
+        self, ledger: Ledger
+    ) -> None:
+        """Having met both sides, the reel resolves by either chip — which is what carries
+        a reading whose identity is missing but whose chip is not."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        # No reel id this time: only the chip the even side carries.
+        await detection.execute(a_full_reading(2, tag=TAG_EVEN_SIDE))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.location == AmsSlot(a_tray(2))
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+
+    async def test_a_row_that_predates_the_reel_id_learns_which_reel_it_is(
+        self, ledger: Ledger
+    ) -> None:
+        """The healing path, and the reason no migration had to guess. A row registered
+        before v2.6 stored the chip and threw the reel away; the first reading that names
+        both adopts the reel onto the row the chip already resolves to."""
+        legacy = await a_spool(ledger, tag_uid=TAG_ODD_SIDE)
+        assert (await located(ledger, legacy)).reel_uid is None
+
+        await self.detection(ledger).execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        assert (await located(ledger, legacy)).reel_uid == REEL
+        assert len(await ledger.use_cases.queries.overview()) == 1
+
+    async def test_a_healed_legacy_row_then_survives_the_side_change(self, ledger: Ledger) -> None:
+        """The whole point of healing: the pre-v2.6 row is now protected by the same rule a
+        row born today is, so the move that used to split it no longer can."""
+        legacy = await a_spool(ledger, tag_uid=TAG_ODD_SIDE)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        summaries = await ledger.use_cases.queries.overview()
+        assert len(summaries) == 1
+        assert (await located(ledger, legacy)).location == AmsSlot(a_tray(4))
+        assert ledger.events.of(AmbiguousTagDetected) == []
+
+    async def test_two_genuinely_different_reels_still_register_separately(
+        self, ledger: Ledger
+    ) -> None:
+        """The correction must not overshoot: recognising a moved reel is not the same as
+        merging two reels. Different identity, different chip — two rows, as it should be."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=OTHER_TAG, reel=OTHER_REEL))
+
+        summaries = await ledger.use_cases.queries.overview()
+        assert len(summaries) == 2
+        assert {s.spool.reel_uid for s in summaries} == {REEL, OTHER_REEL}
+
+    async def test_a_reel_that_reports_no_identity_keeps_the_chip_rule(
+        self, ledger: Ledger
+    ) -> None:
+        """Third-party and refilled reels report no `tray_uuid`, so the chip is all there
+        is and the pre-v2.6 rule stands for them — unchanged, and knowingly weaker."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3))
+
+        await detection.execute(a_full_reading(3))
+
+        assert len(await ledger.use_cases.queries.overview()) == 1
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+
+    async def test_a_row_already_speaking_for_one_reel_is_never_re_pointed(
+        self, ledger: Ledger
+    ) -> None:
+        """A chip resolving to a spool that claims another reel is a contradiction — two
+        reels sharing a chip UID, or a hub moved between reels. Overwriting would hide it,
+        so the reading is treated as a reel we do not know and registers instead."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        # The same chip, now claiming to belong to a different reel.
+        await detection.execute(a_full_reading(4, tag=TAG_ODD_SIDE, reel=OTHER_REEL))
+
+        summaries = await ledger.use_cases.queries.overview()
+        assert len(summaries) == 2
+        assert {s.spool.reel_uid for s in summaries} == {REEL, OTHER_REEL}
+
+    async def test_a_replayed_reading_of_a_known_reel_writes_nothing(self, ledger: Ledger) -> None:
+        """Startup replays every tray, and every republish re-observes the same chip. The
+        second pass must confirm and stay silent."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        assert len(await ledger.use_cases.queries.overview()) == 1
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+        assert len(ledger.events.of(SpoolMounted)) == 1
+
+    async def test_the_reel_is_recognised_after_a_spell_in_storage(self, ledger: Ledger) -> None:
+        """The reported symptom, in miniature: take the reel out, put it back later in a
+        tray of the other parity. It comes home to its row."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+        await detection.execute(an_empty_tray(3))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.location == AmsSlot(a_tray(4))
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+
+
+class TestThePhantomIsRetiredNotMerged:
+    """What happens to a ledger that already holds the pair the old rule minted.
+
+    The two rows are not stitched together. A merge would have to rule on two opening
+    balances and two half-histories, and every rule for that is one the ledger invents on
+    the user's behalf about grams it cannot weigh. So the newer row — the phantom, which by
+    construction could only have been born when the reel first crossed into a tray of the
+    other parity — goes to the Trash with its history intact and a sentence saying why, and
+    the user puts it back in one click if this release got it wrong.
+    """
+
+    def detection(self, ledger: Ledger, *, language: str = "en") -> DetectSpool:
+        return DetectSpool(
+            spools=SqliteSpoolRepository(ledger.database),
+            events=ledger.events,
+            uow=ledger.database,
+            clock=ledger.clock,
+            auto_mount=True,
+            register_spool=ledger.use_cases.register_spool,
+            default_opening_weight=Grams.of(1000),
+            default_core_weight=Grams.of(250),
+            auto_register=True,
+            language=language,
+        )
+
+    async def a_split_pair(self, ledger: Ledger) -> tuple[SpoolId, SpoolId]:
+        """The exact shape a pre-v2.6 ledger arrives in: one reel, two rows, one per side.
+
+        Built through the *old* path deliberately — two separate registrations, neither
+        knowing a reel — because a pair assembled any other way would only prove the test
+        agrees with itself.
+        """
+        older = await a_spool(ledger, label="the real one", tag_uid=TAG_ODD_SIDE)
+        newer = await a_spool(ledger, label="the phantom", tag_uid=TAG_EVEN_SIDE)
+        return older, newer
+
+    async def test_the_newer_row_goes_to_the_trash_and_the_older_survives(
+        self, ledger: Ledger
+    ) -> None:
+        """Age decides, and nothing else does — not the balance, not which row is mounted."""
+        older, newer = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+
+        # Odd side first: the older row learns the reel.
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+        # Even side: the phantom is recognised as the same reel.
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        survivors = await ledger.use_cases.queries.overview()
+        assert [s.spool.id for s in survivors] == [older]
+        retired = await ledger.use_cases.queries.detail(newer)
+        assert retired.summary.spool.is_deleted
+
+    async def test_the_retired_row_says_why_and_names_the_survivor(self, ledger: Ledger) -> None:
+        """A deletion nobody asked for is only defensible if the person it happened to can
+        read what happened and undo it."""
+        _, newer = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        reason = (await ledger.use_cases.queries.detail(newer)).summary.spool.deleted_reason
+        assert reason is not None
+        assert "the real one" in reason, "the surviving row is named so the user can check"
+        assert "Trash" in reason, "the undo is stated out loud"
+
+    async def test_the_reason_speaks_the_instances_language(self, ledger: Ledger) -> None:
+        """Stored data, written once, in the language the household spoke — the same rule
+        the auto-registered label follows."""
+        _, newer = await self.a_split_pair(ledger)
+        detection = self.detection(ledger, language="es")
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        reason = (await ledger.use_cases.queries.detail(newer)).summary.spool.deleted_reason
+        assert reason is not None
+        assert "Papelera" in reason
+
+    async def test_the_retirement_is_announced(self, ledger: Ledger) -> None:
+        """Same event a user-driven deletion raises, so an automation that notifies on
+        `SpoolDeleted` covers this too — the whole point of not inventing a second event."""
+        _, newer = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        [event] = ledger.events.of(SpoolDeleted)
+        assert isinstance(event, SpoolDeleted)
+        assert event.spool_id == newer
+
+    async def test_the_user_can_put_it_back(self, ledger: Ledger) -> None:
+        """The reversibility that licenses doing this unasked. Restoring also clears the
+        caption: the row is in inventory on the user's own say-so now."""
+        _, newer = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        await ledger.use_cases.restore_spool.execute(newer)
+
+        restored = (await ledger.use_cases.queries.detail(newer)).summary.spool
+        assert not restored.is_deleted
+        assert restored.deleted_reason is None
+
+    async def test_its_history_survives_the_retirement(self, ledger: Ledger) -> None:
+        """Deleted, not erased. The movements stay on the row so the user can read what was
+        charged to it before deciding whether to restore it."""
+        _, newer = await self.a_split_pair(ledger)
+        lines_before = len((await ledger.use_cases.queries.detail(newer)).lines)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        assert len((await ledger.use_cases.queries.detail(newer)).lines) == lines_before
+
+    async def test_a_row_speaking_for_another_reel_is_never_retired(self, ledger: Ledger) -> None:
+        """The one guard on a destructive automatic act: a row that names a *different*
+        reel is not this reel's phantom, whatever chip it answers to."""
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+        await detection.execute(a_full_reading(1, tag=OTHER_TAG, reel=OTHER_REEL))
+
+        # A reading of the first reel that happens to carry the other reel's chip.
+        await detection.execute(a_full_reading(4, tag=OTHER_TAG, reel=REEL))
+
+        surviving = {s.spool.reel_uid for s in await ledger.use_cases.queries.overview()}
+        assert OTHER_REEL in surviving, "the other reel's row was retired on a guess"
+
+    async def test_running_twice_retires_nothing_further(self, ledger: Ledger) -> None:
+        """Startup replays every tray. The second pass finds one row and must leave it."""
+        older, _ = await self.a_split_pair(ledger)
+        detection = self.detection(ledger)
+        await detection.execute(a_full_reading(3, tag=TAG_ODD_SIDE, reel=REEL))
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        await detection.execute(a_full_reading(4, tag=TAG_EVEN_SIDE, reel=REEL))
+
+        assert [s.spool.id for s in await ledger.use_cases.queries.overview()] == [older]
+        assert len(ledger.events.of(SpoolDeleted)) == 1
