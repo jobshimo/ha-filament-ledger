@@ -177,4 +177,43 @@ def _refuse_negative_usage(usage: dict[TrayRef, Grams] | None) -> None:
             raise InvalidValueError(msg)
 
 
-PrintEvent = PrintStarted | PrintEnded
+@dataclass(frozen=True, slots=True)
+class PrintPlanObserved:
+    """The machine published per-tray figures while a job was running.
+
+    **The moment between the two the port used to know about**, and it exists because the
+    figures were being received, held, and then lost. A Bambu gateway cannot report the
+    plan at the start — the weight sensor republishes about three-quarters of a minute
+    later, so anything standing on it then belongs to the print before — so it followed the
+    sensor through the job and reported on the ending instead. That works right up until
+    there is no ending: a connection that goes quiet across a finish leaves the row open,
+    and the plan the gateway was holding in memory dies with the process or is overwritten
+    by the next print. The ledger then has a job it knows ran and no idea what it drew,
+    which is the emptiest a review card can be.
+
+    Reported as an observation rather than folded into the start for the reason the start's
+    own docstring gives: *when* the figures describe this job is knowledge only the adapter
+    has. Every delivery is a reading that spoke the per-tray dialect — a shape without tray
+    keys is silence and never reaches here — so a later one supersedes an earlier one and
+    none of them can mean *nothing was consumed*.
+
+    `name` rides along because it suffers the same lag from the same cause: the file sensor
+    is republished after the start, so a row opened at the first `prepare` carries the
+    previous print's filename until something refreshes it. `None` leaves the stored name
+    alone.
+    """
+
+    printer: PrinterSerial
+    plan: dict[TrayRef, Grams]
+    name: str | None = None
+
+    def __post_init__(self) -> None:
+        # An observation of nothing is the silence this event exists to be distinguished
+        # from. The adapter drops those before they get here; this is the backstop that
+        # keeps an empty mapping from being written over a real plan.
+        if not self.plan:
+            msg = "a plan observation carries at least one tray; silence is not an event"
+            raise InvalidValueError(msg)
+
+
+PrintEvent = PrintStarted | PrintEnded | PrintPlanObserved
