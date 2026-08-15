@@ -398,3 +398,49 @@ answer to *is this machine printing*; `print_status` speaks `gcode_state`'s coar
 They go unavailable at different moments, so both are watched and either is enough.
 `subtask_name` gives the job name without the `NNNNNN-` prefix, and parks on the literal
 `unknown` between prints — which a reader must refuse rather than pass through.
+
+## 2026-08-15 — `start_time` is stale for the first minute of every print
+
+The identity the entry above trusts is **wrong at exactly the moment the inferred start
+reads it**. At the instant the stage sensor turns to `printing`, `start_time` has not been
+republished yet and still names the print *before*. It corrects itself within a minute — but
+the first row of every job was already opened carrying the stale figure.
+
+Read off the reference ledger, six consecutive prints. Each row's stored
+`printer_started_at` is the previous print's, exactly:
+
+| Row opened (ledger) | `printer_started_at` stored | Belongs to |
+| --- | --- | --- |
+| 08-14 21:14:58 | 08-14 15:51:13 | the print before |
+| 08-14 21:46:35 | 08-14 21:15:02 | the print before |
+| 08-14 22:43:48 | 08-14 21:46:44 | the print before |
+| 08-15 01:39:42 | 08-14 22:43:58 | the print before |
+| 08-15 09:22:41 | 08-15 01:40:06 | the print before |
+| 08-15 17:26:04 | 08-15 14:43:00 | the print before |
+
+The announced start follows 16–56 s later with the corrected value. `_same_print` compared
+the two, found *hours* of disagreement, and answered "a different print" — so every print
+opened a second row, and v2.6's orphan detection sent the first one to the review queue
+carrying the very grams the surviving row went on to deduct automatically.
+
+**The two populations do not overlap.** Age of the open row at the moment the queue was
+told, across all twelve `UNCLASSIFIED` reviews this instance has ever opened:
+
+```
+16.4  22.5  25.6  32.6  43.6  49.6  52.3  55.9   seconds   ← corrections, all false
+17475  (4 h 51 m)                                          ← the one genuine loss
+```
+
+Two orders of magnitude, so the row's own age is the discriminator and five minutes sits
+between them with 5x and 58x of margin. Widening `JOB_IDENTITY_TOLERANCE` would have had to
+reach past four hours and would have blinded the detection that found the real one.
+
+**One review in twelve was true.** Three of the false ones were repeats: a phantom row stays
+`RUNNING`, so it keeps answering `_running_job`, and every later print re-detects it and
+queues it again — the unique index only blocks a second *pending* card, so resolving one
+brings it back on the next print.
+
+**The correction is adopted, not only tolerated.** A row left holding the stale value reports
+`printer_ended_at - printer_started_at` as the machine's elapsed time, and a five-hour print
+would read as ten. Only a *later* reading is taken: a stale value names an earlier print and
+upstream's truncation rounds down, so corrections only ever move forward.
