@@ -62,9 +62,19 @@ async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
 
 
 def started(
-    plan: dict[TrayRef, Grams] | None = None, *, printer: PrinterSerial = A_PRINTER
+    plan: dict[TrayRef, Grams] | None = None,
+    *,
+    printer: PrinterSerial = A_PRINTER,
+    printer_started_at: datetime | None = None,
+    derived: bool = False,
 ) -> PrintStarted:
-    return PrintStarted(name="bracket_v3.gcode.3mf", printer=printer, plan=plan)
+    return PrintStarted(
+        name="bracket_v3.gcode.3mf",
+        printer=printer,
+        plan=plan,
+        printer_started_at=printer_started_at,
+        derived=derived,
+    )
 
 
 def ended(
@@ -780,6 +790,124 @@ class TestAPrintNobodySawEndGoesToTheQueue:
 
         reasons = [r.reason for r in await SqliteReviewRepository(ledger.database).list_pending()]
         assert ReviewReason.UNCLASSIFIED not in reasons
+
+
+A_PREVIOUS_PRINT = datetime(2026, 8, 14, 15, 51, 13, tzinfo=UTC)
+THIS_PRINT = datetime(2026, 8, 14, 21, 15, 2, tzinfo=UTC)
+
+
+class TestTheStartTimeThatIsStaleForTheFirstMinute:
+    """v2.6.1's duplicate-row bug, pinned from the production data that exposed it.
+
+    The two timestamps above are verbatim from the reference ledger. At the instant the
+    stage sensor turns, `start_time` still holds the value of the print *before* — so the
+    inferred start opened a row stamped 15:51:13 for a print that began at 21:15:02, the
+    announced start arrived 25.6 s later carrying the corrected figure, and `_same_print`
+    read five and a half hours of disagreement as *a different print*. Every print
+    therefore left one row behind, and every one of those rows went to the review queue
+    carrying exactly the grams the surviving row had already deducted.
+
+    Twelve `UNCLASSIFIED` reviews on the reference instance, eleven of them false.
+    """
+
+    async def test_the_corrected_start_time_does_not_open_a_second_row(
+        self, ledger: Ledger
+    ) -> None:
+        await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=A_PREVIOUS_PRINT, derived=True)
+        )
+        ledger.clock.advance(seconds=26)
+
+        second = await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=THIS_PRINT)
+        )
+
+        assert second is None, "the announcement describes the print already being tracked"
+        assert len(await stored_jobs(ledger)) == 1
+
+    async def test_nothing_reaches_the_queue_for_a_print_being_tracked(
+        self, ledger: Ledger
+    ) -> None:
+        """The symptom the user reported: cards for prints that were already deducted."""
+        await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=A_PREVIOUS_PRINT, derived=True)
+        )
+        ledger.clock.advance(seconds=26)
+
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=THIS_PRINT))
+
+        reasons = [r.reason for r in await SqliteReviewRepository(ledger.database).list_pending()]
+        assert ReviewReason.UNCLASSIFIED not in reasons
+
+    async def test_the_row_adopts_the_corrected_start_time(self, ledger: Ledger) -> None:
+        """Suppressing the second row is only half of it. Left alone, the survivor keeps a
+        figure wrong by a whole job — and that figure is the machine's own elapsed time."""
+        await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=A_PREVIOUS_PRINT, derived=True)
+        )
+        ledger.clock.advance(seconds=26)
+
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=THIS_PRINT))
+
+        [job] = await stored_jobs(ledger)
+        assert job.printer_started_at == THIS_PRINT
+
+    async def test_a_stale_reading_never_moves_the_recorded_start_backwards(
+        self, ledger: Ledger
+    ) -> None:
+        """Corrections only ever move forward — a stale value names an earlier print and
+        upstream's truncation rounds down. So whichever signal speaks last does not win;
+        the later reading does."""
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=THIS_PRINT))
+        ledger.clock.advance(seconds=26)
+
+        await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=A_PREVIOUS_PRINT, derived=True)
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.printer_started_at == THIS_PRINT
+
+    async def test_a_print_that_really_went_unobserved_still_reaches_the_queue(
+        self, ledger: Ledger
+    ) -> None:
+        """The safety net this fix must not cost, asserted with the same disagreeing
+        timestamps that the correction case uses.
+
+        Only the row's age differs — and that is the whole point. The one print the
+        reference instance genuinely lost had been open 4 h 51 m when the next start found
+        it; the slowest correction took 55.9 s. Two orders of magnitude apart, and the
+        window sits between them.
+        """
+        await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=A_PREVIOUS_PRINT, derived=True)
+        )
+        orphan = (await stored_jobs(ledger))[0].id
+        ledger.clock.advance(hours=4, minutes=51)
+
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=THIS_PRINT))
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.job_id == orphan
+        assert review.reason is ReviewReason.UNCLASSIFIED
+        assert len(await stored_jobs(ledger)) == 2, "the live print still gets its own row"
+
+    async def test_the_window_is_the_row_age_and_not_the_timestamp_gap(
+        self, ledger: Ledger
+    ) -> None:
+        """Just past the window the answer flips, and it flips on the ledger's own clock —
+        the two `start_time` readings are the same pair as the passing case above."""
+        await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=A_PREVIOUS_PRINT, derived=True)
+        )
+        ledger.clock.advance(minutes=5, seconds=1)
+
+        second = await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=THIS_PRINT)
+        )
+
+        assert second is not None
+        assert len(await stored_jobs(ledger)) == 2
 
 
 def plan_observed(
