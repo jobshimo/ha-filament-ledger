@@ -88,6 +88,25 @@ DUPLICATE_ENDING_WINDOW = timedelta(minutes=5)
 # between two prints of the same plate, which is the collision this has to stay clear of.
 JOB_IDENTITY_TOLERANCE = timedelta(minutes=5)
 
+# How young **this ledger's own open row** must be for two disagreeing `start_time` readings
+# to be read as *one print correcting itself* rather than as two prints.
+#
+# The tolerance above assumes the disagreement is small. It is not always: at the instant an
+# inferred start fires — the stage sensor reaching `printing` — `start_time` has not been
+# republished yet and still holds **the previous print's** value, so the first row of every
+# print was opened carrying a figure hours stale. The announced start arrives seconds later
+# with the corrected one, the two are hours apart, and a comparison that stops at the
+# tolerance calls one print two (docs/12-field-notes.md, 2026-08-15).
+#
+# So the row's own age decides it, and the two populations do not overlap anywhere near this
+# line. Measured across every orphan this machine has ever detected: the slowest correction
+# took **55.9 s**, and the one print that genuinely ended unobserved had been open **4 h
+# 51 m**. Five minutes is 5x the worst correction and a 58th of the shortest real loss —
+# and it is deliberately the same five minutes `SIMULTANEOUS_START_WINDOW` spends on the
+# other half of this question, because widening `JOB_IDENTITY_TOLERANCE` instead would have
+# to reach past four hours and would blind the ledger to exactly the loss it exists to catch.
+START_TIME_CORRECTION_WINDOW = timedelta(minutes=5)
+
 # How recently this machine's open row must have been created for an **announced** start
 # that carries no printer timestamp to be read as *the same print, arriving twice* rather
 # than as a new job.
@@ -160,7 +179,10 @@ class TrackPrintJob:
 
         The identity is the machine's own `start_time` — not the level, not the name — and
         `_same_print` says what happens when it is missing, which is where the announced and
-        the inferred start finally part company.
+        the inferred start finally part company. **It also says what happens when it is
+        stale**, which is every print's first minute and was v2.6.1's duplicate-row bug;
+        a start that matches an open row hands its corrected reading to `_adopt_start_time`
+        rather than opening a second row and sending the first to the review queue.
 
         **A stale row is left standing rather than closed here.** When the printer is
         plainly running a print the open row does not describe, that row belongs to a job
@@ -187,6 +209,7 @@ class TrackPrintJob:
                 open_job.name,
                 "inferred" if event.derived else "announced",
             )
+            await self._adopt_start_time(open_job, event)
             return None
         if open_job is not None:
             LOGGER.warning(
@@ -210,6 +233,43 @@ class TrackPrintJob:
         async with self.uow:
             await self.jobs.save(job)
         return job.id
+
+    async def _adopt_start_time(self, job: PrintJob, event: PrintStarted) -> None:
+        """Write the machine's corrected `start_time` onto the row that is already tracking
+        this print.
+
+        Suppressing the duplicate row is only half the repair. The row that survives was
+        opened at the moment the stage sensor turned, and at that moment `start_time` still
+        named the print *before* — so leaving it there keeps a figure that is wrong by a
+        whole job, and `printer_ended_at - printer_started_at` is documented as the machine's
+        own elapsed time to the second. A five-hour print reported as ten hours is the same
+        stale reading wearing a duration.
+
+        **Corrections only ever move forward, so only a later reading is adopted.** A stale
+        value names an earlier print and the truncation upstream publishes rounds *down* to
+        the minute — both are in the past of the true one (docs/12-field-notes.md, 2026-08-11
+        and 2026-08-15). Refusing to move the figure backwards therefore costs nothing real
+        and makes the rule statable: the machine's answer to *when did this begin* may be
+        corrected, never rewritten by whichever signal spoke last.
+
+        One small write, and only when the value actually changes — the same restraint
+        `_plan_observed` shows, for the same reason.
+        """
+        if event.printer_started_at is None:
+            return
+        if (
+            job.printer_started_at is not None
+            and event.printer_started_at <= job.printer_started_at
+        ):
+            return
+        LOGGER.debug(
+            "job %s adopts the corrected start time %s (was %s)",
+            job.id,
+            event.printer_started_at,
+            job.printer_started_at,
+        )
+        async with self.uow:
+            await self.jobs.save(replace(job, printer_started_at=event.printer_started_at))
 
     async def _plan_observed(self, event: PrintPlanObserved) -> PrintJobId | None:
         """Write the figures onto the running row while the job is still running.
@@ -544,11 +604,24 @@ def _same_print(job: PrintJob, event: PrintStarted, now: datetime) -> bool:
       `SIMULTANEOUS_START_WINDOW` is that race, and the eight minutes between upstream's two
       announcements for one job on 2026-08-08 is what it must stay clear of.
 
+    **Two timestamps that disagree do not settle it either, and v2.6.1 believed they did.**
+    They agree on a healthy print, and when they do the answer is yes and nothing else is
+    consulted. When they disagree the reading itself is the suspect: `start_time` is stale
+    for the first moments of a print — it still names the print before — so the very first
+    row of every job disagreed with the announcement that followed seconds later, was
+    declared a different print, and went to the review queue already deducted. Twelve
+    reviews on the reference instance, eleven of them false (docs/12-field-notes.md,
+    2026-08-15). So a disagreement falls through to the row's own age, which is the
+    measurement that separates the two populations by two orders of magnitude, and
+    `START_TIME_CORRECTION_WINDOW` carries the numbers.
+
     Under-claiming is the standing policy at this boundary; double-charging is the one
     failure this module exists to prevent.
     """
     if job.printer_started_at is not None and event.printer_started_at is not None:
-        return abs(job.printer_started_at - event.printer_started_at) <= JOB_IDENTITY_TOLERANCE
+        if abs(job.printer_started_at - event.printer_started_at) <= JOB_IDENTITY_TOLERANCE:
+            return True
+        return now - job.started_at <= START_TIME_CORRECTION_WINDOW
     if event.derived:
         return True
     return now - job.started_at <= SIMULTANEOUS_START_WINDOW
