@@ -218,6 +218,10 @@ const EN = {
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Slot [[slot]]",
   "ams.empty": "Empty",
+  // A tray the machine reports occupied by a reel with no readable chip — third-party
+  // filament. The ledger cannot identify it on its own; the Mount button beside it is
+  // how the user says which spool it is.
+  "ams.chipless": "Holding a spool with no chip",
   "ams.note":
     "No printer is connected yet. Slots are assigned by hand — mounting records no " +
     "movement, because moving a spool consumes no filament.",
@@ -253,6 +257,11 @@ const EN = {
   "history.deleted": "deleted",
   "history.reassignTitle": "Move this charge to another spool",
   "history.voidTitle": "Delete this entry and return the grams",
+  // The caption over one print's gathered rows. The name on it is data, escaped at the
+  // call site; these two are the count beside it and the fallback for a print whose job
+  // row can no longer say what it was called.
+  "history.groupEntries": "[[count]] entries",
+  "history.groupUnnamed": "Unnamed print",
 
   // -- the History filter row (docs/06 §6.6) -----------------------------------------
   // Each label says what its control actually narrows, because a control that promises
@@ -825,6 +834,7 @@ const ES = {
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Bandeja [[slot]]",
   "ams.empty": "Vacía",
+  "ams.chipless": "Hay una bobina sin chip",
   "ams.note":
     "Todavía no hay impresora conectada. Las bandejas se asignan a mano: montar no " +
     "registra ningún movimiento, porque mover una bobina no consume filamento.",
@@ -858,6 +868,8 @@ const ES = {
   "history.deleted": "eliminada",
   "history.reassignTitle": "Mover este cargo a otra bobina",
   "history.voidTitle": "Eliminar esta entrada y devolver los gramos",
+  "history.groupEntries": "[[count]] entradas",
+  "history.groupUnnamed": "Impresión sin nombre",
 
   // -- la fila de filtros del historial (docs/06 §6.6) -------------------------------
   "history.filterSearch": "Nota o impresión",
