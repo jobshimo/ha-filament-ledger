@@ -218,6 +218,10 @@ const EN = {
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Slot [[slot]]",
   "ams.empty": "Empty",
+  // A tray the machine reports occupied by a reel with no readable chip — third-party
+  // filament. The ledger cannot identify it on its own; the Mount button beside it is
+  // how the user says which spool it is.
+  "ams.chipless": "Holding a spool with no chip",
   "ams.note":
     "No printer is connected yet. Slots are assigned by hand — mounting records no " +
     "movement, because moving a spool consumes no filament.",
@@ -825,6 +829,7 @@ const ES = {
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Bandeja [[slot]]",
   "ams.empty": "Vacía",
+  "ams.chipless": "Hay una bobina sin chip",
   "ams.note":
     "Todavía no hay impresora conectada. Las bandejas se asignan a mano: montar no " +
     "registra ningún movimiento, porque mover una bobina no consume filamento.",
