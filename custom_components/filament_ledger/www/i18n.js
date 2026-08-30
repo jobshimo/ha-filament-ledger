@@ -253,6 +253,11 @@ const EN = {
   "history.deleted": "deleted",
   "history.reassignTitle": "Move this charge to another spool",
   "history.voidTitle": "Delete this entry and return the grams",
+  // The caption over one print's gathered rows. The name on it is data, escaped at the
+  // call site; these two are the count beside it and the fallback for a print whose job
+  // row can no longer say what it was called.
+  "history.groupEntries": "[[count]] entries",
+  "history.groupUnnamed": "Unnamed print",
 
   // -- the History filter row (docs/06 §6.6) -----------------------------------------
   // Each label says what its control actually narrows, because a control that promises
@@ -858,6 +863,8 @@ const ES = {
   "history.deleted": "eliminada",
   "history.reassignTitle": "Mover este cargo a otra bobina",
   "history.voidTitle": "Eliminar esta entrada y devolver los gramos",
+  "history.groupEntries": "[[count]] entradas",
+  "history.groupUnnamed": "Impresión sin nombre",
 
   // -- la fila de filtros del historial (docs/06 §6.6) -------------------------------
   "history.filterSearch": "Nota o impresión",

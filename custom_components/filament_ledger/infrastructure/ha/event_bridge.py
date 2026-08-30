@@ -11,6 +11,7 @@ from typing import Any, Final
 
 from homeassistant.core import HomeAssistant
 
+from ...application.query import display_job_name
 from ...const import EVENT_PREFIX
 from ...domain.event import (
     AmbiguousTagDetected,
@@ -147,10 +148,13 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
                 "detail": anomaly.detail,
             }
         case ReviewOpened(review_id, job_id, job_name, reason):
+            # `job_display_name` is the readable form a notification can lead with —
+            # the raw name stays, because it is the identity automations may match on.
             return event_name("review_opened"), {
                 "review_id": review_id,
                 "job_id": job_id,
                 "job_name": job_name,
+                "job_display_name": display_job_name(job_name),
                 "reason": reason.value,
             }
         case ReviewResolved(review_id, job_id, state):

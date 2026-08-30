@@ -9,6 +9,7 @@ immutability is overhead with no payoff.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -902,6 +903,31 @@ def _descending[K](totals: dict[K, Grams]) -> list[tuple[K, Grams]]:
     """Biggest first. Ties break on insertion order, which is the order the ledger was
     read in — stable across calls, and never arbitrary."""
     return sorted(totals.items(), key=lambda item: -item[1].milligrams)
+
+
+# The two machine artefacts a reported job name carries (docs/05 §5.8): the cloud task id
+# the downloaded-file sensor prefixes — digits, a dash, and only when a name actually
+# follows, so a name that *is* `1234-` keeps itself — and one trailing slicer extension.
+# One, deliberately: `vase.gcode.3mf` names a file whose inner form is still a name.
+_JOB_NAME_ID_PREFIX = re.compile(r"^\d+-(?=\S)")
+_JOB_NAME_EXTENSION = re.compile(r"\.(?:gcode|3mf)$", re.IGNORECASE)
+
+
+def display_job_name(name: str) -> str:
+    """How a print's name reads to a human — derived at the edge, never stored.
+
+    The raw name is an **identity**: `TrackPrintJob` correlates an ending to its start by
+    it, and the free-text history filter matches against it as stored, so the ledger keeps
+    it byte-for-byte as the printer reported. But the reported form is a machine's —
+    `2429842-Royal Crest.gcode` leads with a cloud task id and trails a file extension no
+    reader asked for. This strips exactly those two artefacts and nothing else.
+
+    A name the stripping would reduce to nothing comes back verbatim — `123-.gcode` shown
+    raw is odd, shown blank it is a rendering bug — and the gateway's `unknown print`
+    sentinel carries neither artefact, so it passes through untouched by construction.
+    """
+    cleaned = _JOB_NAME_EXTENSION.sub("", _JOB_NAME_ID_PREFIX.sub("", name))
+    return cleaned if cleaned.strip() else name
 
 
 def movement_label(movement: Movement) -> str:

@@ -971,6 +971,9 @@ class TestReviewsList:
             "id": review_id,
             "job_id": "job-1",
             "job_name": "bracket_v3.gcode.3mf",
+            # The reader's form of the same name: the trailing `.3mf` is the file's
+            # business, and one strip never eats further than the last extension.
+            "job_display_name": "bracket_v3.gcode",
             "job_state": "CANCELLED",
             "reason": "CANCELLED",
             "estimator": "LINEAR_PROGRESS",
@@ -1262,7 +1265,9 @@ class TestMovements:
                 "direction": "DECREASE",
                 "voided": False,
                 "source": "USER_CONFIRMED",
+                "job_id": None,
                 "job_name": None,
+                "job_display_name": None,
                 "review_id": None,
                 "note": "lamp shade",
             },
@@ -1278,7 +1283,9 @@ class TestMovements:
                 "direction": "INCREASE",
                 "voided": False,
                 "source": "USER_CONFIRMED",
+                "job_id": None,
                 "job_name": None,
+                "job_display_name": None,
                 "review_id": None,
                 "note": "Registered",
             },
@@ -1310,7 +1317,9 @@ class TestMovements:
             "direction": "DECREASE",
             "voided": False,
             "source": "USER_CONFIRMED",
+            "job_id": "job-1",
             "job_name": "bracket_v3.gcode.3mf",
+            "job_display_name": "bracket_v3.gcode",
             "review_id": review_id,
             "note": "Slot 1 of a reviewed print",
         }
@@ -1478,6 +1487,7 @@ class TestStatistics:
                 {
                     "job_id": "job-vase",
                     "name": "vase_final.gcode.3mf",
+                    "display_name": "vase_final.gcode",
                     "started_at": EPOCH.isoformat(),
                     "grams": 84,
                 }
