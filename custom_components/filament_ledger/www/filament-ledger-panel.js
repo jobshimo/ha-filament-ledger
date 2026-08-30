@@ -837,7 +837,10 @@ class FilamentLedgerPanel extends HTMLElement {
         this._detail = null;
         this._sync = null;
         // Exactly one command per opening, and none at all for the other tabs: neither
-        // surface rides the general refresh, and no timer exists (docs/14 §14.5).
+        // surface rides the general refresh, and no timer exists (docs/14 §14.5). The
+        // AMS tab takes the same printer snapshot — without the loading flag, because
+        // its cards render from the ledger and the snapshot only sharpens their words
+        // (see _trayStatus).
         if (id === "printer") this._printerLoading = true;
         if (id === "finished") this._finishedLoading = true;
         if (id === "stats") this._statsLoading = true;
@@ -847,7 +850,7 @@ class FilamentLedgerPanel extends HTMLElement {
           this._settingsSaved = false;
         }
         this.render();
-        if (id === "printer") this._loadPrinter();
+        if (id === "printer" || id === "ams") this._loadPrinter();
         if (id === "finished") this._loadFinished();
         if (id === "stats") this._loadStats();
         if (id === "settings") this._loadSettings();
@@ -1062,7 +1065,7 @@ class FilamentLedgerPanel extends HTMLElement {
   /**
    * One printer glance (docs/14 §14.5).
    *
-   * Called from exactly two places — opening the tab and pressing Refresh — so the count
+   * Called on opening the Printer or AMS tab and on pressing Refresh — so the count
    * of calls is the count of the user's own requests. Reading writes nothing, which is
    * why this deliberately does not go through `guarded`: there is no ledger change for a
    * `refresh()` to pick up.
@@ -2148,6 +2151,23 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
+   * What the printer itself reports for one tray, read off the last printer snapshot.
+   *
+   * The AMS view draws from the ledger, so a tray holding a spool the ledger cannot
+   * identify — a chipless third-party reel — would render as plain "Empty" even though
+   * the machine is holding it. This lookup lets that card say what is actually there.
+   * Null when no snapshot has been taken yet or the tray was not reported: the view
+   * renders exactly as before, because an honest extra word must never become a
+   * dependency.
+   */
+  _trayStatus(printer, slot) {
+    const machines = this._printer?.machines ?? [];
+    const machine =
+      printer === null ? machines[0] : machines.find((m) => m.printer === printer);
+    return (machine?.trays ?? []).find((tray) => tray.slot === slot)?.status ?? null;
+  }
+
+  /**
    * One machine's four trays.
    *
    * `printer` is null only in the one-anonymous-space case above; the mount button then
@@ -2164,9 +2184,15 @@ class FilamentLedgerPanel extends HTMLElement {
     const slots = [1, 2, 3, 4].map((slot) => {
       const spool = this._spools.find((s) => here(s.location) && s.location.slot === slot);
       if (!spool) {
+        // "Empty" is the ledger's word, and for a tray holding a chipless reel it is the
+        // wrong one: the machine is plainly holding something the ledger cannot identify.
+        // The printer snapshot says so, and the card repeats it — the same [ Mount ]
+        // button then does for a third-party reel what the chip does for a Bambu one,
+        // because consumption already charges by location, not by tag.
+        const chipless = this._trayStatus(printer, slot) === "NO_TAG";
         return `<div class="card tray empty-tray">
           <div class="n">${t("ams.slot", { slot })}</div>
-          <div class="muted">${t("ams.empty")}</div>
+          <div class="muted">${t(chipless ? "ams.chipless" : "ams.empty")}</div>
           <button data-action="mount-slot" data-slot="${slot}"
                   data-printer="${esc(printer ?? "")}">${t("act.mount")}</button>
         </div>`;
