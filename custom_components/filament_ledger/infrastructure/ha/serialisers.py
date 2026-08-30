@@ -24,6 +24,7 @@ from ...application.query import (
     TrashedMovement,
     TrashView,
     describe_location,
+    display_job_name,
     movement_label,
     source_label,
 )
@@ -199,6 +200,11 @@ def movement_line(line: GlobalHistoryLine) -> dict[str, Any]:
     right actions without a second query (docs/14 §14.4): Delete and Reassign both name a
     movement, Reassign needs to know a charge is what it is moving, and neither is offered
     on a row that is already out of the ledger's default view.
+
+    `job_id` and `job_display_name` ride beside the raw `job_name` so the panel can gather
+    one print's rows under one header and caption it in the reader's terms. The raw name
+    stays on the wire untouched: it is the stored identity the free-text filter matches,
+    and a row has to be able to say exactly what the ledger says.
     """
     movement = line.movement
     return {
@@ -212,7 +218,11 @@ def movement_line(line: GlobalHistoryLine) -> dict[str, Any]:
         "direction": entry_direction(movement),
         "voided": line.voided,
         "source": movement.source.value,
+        "job_id": movement.job_id,
         "job_name": line.job_name,
+        "job_display_name": (
+            display_job_name(line.job_name) if line.job_name is not None else None
+        ),
         "review_id": movement.review_id,
         "note": movement.note,
     }
@@ -315,6 +325,7 @@ def statistics_result(view: StatisticsView) -> dict[str, Any]:
             {
                 "job_id": entry.job_id,
                 "name": entry.name,
+                "display_name": display_job_name(entry.name),
                 "started_at": entry.started_at.isoformat(),
                 "grams": whole_grams(entry.grams),
             }
@@ -435,6 +446,10 @@ def _machine(machine: MachineSnapshot) -> dict[str, Any]:
         "current_layer": job.current_layer,
         "total_layers": job.total_layers,
         "job_name": job.name,
+        # The reader's form of the same name — the task-id prefix and the extension are
+        # the file's business, not the glance's. The raw name stays beside it because it
+        # is the identity every historical row was written with.
+        "job_display_name": display_job_name(job.name),
         # Minutes, like every other duration on the wire. Null while nothing is printing —
         # the gateway's rule, not the panel's, so the tab has no idle case to invent.
         "remaining_minutes": job.remaining_minutes,
@@ -528,6 +543,9 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
         "id": review.id,
         "job_id": review.job_id,
         "job_name": job.name,
+        # The card leads with the name, so it leads with the readable one; the raw form
+        # stays beside it because it is the identity the ledger stores and searches.
+        "job_display_name": display_job_name(job.name),
         "job_state": job.state.value,
         "reason": review.reason.value,
         "estimator": review.estimator_used.value,

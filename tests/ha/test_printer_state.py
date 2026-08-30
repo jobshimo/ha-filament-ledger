@@ -159,6 +159,9 @@ class TestPopulated:
         assert machine(payload)["total_layers"] == 209
         assert machine(payload)["progress_pct"] == 34
         assert machine(payload)["job_name"] == "381189-Rails for a shelf v2.gcode"
+        # The one figure that is not verbatim, and deliberately: the tab leads with the
+        # readable form while the raw identity travels beside it.
+        assert machine(payload)["job_display_name"] == "Rails for a shelf v2"
 
     async def test_the_payload_carries_exactly_the_documented_keys(self, ws: WsClient) -> None:
         """A pin on the shape docs/14 §14.5 specifies, so a field cannot quietly vanish.
@@ -176,6 +179,7 @@ class TestPopulated:
             "current_layer",
             "total_layers",
             "job_name",
+            "job_display_name",
             "remaining_minutes",
             "error",
             "online",
@@ -418,7 +422,11 @@ class TestUnavailableSensors:
         a rendering bug rather than as an honest unknown."""
         harness.hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, "   ", {})
 
-        assert machine(await ws.result_dict(PRINTER_STATE))["job_name"] == UNKNOWN_JOB_NAME
+        job = machine(await ws.result_dict(PRINTER_STATE))
+        assert job["job_name"] == UNKNOWN_JOB_NAME
+        # The sentinel carries neither a task id nor an extension, so the display form is
+        # the sentinel itself — never a half-stripped fragment of it.
+        assert job["job_display_name"] == UNKNOWN_JOB_NAME
 
     async def test_zero_total_layers_reads_as_unknown_not_as_a_total(
         self, ws: WsClient, harness: Harness
