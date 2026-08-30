@@ -2344,7 +2344,7 @@ class FilamentLedgerPanel extends HTMLElement {
       );
     }
 
-    const rows = this._movements.map((m) => this.historyRow(m)).join("");
+    const rows = this.historyRows();
     return this.shell(
       this.historyFilters(),
       `<div class="card ledger-wrap pinned">
@@ -2472,7 +2472,7 @@ class FilamentLedgerPanel extends HTMLElement {
 
   historyRow(m) {
     const t = this._t;
-    const detail = [m.job_name, m.note].filter(Boolean).map(esc).join(" · ");
+    const detail = [m.job_display_name ?? m.job_name, m.note].filter(Boolean).map(esc).join(" · ");
     const confirmed = m.source === "USER_CONFIRMED";
     return `
       <tr>
@@ -2486,6 +2486,63 @@ class FilamentLedgerPanel extends HTMLElement {
           confirmed ? t("history.confirmed") : t("history.auto")
         }</span></td>
         <td class="acts">${this.rowActions(m)}</td>
+      </tr>`;
+  }
+
+  /**
+   * The table body, with the consecutive rows of one print gathered under a caption.
+   *
+   * The grouping is visual and nothing else: the payload's order — newest first, the
+   * order the backend serves — is walked exactly as it arrives, and only an *unbroken*
+   * run of one `job_id` is gathered, so two prints interleaved in time stay interleaved
+   * rather than being quietly re-sorted into a story that did not happen. A movement
+   * without a job renders exactly as it always has.
+   */
+  historyRows() {
+    const rows = [];
+    let index = 0;
+    while (index < this._movements.length) {
+      const movement = this._movements[index];
+      if (movement.job_id == null) {
+        rows.push(this.historyRow(movement));
+        index += 1;
+        continue;
+      }
+      const group = [movement];
+      while (
+        index + group.length < this._movements.length &&
+        this._movements[index + group.length].job_id === movement.job_id
+      ) {
+        group.push(this._movements[index + group.length]);
+      }
+      rows.push(this.historyGroupHeader(group));
+      for (const grouped of group) rows.push(this.historyRow(grouped));
+      index += group.length;
+    }
+    return rows.join("");
+  }
+
+  /**
+   * One print's caption: its readable name, the net grams of the rows beneath it, and —
+   * only when there is more than one — how many there are. The sum is signed exactly as
+   * the amounts it sums, because a group holding a print and its correction nets to what
+   * actually left the spools.
+   */
+  historyGroupHeader(group) {
+    const t = this._t;
+    const name = group[0].job_display_name ?? group[0].job_name;
+    const total = group.reduce((sum, m) => sum + m.amount_g, 0);
+    const count =
+      group.length > 1
+        ? `<span class="hj-count">${t("history.groupEntries", { count: group.length })}</span>`
+        : "";
+    return `
+      <tr class="hist-job">
+        <td colspan="6">
+          <span class="hj-name">${name ? esc(name) : t("history.groupUnnamed")}</span>
+          <span class="hj-sum ${total < 0 ? "minus" : "plus"}">${signed(total)}</span>
+          ${count}
+        </td>
       </tr>`;
   }
 
@@ -2772,7 +2829,7 @@ class FilamentLedgerPanel extends HTMLElement {
       .map(
         (row) => `
         <tr>
-          <td class="what">${esc(row.name)}</td>
+          <td class="what" title="${esc(row.name)}">${esc(row.display_name ?? row.name)}</td>
           <td class="when" title="${esc(row.started_at)}">${this.when(row.started_at)}</td>
           <td class="amt">${esc(grams(row.grams))}</td>
         </tr>`,
@@ -2899,7 +2956,7 @@ class FilamentLedgerPanel extends HTMLElement {
       <article class="card rv-card" data-id="${esc(review.id)}">
         <div class="rv-head">
           <span class="rv-ico">${failed ? "⛔" : "⚠"}</span>
-          <span class="rv-name">${esc(review.job_name)}</span>
+          <span class="rv-name">${esc(review.job_display_name ?? review.job_name)}</span>
           <span class="rv-state">${esc(review.job_state)}</span>
         </div>
         <div class="sub">${metaBits.join(" · ")}</div>
@@ -3593,7 +3650,10 @@ class FilamentLedgerPanel extends HTMLElement {
     return `
       <div class="card pr-facts">
         ${this.printerFact(t("printer.status"), state.status == null ? DASH : esc(state.status))}
-        ${this.printerFact(t("printer.job"), state.job_name == null ? DASH : esc(state.job_name))}
+        ${this.printerFact(
+          t("printer.job"),
+          state.job_name == null ? DASH : esc(state.job_display_name ?? state.job_name),
+        )}
         ${this.printerFact(t("printer.progress"), progress)}
         ${this.printerFact(t("printer.remaining"), remaining)}
         ${this.printerFact(t("printer.layer"), layer)}
@@ -4361,7 +4421,7 @@ class FilamentLedgerPanel extends HTMLElement {
     return `
       <form data-form="dismiss-review">
         <h3>${t("dlg.dismissTitle")}</h3>
-        <p class="muted">${esc(this._dialog.review?.job_name ?? "")}</p>
+        <p class="muted">${esc(this._dialog.review?.job_display_name ?? this._dialog.review?.job_name ?? "")}</p>
         <label>${t("act.reason")}<input name="note" placeholder="${t("act.optional")}"></label>
         <p class="muted small">${t("dlg.dismissFoot")}</p>
         ${this.formActions(t("act.dismiss"))}
@@ -4777,6 +4837,19 @@ table.ledger td.amt { font-weight: 600; }
 table.ledger td.amt.minus { color: var(--fl-bad); }
 table.ledger td.amt.plus { color: var(--fl-ok); }
 table.ledger td.bal { color: var(--fl-ink-dim); }
+
+/* ---- One print's rows, gathered (06 §6.6) -------------------------------------------
+   The caption is not a row: it keeps no bottom border of its own, so it sits tight on
+   the entries it captions and the line under the last of them is what closes the group. */
+table.ledger tr.hist-job td { padding: 12px 0 3px; border-bottom: 0; white-space: nowrap;
+  font-size: 12.5px; }
+table.ledger tr.hist-job .hj-name { font-weight: 600; }
+table.ledger tr.hist-job .hj-sum { font-family: var(--fl-font-mono);
+  font-variant-numeric: tabular-nums; margin-left: 10px; }
+table.ledger tr.hist-job .hj-sum.minus { color: var(--fl-bad); }
+table.ledger tr.hist-job .hj-sum.plus { color: var(--fl-ok); }
+table.ledger tr.hist-job .hj-count { margin-left: 10px; color: var(--fl-ink-dim);
+  font-size: 12px; }
 
 /* ---- The ledger's column headings, pinned (06 §6.6) ---------------------------------
    Forty rows down, a column of numbers with no heading over it is a column nobody can

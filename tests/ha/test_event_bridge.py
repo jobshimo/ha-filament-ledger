@@ -134,6 +134,7 @@ class TestTranslation:
                     "review_id": "review-1",
                     "job_id": "job-1",
                     "job_name": "bracket_v3.gcode.3mf",
+                    "job_display_name": "bracket_v3.gcode",
                     "reason": "CANCELLED",
                 },
                 id="a-print-needs-a-decision",
