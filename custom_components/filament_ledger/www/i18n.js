@@ -542,6 +542,13 @@ const EN = {
   // -- dialog: mount -----------------------------------------------------------------
   "dlg.mountTitle": "Mount in slot [[slot]]",
   "dlg.mountNone": "Every spool is already mounted. Unmount one first.",
+  // The layered spool picker (mount dialog, and the reassign form's field). Two
+  // sections: what can feed a print, and what the ledger says is spent. Spent spools
+  // stay choosable — the reel that emptied mid-print is exactly the one a reassignment
+  // names — but choosing one must read as deliberate, so it is labelled, never mixed in.
+  "picker.inventory": "In inventory",
+  "picker.spent": "Out of filament",
+  "act.change": "Change",
   "dlg.mountSpool": "Spool",
 
   // -- dialog: dismiss review --------------------------------------------------------
@@ -1148,6 +1155,9 @@ const ES = {
   // -- diálogo: montar ---------------------------------------------------------------
   "dlg.mountTitle": "Montar en la bandeja [[slot]]",
   "dlg.mountNone": "Todas las bobinas están ya montadas. Desmonte una primero.",
+  "picker.inventory": "En inventario",
+  "picker.spent": "Sin saldo",
+  "act.change": "Cambiar",
   "dlg.mountSpool": "Bobina",
 
   // -- diálogo: descartar revisión ---------------------------------------------------
