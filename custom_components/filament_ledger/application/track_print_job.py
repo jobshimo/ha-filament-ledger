@@ -211,7 +211,22 @@ class TrackPrintJob:
             )
             await self._adopt_start_time(open_job, event)
             return None
-        if open_job is not None:
+        if open_job is not None and open_job.consumption_recorded:
+            # A stale row whose question was already decided — approving or dismissing
+            # its review settles the job (`_settle_job`, review_queue.py). Before that
+            # flag was consulted here, a decided orphan was re-detected on every later
+            # start and re-minted the same card each time the user resolved it
+            # (observed live, 2026-08-31: dismiss, print, the same ghost again). The
+            # decision is recorded, so the ledger holds its tongue and only opens the
+            # new print's row.
+            LOGGER.debug(
+                "printer %s is running a print that decided job %s (%s) does not "
+                "describe; its review was resolved, so it is not asked again",
+                event.printer,
+                open_job.id,
+                open_job.name,
+            )
+        elif open_job is not None:
             LOGGER.warning(
                 "printer %s is running a print that job %s (%s) does not describe; that "
                 "row's ending never arrived, so it goes to the review queue while the "
