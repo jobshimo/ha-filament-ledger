@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
+from custom_components.filament_ledger.application.review_queue import DismissReviewCommand
 from custom_components.filament_ledger.domain.event import ReviewOpened
 from custom_components.filament_ledger.domain.model.pending_review import ReviewCharge
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
@@ -975,6 +976,40 @@ class TestAStaleRowRefusesAnotherPrintsPlan:
 
         [job] = await stored_jobs(ledger)
         assert job.reported_usage == {TRAY_1: Grams.of(9)}
+
+
+class TestADecidedOrphanIsNotAskedAgain:
+    """Dismiss, print, the same ghost again (observed live, 2026-08-31).
+
+    Deciding an orphan's review settles the job. Before that write existed, the stale
+    RUNNING row was re-detected on every later start and re-minted its card each time
+    the user resolved it — an unkillable review for a print that ended hours ago.
+    """
+
+    async def test_a_dismissed_orphan_opens_no_second_review(self, ledger: Ledger) -> None:
+        spool = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool, TRAY_1)
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=A_PREVIOUS_PRINT))
+        ledger.clock.advance(hours=4)
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=THIS_PRINT))
+        reviews = SqliteReviewRepository(ledger.database)
+        [orphan_review] = await reviews.list_pending()
+        await ledger.use_cases.dismiss_review.execute(
+            DismissReviewCommand(review_id=orphan_review.id)
+        )
+        # The live print finishes cleanly — mounted spool, reported figures — so its own
+        # ending opens nothing and the orphan is back to being the newest RUNNING row.
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.FINISHED, reported_usage={TRAY_1: Grams.of(30)})
+        )
+        ledger.clock.advance(hours=1)
+
+        await ledger.use_cases.track_print_job.execute(
+            started(printer_started_at=THIS_PRINT + timedelta(hours=1))
+        )
+
+        assert await reviews.list_pending() == [], "a decided orphan is not asked again"
+        assert len(await stored_jobs(ledger)) == 3, "the new print still gets its row"
 
 
 class TestThePlanIsPersistedWhileTheJobRuns:

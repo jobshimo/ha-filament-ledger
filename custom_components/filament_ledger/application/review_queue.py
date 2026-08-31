@@ -8,7 +8,7 @@ writes to the ledger, and dismissal writes nothing ever.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..domain.error import (
     EstimationUnavailableError,
@@ -42,7 +42,7 @@ from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import ReviewId, SpoolId, TrayRef
+from ..domain.value.identifiers import PrintJobId, ReviewId, SpoolId, TrayRef
 from ..domain.value.location import AmsSlot
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.review import EstimatorKind, ReviewReason, ReviewState
@@ -204,11 +204,32 @@ class OpenPendingReview:
             return zeros, EstimatorKind.NONE
 
 
+async def _settle_job(jobs: PrintJobRepository, job_id: PrintJobId) -> None:
+    """Deciding a review settles the job it was about. Runs inside the caller's unit.
+
+    `consumption_recorded` is the flag UC-04 already writes for exactly this meaning —
+    *the consumption question for this job is closed* — and a decision closes it whether
+    grams moved (approval) or the user said none should (dismissal). Without this write
+    the question stayed open on the row: an orphan whose review was resolved was still a
+    RUNNING row with an unrecorded consumption, so `TrackPrintJob._started` re-detected
+    it on every later start and re-minted the same card each time the user resolved it
+    (observed live, 2026-08-31 — dismiss, print, the same ghost again).
+
+    A job already settled is left alone, and a review whose job row is gone settles
+    nothing: the decision still stands on the review itself.
+    """
+    job = await jobs.get(job_id)
+    if job is None or job.consumption_recorded:
+        return
+    await jobs.save(replace(job, consumption_recorded=True))
+
+
 @dataclass(frozen=True, slots=True)
 class ApproveReview:
     reviews: ReviewRepository
     spools: SpoolRepository
     movements: MovementRepository
+    jobs: PrintJobRepository
     clock: Clock
     events: EventPublisher
     uow: UnitOfWork
@@ -293,6 +314,7 @@ class ApproveReview:
                     )
                 )
             await self.reviews.save(approved)
+            await _settle_job(self.jobs, approved.job_id)
 
         # Published after the commit — never for a write that could still roll back.
         # Confidence needs no explicit step: it is derived, and the appended
@@ -318,6 +340,7 @@ class ApproveReview:
 @dataclass(frozen=True, slots=True)
 class DismissReview:
     reviews: ReviewRepository
+    jobs: PrintJobRepository
     clock: Clock
     events: EventPublisher
     uow: UnitOfWork
@@ -329,6 +352,7 @@ class DismissReview:
                 raise ReviewNotFoundError(command.review_id)
             dismissed = review.dismissed(at=self.clock.now(), note=command.note)
             await self.reviews.save(dismissed)
+            await _settle_job(self.jobs, dismissed.job_id)
 
         # Published after the commit — never for a write that could still roll back.
         await self.events.publish(
