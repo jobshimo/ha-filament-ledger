@@ -4173,11 +4173,10 @@ class FilamentLedgerPanel extends HTMLElement {
     const moved = Math.abs(subject.amount_g).toFixed(1);
     // The same filter the review card's picker applies: a spool that is out of inventory
     // cannot be charged, and the backend refuses it (docs/14 §14.3).
-    const options = this._spools
-      .filter((s) => s.id !== subject.spool_id && s.state !== "DISCARDED" && s.state !== "DELETED")
-      .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`)
-      .join("");
-    if (!options) {
+    const candidates = this._spools.filter(
+      (s) => s.id !== subject.spool_id && s.state !== "DISCARDED" && s.state !== "DELETED",
+    );
+    if (!candidates.length) {
       return `<h3>${t("dlg.reassignTitle")}</h3>
         <p class="muted">${t("dlg.reassignNone")}</p>
         ${this.formActions(null)}`;
@@ -4189,7 +4188,10 @@ class FilamentLedgerPanel extends HTMLElement {
           grams: moved,
           spool: subject.spool_name,
         })}</p>
-        <label>${t("dlg.reassignTo")}<select name="to_spool_id">${options}</select></label>
+        <p class="muted small">${t("dlg.reassignTo")}</p>
+        <div class="mount-grid">
+          ${candidates.map((s, i) => this.pickChoice("to_spool_id", s, i === 0)).join("")}
+        </div>
         <label>${t("dlg.reassignAmount")}
           <input class="rs-amount" name="amount_g" type="number" min="0.1" step="0.1"
             max="${esc(moved)}" value="${esc(moved)}">
@@ -4465,7 +4467,13 @@ class FilamentLedgerPanel extends HTMLElement {
   mountChoice(spool) {
     return `<button type="button" class="mount-choice" data-action="mount-pick"
         data-id="${esc(spool.id)}">
-      <span class="mc-art">
+      ${this.spoolChoiceBody(spool)}
+    </button>`;
+  }
+
+  /** The card's inside — ring, name, material, balance — shared by every spool choice. */
+  spoolChoiceBody(spool) {
+    return `<span class="mc-art">
         ${spoolRing("slot", spool.percentage, spool.colour)}
         <span class="ring-mid"><span class="ring-hub" style="background:${esc(spool.colour)}"></span></span>
       </span>
@@ -4473,8 +4481,24 @@ class FilamentLedgerPanel extends HTMLElement {
         <span class="mc-name">${esc(spool.name)}</span>
         <span class="mc-sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</span>
         <span class="mc-grams">${spool.balance_g}<small> g</small> · ${spool.percentage}%</span>
-      </span>
-    </button>`;
+      </span>`;
+  }
+
+  /**
+   * One spool as a *selectable* choice inside a form — the mount card's twin for the
+   * dialogs that still need an amount or a note before anything is sent.
+   *
+   * A label around a hidden radio, deliberately: the form submits under `name` exactly
+   * as the `<select>` it replaces did, so the dispatcher and the backend see the same
+   * payload and only the reader's half changed. Selection is the browser's own state
+   * (`:has(input:checked)` in the styles) — no re-render, so an amount being typed
+   * beside it never loses focus.
+   */
+  pickChoice(name, spool, checked) {
+    return `<label class="mount-choice pick-choice">
+      <input type="radio" name="${esc(name)}" value="${esc(spool.id)}" ${checked ? "checked" : ""}>
+      ${this.spoolChoiceBody(spool)}
+    </label>`;
   }
 
   dismissReviewForm() {
@@ -4886,6 +4910,11 @@ button.link:hover { color: var(--fl-accent-bright); }
 .mount-choice .mc-sub { font-size: 12px; color: var(--fl-ink-dim); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .mount-choice .mc-grams { font-family: var(--fl-font-mono); font-size: 13px; }
+.pick-choice { position: relative; background: transparent; border: 1px solid var(--fl-line);
+  border-radius: 12px; cursor: pointer; }
+.pick-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.pick-choice:has(input:checked) { border-color: var(--fl-accent-line);
+  background: var(--fl-accent-soft); }
 
 .tray.empty-tray { align-items: center; justify-content: center; text-align: center; gap: 10px;
   border-style: dashed; border-color: var(--fl-line-strong); background: var(--fl-surface-sunken);
