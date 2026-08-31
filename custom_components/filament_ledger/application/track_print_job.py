@@ -302,6 +302,19 @@ class TrackPrintJob:
                 event.printer,
             )
             return None
+        if not _same_print_as_plan(job, event, self.clock.now()):
+            # The open row is an orphan from an earlier print — `_same_print_as_plan`
+            # tells the story of the double charge that adopting onto it produced. The
+            # figures are not lost: the running print's own row takes them from the next
+            # observation, and `_started` sends the orphan to the review queue.
+            LOGGER.debug(
+                "printer %s published figures that job %s (%s) does not describe; the "
+                "stale row refuses them",
+                event.printer,
+                job.id,
+                job.name,
+            )
+            return None
         updated = replace(
             job,
             reported_usage=event.plan,
@@ -571,6 +584,35 @@ class TrackPrintJob:
             if job.state is PrintJobState.RUNNING:
                 return job
         return None
+
+
+def _same_print_as_plan(job: PrintJob, event: PrintPlanObserved, now: datetime) -> bool:
+    """Whether the open row describes the print whose figures this observation carries.
+
+    The same identity `_same_print` reads off a start — the machine's own `start_time` —
+    asked one event later, and for the same reason: an observation is delivered to
+    whichever row is open, and the open row can be an orphan whose ending never arrived.
+    On the reference instance (docs/12-field-notes.md, 2026-08-31) the first observation
+    after a reconnection landed on a row four hours stale: the orphan took the running
+    print's name and figures, and its review card then offered grams the running print's
+    own row deducted again minutes later — the double charge this module exists to
+    prevent, reached through the one write that never asked.
+
+    **A disagreement within `START_TIME_CORRECTION_WINDOW` of the row's opening still
+    adopts.** `start_time` is stale for the first moments of every print — it names the
+    print before — so a young row disagreeing with the sensor is the ordinary case
+    `_same_print` already forgives, and refusing it here would starve every fresh row of
+    its first figures. Beyond the window the row is old, the sensor is settled, and a
+    disagreement means what it says.
+
+    **Either side missing keeps the old behaviour, adoption** — the under-claim policy
+    does not extend to refusing data on an absence of evidence against it.
+    """
+    if job.printer_started_at is None or event.printer_started_at is None:
+        return True
+    if abs(job.printer_started_at - event.printer_started_at) <= JOB_IDENTITY_TOLERANCE:
+        return True
+    return now - job.started_at <= START_TIME_CORRECTION_WINDOW
 
 
 def _same_print(job: PrintJob, event: PrintStarted, now: datetime) -> bool:
