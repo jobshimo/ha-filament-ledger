@@ -1031,6 +1031,18 @@ class FilamentLedgerPanel extends HTMLElement {
           }),
         );
         break;
+      case "open-spool-picker":
+        this._openSpoolPicker(target.closest("form"));
+        break;
+      case "picker-pick":
+        this._pickSpool(id);
+        break;
+      case "close-picker":
+        // Same guard the dialog's scrim carries: a click inside the layered modal that
+        // landed on nothing actionable resolves to this scrim and must not close it.
+        if (target.matches(".scrim") && event.target.closest(".picker-modal")) break;
+        this._closeSpoolPicker();
+        break;
       case "review-distribute":
         this._distribute(target.closest(".rv-card"));
         break;
@@ -4182,16 +4194,19 @@ class FilamentLedgerPanel extends HTMLElement {
         ${this.formActions(null)}`;
     }
     return `
-      <form data-form="reassign" data-whole="${esc(moved)}" data-spool="${esc(subject.spool_name)}">
+      <form data-form="reassign" data-whole="${esc(moved)}" data-spool="${esc(subject.spool_name)}"
+        data-exclude="${esc(subject.spool_id)}">
         <h3>${t("dlg.reassignTitle")}</h3>
         <p class="cx-says rs-says">${t("dlg.reassignSays", {
           grams: moved,
           spool: subject.spool_name,
         })}</p>
+        <input type="hidden" name="to_spool_id" value="${esc(candidates[0].id)}">
         <p class="muted small">${t("dlg.reassignTo")}</p>
-        <div class="mount-grid">
-          ${candidates.map((s, i) => this.pickChoice("to_spool_id", s, i === 0)).join("")}
-        </div>
+        <button type="button" class="mount-choice spool-field" data-action="open-spool-picker">
+          <span class="sf-card">${this.spoolChoiceBody(candidates[0])}</span>
+          <span class="sf-change">${t("act.change")}</span>
+        </button>
         <label>${t("dlg.reassignAmount")}
           <input class="rs-amount" name="amount_g" type="number" min="0.1" step="0.1"
             max="${esc(moved)}" value="${esc(moved)}">
@@ -4448,27 +4463,8 @@ class FilamentLedgerPanel extends HTMLElement {
     }
     return `
       <h3>${t("dlg.mountTitle", { slot })}</h3>
-      <div class="mount-grid">
-        ${available.map((s) => this.mountChoice(s)).join("")}
-      </div>
+      ${this.spoolPickerSections(available, "mount-pick")}
       ${this.formActions(null)}`;
-  }
-
-  /**
-   * One spool as a tappable choice — the inventory card's vocabulary at dialog size.
-   *
-   * A `<select>` of names asked the user to recognise a reel by a string, in a product
-   * whose own spec says colour is the primary identifier (docs/06 §6.8). The ring, the
-   * name, the material and the balance are the same four facts the inventory leads
-   * with, so choosing here reads as pointing at the shelf rather than picking from a
-   * form. One tap mounts: the dialog exists to answer *which spool*, and a confirm step
-   * after pointing at it would be ceremony.
-   */
-  mountChoice(spool) {
-    return `<button type="button" class="mount-choice" data-action="mount-pick"
-        data-id="${esc(spool.id)}">
-      ${this.spoolChoiceBody(spool)}
-    </button>`;
   }
 
   /** The card's inside — ring, name, material, balance — shared by every spool choice. */
@@ -4485,20 +4481,76 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * One spool as a *selectable* choice inside a form — the mount card's twin for the
-   * dialogs that still need an amount or a note before anything is sent.
-   *
-   * A label around a hidden radio, deliberately: the form submits under `name` exactly
-   * as the `<select>` it replaces did, so the dispatcher and the backend see the same
-   * payload and only the reader's half changed. Selection is the browser's own state
-   * (`:has(input:checked)` in the styles) — no re-render, so an amount being typed
-   * beside it never loses focus.
+   * The spool choices, sectioned: what can feed a print leads, and what the ledger says
+   * is spent follows under its own heading, dimmed. Spent spools stay choosable because
+   * both flows have a legitimate claim on them — the reel that emptied mid-print is
+   * exactly the one a reassignment names, and a leftover the scale will correct can be
+   * mounted — but choosing one must read as deliberate, never as an accident of
+   * sorting. One grid, no scroll of its own: the modal already scrolls, and a second
+   * scrollbar inside it is two fights over one wheel.
    */
-  pickChoice(name, spool, checked) {
-    return `<label class="mount-choice pick-choice">
-      <input type="radio" name="${esc(name)}" value="${esc(spool.id)}" ${checked ? "checked" : ""}>
-      ${this.spoolChoiceBody(spool)}
-    </label>`;
+  spoolPickerSections(candidates, action) {
+    const t = this._t;
+    const card = (s, spent) =>
+      `<button type="button" class="mount-choice ${spent ? "spent" : ""}" data-action="${action}"
+          data-id="${esc(s.id)}">${this.spoolChoiceBody(s)}</button>`;
+    const usable = candidates.filter((s) => s.state !== "DEPLETED");
+    const spent = candidates.filter((s) => s.state === "DEPLETED");
+    return `
+      ${
+        usable.length
+          ? `<p class="pick-sec">${t("picker.inventory")}</p>
+        <div class="mount-grid">${usable.map((s) => card(s, false)).join("")}</div>`
+          : ""
+      }
+      ${
+        spent.length
+          ? `<p class="pick-sec">${t("picker.spent")}</p>
+        <div class="mount-grid">${spent.map((s) => card(s, true)).join("")}</div>`
+          : ""
+      }`;
+  }
+
+  /**
+   * The reassign form's picker, layered over the open dialog and patched in place.
+   *
+   * Deliberately NOT `this._dialog` and NOT `render()`: a repaint rebuilds the dialog's
+   * markup wholesale, and the grams being typed two fields down would not survive it —
+   * the same reason `_syncReassignForm` patches instead of rendering. The overlay is
+   * appended beside the dialog, the root's delegated listener sees its buttons like any
+   * other node's, and picking writes the hidden input and the field's face directly.
+   */
+  _openSpoolPicker(form) {
+    const t = this._t;
+    this._pickerForm = form;
+    const exclude = form.dataset.exclude;
+    const candidates = this._spools.filter(
+      (s) => s.id !== exclude && s.state !== "DISCARDED" && s.state !== "DELETED",
+    );
+    const layer = document.createElement("div");
+    layer.className = "scrim picker-layer";
+    layer.dataset.action = "close-picker";
+    layer.innerHTML = `<div class="modal picker-modal">
+      <h3>${t("dlg.reassignTo")}</h3>
+      ${this.spoolPickerSections(candidates, "picker-pick")}
+      <div class="actions"><button type="button" data-action="close-picker">${t("act.cancel")}</button></div>
+    </div>`;
+    this._root.appendChild(layer);
+  }
+
+  _closeSpoolPicker() {
+    this._root.querySelector(".picker-layer")?.remove();
+    this._pickerForm = null;
+  }
+
+  _pickSpool(id) {
+    const form = this._pickerForm;
+    const chosen = this._spools.find((s) => s.id === id);
+    if (form && chosen) {
+      form.querySelector("input[name=to_spool_id]").value = id;
+      form.querySelector(".spool-field .sf-card").innerHTML = this.spoolChoiceBody(chosen);
+    }
+    this._closeSpoolPicker();
   }
 
   dismissReviewForm() {
@@ -4897,7 +4949,7 @@ button.link:hover { color: var(--fl-accent-bright); }
    Buttons, not options: each choice is the whole card, the ring carries the colour at
    the size a tray draws it, and one tap mounts. */
 .mount-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 10px; max-height: 55vh; overflow-y: auto; margin: 14px 0 4px; }
+  gap: 10px; margin: 6px 0 4px; }
 .mount-choice { display: flex; align-items: center; gap: 12px; text-align: left;
   padding: 10px 12px; }
 .mount-choice .mc-art { position: relative; flex: none; width: 56px; height: 56px; }
@@ -4910,11 +4962,14 @@ button.link:hover { color: var(--fl-accent-bright); }
 .mount-choice .mc-sub { font-size: 12px; color: var(--fl-ink-dim); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .mount-choice .mc-grams { font-family: var(--fl-font-mono); font-size: 13px; }
-.pick-choice { position: relative; background: transparent; border: 1px solid var(--fl-line);
-  border-radius: 12px; cursor: pointer; }
-.pick-choice input { position: absolute; opacity: 0; pointer-events: none; }
-.pick-choice:has(input:checked) { border-color: var(--fl-accent-line);
-  background: var(--fl-accent-soft); }
+.mount-choice.spent { opacity: .55; }
+.pick-sec { margin: 14px 0 6px; font-size: 10.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--fl-ink-dim); font-weight: 700; }
+.picker-layer { z-index: 30; }
+.picker-modal { width: min(560px, 100%); }
+.spool-field { width: 100%; }
+.spool-field .sf-card { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+.spool-field .sf-change { flex: none; font-size: 12px; color: var(--fl-accent-bright); }
 
 .tray.empty-tray { align-items: center; justify-content: center; text-align: center; gap: 10px;
   border-style: dashed; border-color: var(--fl-line-strong); background: var(--fl-surface-sunken);
