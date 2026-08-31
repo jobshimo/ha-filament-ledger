@@ -1019,6 +1019,18 @@ class FilamentLedgerPanel extends HTMLElement {
         };
         this.render();
         break;
+      case "mount-pick":
+        // The tap IS the choice: `guarded` closes the dialog and refreshes on success,
+        // and an error keeps the message in the bar — the same contract every form
+        // submit in this file follows.
+        this.guarded(() =>
+          this.call("spools/mount", {
+            spool_id: id,
+            ...this._traySpace(this._dialog?.printer),
+            slot: this._dialog?.slot,
+          }),
+        );
+        break;
       case "review-distribute":
         this._distribute(target.closest(".rv-card"));
         break;
@@ -4433,13 +4445,36 @@ class FilamentLedgerPanel extends HTMLElement {
         ${this.formActions(null)}`;
     }
     return `
-      <form data-form="mount">
-        <h3>${t("dlg.mountTitle", { slot })}</h3>
-        <label>${t("dlg.mountSpool")}<select name="spool_id">
-          ${available.map((s) => `<option value="${esc(s.id)}">${esc(s.name)} — ${s.balance_g} g</option>`).join("")}
-        </select></label>
-        ${this.formActions(t("act.mount"))}
-      </form>`;
+      <h3>${t("dlg.mountTitle", { slot })}</h3>
+      <div class="mount-grid">
+        ${available.map((s) => this.mountChoice(s)).join("")}
+      </div>
+      ${this.formActions(null)}`;
+  }
+
+  /**
+   * One spool as a tappable choice — the inventory card's vocabulary at dialog size.
+   *
+   * A `<select>` of names asked the user to recognise a reel by a string, in a product
+   * whose own spec says colour is the primary identifier (docs/06 §6.8). The ring, the
+   * name, the material and the balance are the same four facts the inventory leads
+   * with, so choosing here reads as pointing at the shelf rather than picking from a
+   * form. One tap mounts: the dialog exists to answer *which spool*, and a confirm step
+   * after pointing at it would be ceremony.
+   */
+  mountChoice(spool) {
+    return `<button type="button" class="mount-choice" data-action="mount-pick"
+        data-id="${esc(spool.id)}">
+      <span class="mc-art">
+        ${spoolRing("slot", spool.percentage, spool.colour)}
+        <span class="ring-mid"><span class="ring-hub" style="background:${esc(spool.colour)}"></span></span>
+      </span>
+      <span class="mc-body">
+        <span class="mc-name">${esc(spool.name)}</span>
+        <span class="mc-sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</span>
+        <span class="mc-grams">${spool.balance_g}<small> g</small> · ${spool.percentage}%</span>
+      </span>
+    </button>`;
   }
 
   dismissReviewForm() {
@@ -4834,6 +4869,24 @@ button.link:hover { color: var(--fl-accent-bright); }
   color: var(--fl-ink-faint); font-weight: 700; }
 .tray .reel { height: 48px; border-radius: var(--fl-radius-s); margin: 6px 0;
   box-shadow: 0 0 22px -6px currentColor, inset 0 1px 0 rgba(255, 255, 255, .12); }
+/* ---- The mount dialog's spool choices (06 §6.8: colour leads) ----------------------
+   Buttons, not options: each choice is the whole card, the ring carries the colour at
+   the size a tray draws it, and one tap mounts. */
+.mount-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px; max-height: 55vh; overflow-y: auto; margin: 14px 0 4px; }
+.mount-choice { display: flex; align-items: center; gap: 12px; text-align: left;
+  padding: 10px 12px; }
+.mount-choice .mc-art { position: relative; flex: none; width: 56px; height: 56px; }
+.mount-choice .mc-art svg.ring { width: 100%; height: 100%; display: block; }
+.mount-choice .mc-art .ring-mid { position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; }
+.mount-choice .mc-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mount-choice .mc-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.mount-choice .mc-sub { font-size: 12px; color: var(--fl-ink-dim); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.mount-choice .mc-grams { font-family: var(--fl-font-mono); font-size: 13px; }
+
 .tray.empty-tray { align-items: center; justify-content: center; text-align: center; gap: 10px;
   border-style: dashed; border-color: var(--fl-line-strong); background: var(--fl-surface-sunken);
   min-height: 190px; }
@@ -5376,4 +5429,12 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
 // panel. It is the same kind of module-level side effect as the line below it.
 installFonts();
 
-customElements.define("filament-ledger-panel", FilamentLedgerPanel);
+// Guarded, because Home Assistant loads a fresh module per integration version while the
+// registry keeps the name for the life of the page. Re-defining threw, the throw was the
+// only effect, and the tab silently kept rendering with the previous version's class —
+// an error that changed nothing except planting a red herring in the log (observed
+// 2026-08-31, 2.6.2 → 2.7.0). The guard keeps the same behaviour minus the noise; only a
+// page refresh hands the tag to the new class, with or without it.
+if (!customElements.get("filament-ledger-panel")) {
+  customElements.define("filament-ledger-panel", FilamentLedgerPanel);
+}

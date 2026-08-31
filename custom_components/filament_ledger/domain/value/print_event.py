@@ -201,11 +201,22 @@ class PrintPlanObserved:
     is republished after the start, so a row opened at the first `prepare` carries the
     previous print's filename until something refreshes it. `None` leaves the stored name
     alone.
+
+    `printer_started_at` is the machine's own answer to *when did the print I am
+    describing begin*, read off the same sensor the starts carry. It exists so the
+    receiver can ask of an observation the question `_same_print` asks of a start: an
+    observation is delivered to whichever row is open, and a stale row — an orphan whose
+    ending never arrived — must be able to refuse figures that belong to the print
+    running now (docs/12-field-notes.md, 2026-08-31: an orphan wore the next print's
+    name and plan, and its review card offered grams the new print's own row then
+    deducted again). `None` when the sensor did not say, which keeps adoption exactly as
+    it was for a gateway that cannot answer.
     """
 
     printer: PrinterSerial
     plan: dict[TrayRef, Grams]
     name: str | None = None
+    printer_started_at: datetime | None = None
 
     def __post_init__(self) -> None:
         # An observation of nothing is the silence this event exists to be distinguished
