@@ -617,6 +617,45 @@ class TestConcurrency:
         assert len(ledger.events.of(ReviewOpened)) == 1
 
 
+class TestDecidingAReviewSettlesItsJob:
+    """`_settle_job`: approval and dismissal both close the job's consumption question.
+
+    That write is what stops `TrackPrintJob` re-detecting a decided orphan on every
+    later start and re-minting its card each time the user resolves it — the loop
+    observed live on 2026-08-31 (dismiss, print, the same ghost again).
+    """
+
+    async def test_dismissal_marks_the_job_recorded(self, ledger: Ledger) -> None:
+        job = a_job(reported_usage={TRAY_1: Grams.of(50)})
+        review_id = await opened(ledger, job)
+
+        await ledger.use_cases.dismiss_review.execute(DismissReviewCommand(review_id=review_id))
+
+        stored = await SqlitePrintJobRepository(ledger.database).get(job.id)
+        assert stored is not None
+        assert stored.consumption_recorded, "dismissal decides: nothing left to record"
+
+    async def test_approval_marks_the_job_recorded(self, ledger: Ledger) -> None:
+        spool_id = await ledger.use_cases.register_spool.execute(
+            RegisterSpoolCommand(
+                material=Material.of(MaterialKind.PLA),
+                colour=Colour.parse("000000"),
+                opening_weight=Grams.of(1000),
+                core_weight=Grams.of(250),
+            )
+        )
+        job = a_job(reported_usage={TRAY_1: Grams.of(50)})
+        review_id = await opened(ledger, job)
+
+        await ledger.use_cases.approve_review.execute(
+            ApproveReviewCommand(review_id=review_id, assignments={TRAY_1: spool_id})
+        )
+
+        stored = await SqlitePrintJobRepository(ledger.database).get(job.id)
+        assert stored is not None
+        assert stored.consumption_recorded, "approval decides: the grams are recorded"
+
+
 class TestDismissingAReview:
     async def test_dismissal_records_the_decision_and_moves_nothing(self, ledger: Ledger) -> None:
         spool_id = await a_spool(ledger)
