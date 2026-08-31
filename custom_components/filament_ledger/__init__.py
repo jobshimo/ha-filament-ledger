@@ -200,9 +200,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         record_print_consumption=record_print_consumption,
         open_pending_review=open_pending_review,
         approve_review=ApproveReview(
-            reviews, spools, movements, clock, events, database, anomalies
+            reviews, spools, movements, jobs, clock, events, database, anomalies
         ),
-        dismiss_review=DismissReview(reviews, clock, events, database),
+        dismiss_review=DismissReview(reviews, jobs, clock, events, database),
         # v1.0's corrections. Each one brackets its read-compute-write in the same unit of
         # work every other use case uses, and publishes after the commit.
         reassign_movement=ReassignMovement(
