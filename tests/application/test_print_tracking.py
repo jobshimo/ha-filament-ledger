@@ -915,12 +915,66 @@ def plan_observed(
     *,
     name: str | None = None,
     printer: PrinterSerial = A_PRINTER,
+    printer_started_at: datetime | None = None,
 ) -> PrintPlanObserved:
     return PrintPlanObserved(
         printer=printer,
         plan=plan if plan is not None else {TRAY_1: Grams.of("50.82")},
         name=name,
+        printer_started_at=printer_started_at,
     )
+
+
+class TestAStaleRowRefusesAnotherPrintsPlan:
+    """The write that never asked (docs/12-field-notes.md, 2026-08-31).
+
+    An observation is delivered to whichever row is open, and after a dead reconnection
+    window the open row can be an orphan from hours ago. Adopting onto it dressed the
+    orphan in the running print's name and figures, and its review card then offered
+    grams the running print's own row deducted again — a double charge wearing a
+    review's clothing.
+    """
+
+    async def test_an_old_row_refuses_figures_stamped_for_another_print(
+        self, ledger: Ledger
+    ) -> None:
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=A_PREVIOUS_PRINT))
+        ledger.clock.advance(hours=4)
+
+        result = await ledger.use_cases.track_print_job.execute(
+            plan_observed(
+                {TRAY_1: Grams.of("62.23")},
+                name="0.08mm layer, 2 walls, 15% infill.3mf",
+                printer_started_at=THIS_PRINT,
+            )
+        )
+
+        assert result is None
+        [job] = await stored_jobs(ledger)
+        assert job.reported_usage is None, "an orphan keeps no figures that are not its own"
+        assert job.name != "0.08mm layer, 2 walls, 15% infill.3mf"
+
+    async def test_a_young_row_still_adopts_through_the_stale_sensor(self, ledger: Ledger) -> None:
+        """`start_time` names the previous print for the first moments of every job, so a
+        fresh row disagreeing with the sensor is the ordinary case, not the poisoning."""
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=THIS_PRINT))
+        ledger.clock.advance(minutes=4)
+
+        await ledger.use_cases.track_print_job.execute(
+            plan_observed({TRAY_1: Grams.of(10)}, printer_started_at=A_PREVIOUS_PRINT)
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.reported_usage == {TRAY_1: Grams.of(10)}
+
+    async def test_an_unstamped_observation_adopts_as_it_always_did(self, ledger: Ledger) -> None:
+        await ledger.use_cases.track_print_job.execute(started(printer_started_at=A_PREVIOUS_PRINT))
+        ledger.clock.advance(hours=4)
+
+        await ledger.use_cases.track_print_job.execute(plan_observed({TRAY_1: Grams.of(9)}))
+
+        [job] = await stored_jobs(ledger)
+        assert job.reported_usage == {TRAY_1: Grams.of(9)}
 
 
 class TestThePlanIsPersistedWhileTheJobRuns:

@@ -787,6 +787,10 @@ class BambuLabGateway:
                         printer=printer,
                         plan=dict(observation.plan),
                         name=self._job_name(printer),
+                        # The same reading the starts carry, for the same question: the
+                        # receiver must be able to tell a stale open row that these
+                        # figures are not its own (`TrackPrintJob._plan_observed`).
+                        printer_started_at=self._moment(printer, "start_time"),
                     )
                 ),
                 name=f"filament_ledger plan {printer}",
