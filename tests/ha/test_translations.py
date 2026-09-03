@@ -160,6 +160,19 @@ def test_every_panel_string_carries_the_same_placeholders_in_both_languages() ->
     assert mismatched == {}
 
 
+def test_the_spool_picker_asks_its_question_in_both_languages() -> None:
+    """The review card's picker titles itself with the slot it is asking about.
+
+    The key is looked up by name at runtime, and the parity tests above compare the two
+    tables with each other, not with the panel — so a key renamed in both tables at once
+    would still leave the modal titled with the raw key text. Named here, with the token
+    the panel fills, so the question stays a question in both languages.
+    """
+    for language in ("EN", "ES"):
+        assert "review.pickTitle" in table(language), f"review.pickTitle missing from {language}"
+        assert "[[slot]]" in table(language)["review.pickTitle"]
+
+
 def test_no_panel_string_is_blank() -> None:
     """A blank string is worse than a missing one: the fallback never fires, and the user
     sees an unlabelled control rather than an English one."""

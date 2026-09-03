@@ -174,6 +174,27 @@ class TestPanelSource:
 
         assert rendered - handled == set(), "rendered by the panel, handled by nothing"
 
+    def test_every_spool_choice_opens_the_picker_and_never_a_native_select(self) -> None:
+        """A spool is a colour and a balance before it is a name, and a `<select>` shows
+        only the name.
+
+        The picker draws the spools the way the mount dialog does — cards, in sections —
+        and the rule (06 §6.3) is that every place the panel asks *which spool* opens it.
+        The review card's charge row was the last native dropdown, and the user found it
+        unintuitive; this keeps it from coming back. The selects that remain choose a
+        material and a discard mode, neither of which is a spool.
+        """
+        source = self.source()
+        selects = re.findall(r"<select\b[^>]*>", source)
+        assert selects, "the panel has lost every <select>; the pattern has drifted"
+        for tag in selects:
+            assert "rv-pick" not in tag, "the review card's dropdown is back"
+            assert "spool" not in tag.lower(), f"a spool is chosen in the picker, not in {tag}"
+
+        # The reassign field and both faces of a charge row — chosen and not yet chosen —
+        # each carry the button that opens the picker.
+        assert source.count('data-action="open-spool-picker"') == 3
+
 
 class TestRemove:
     async def test_remove_then_register_comes_back_without_a_second_route(
