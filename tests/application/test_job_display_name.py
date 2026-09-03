@@ -2,9 +2,10 @@
 
 The raw name is an identity: `TrackPrintJob` correlates endings to starts by it and the
 free-text history filter matches it as stored, so nothing here ever touches what the
-ledger keeps. `display_job_name` derives what a human reads — the cloud task id and the
-slicer extension are the file's business — and these tests pin exactly how far that
-derivation is allowed to go.
+ledger keeps. `display_job_name` derives what a human reads — the numeric prefix (the
+cached 3MF's byte size, as `ha-bambulab`'s download sensor names the file) and the slicer
+extension are the file's business — and these tests pin exactly how far that derivation is
+allowed to go.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from custom_components.filament_ledger.application.query import display_job_name
 
 
 class TestDisplayJobName:
-    def test_strips_the_cloud_task_id_and_the_extension(self) -> None:
+    def test_strips_the_size_prefix_and_the_extension(self) -> None:
         """The downloaded-file form — what every historical row was named with."""
         assert display_job_name("2429842-Royal Crest.gcode") == "Royal Crest"
 

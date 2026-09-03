@@ -1040,45 +1040,66 @@ class BambuLabGateway:
         return state
 
     def _job_name(self, printer: PrinterSerial) -> str:
-        """The running job's name, from whichever sensor still remembers it.
+        """The running job's name, from the sensor that names *this* print first.
 
-        **`gcode_file_downloaded` wins whenever it speaks**, because it is the identity
-        every historical row was named with — the `NNNN-name.gcode` form the ledger has
-        written down since v1 — and preferring another source while it speaks would let
-        the same job answer to two names between two glances. But that sensor publishes
-        only at the moment the printer downloads a file: a Home Assistant restart
-        mid-print leaves it `unavailable` until the *next* download, so everything that
-        asks in that window — the Printer tab, a start, an ending — read an unknown
-        print off a machine that was verifiably printing something.
+        **`subtask_name` leads, because it is the one sensor already describing the print
+        that is starting when the start fires.** Measured on the reference instance's
+        recorder against `ha-bambulab`'s debug log (docs/12-field-notes.md, 2026-09-03):
+        at the start event of a print at 15:17:33Z, `subtask_name` read `Professional
+        lab_Smart print AMS lite spool adapter PLA_PETG` — the cloud task fetch writes it
+        about two seconds *before* the event — and `gcode_file` read the same name with
+        its `.3mf` extension, while `gcode_file_downloaded` still read `696790-P1 -TIE
+        avenger.gcode`, the *previous* print, and kept reading it until 15:17:51Z.
+        Upstream rewrites that sensor only after its FTP thread has parsed the new 3MF,
+        ten to twenty seconds after `event_print_started`; and pybambu fires the event
+        synchronously while it processes the MQTT message, before any entity is
+        refreshed, so at the bus event every other sensor holds the previous message's
+        values. Preferring the downloaded file — which v2.5 did, for being the form every
+        historical row was named with — therefore stored every job under the name of the
+        print before it.
 
-        **`gcode_file` is the honest fallback for exactly that gap** — the key v2.5 wrote
-        as `gcode_name`, which resolves to nothing (`PRINT_SENSOR_KEYS` tells that story).
-        Upstream restores it on reconnect, so after a restart it is the one sensor still
-        carrying the job's name. It answers in the slicer's own form — `0.28mm layer, 2
-        walls, 15% infill.3mf` where the downloaded file reads `2585574-0.28mm layer, 2
-        walls, 15% infill.gcode` — which is why it is a fallback and not a preference.
+        **`gcode_file` is the second answer**, in the slicer's own form. It is what a Home
+        Assistant restart mid-print restores while `gcode_file_downloaded` stays
+        `unavailable` until the next download (2026-08-11), and between prints it can
+        read the literal `unknown`, which is silence here.
 
-        **`subtask_name` is the last resort, and the one reading it must refuse is
-        `unknown`.** The sensor parks on that literal between prints — measured at 18:20:11
-        on 2026-08-11 — so passing it through would name a job the word *unknown* while
-        claiming a sensor had spoken. Falling through to `UNKNOWN_JOB_NAME` says the same
-        thing and says it as this module's own admission rather than as the printer's.
+        **`gcode_file_downloaded` is the last sensor consulted.** Its `NNNNNN-name.gcode`
+        form is the identity every row written before this reader was corrected carries
+        — `display_job_name` still strips the prefix, which is the cached file's byte
+        size rather than a task id — so it remains the answer for a machine whose other
+        two sensors are silent, and nothing more.
 
-        A blank or whitespace answer falls through at every step rather than naming a job
-        the empty string, and only when all three are silent does this reader answer
-        `UNKNOWN_JOB_NAME` — the same under-claim every reader here applies, and never an
-        exception.
+        Every step refuses a blank or whitespace answer and the literal `unknown` a name
+        sensor parks on between prints (`subtask_name` at 18:20:11 on 2026-08-11,
+        `gcode_file` on 2026-09-03), so no job is ever named the empty string or the word
+        *unknown* while claiming a sensor spoke. `_spoken_name` says which of the two
+        readers refuses which spelling. Only when all three are silent does this reader
+        answer `UNKNOWN_JOB_NAME` — the same under-claim every reader here applies, and
+        never an exception.
         """
-        downloaded = self._sensor_state(printer, "gcode_file_downloaded")
-        if downloaded is not None and downloaded.state.strip():
-            return downloaded.state
-        restored = self._sensor_state(printer, "gcode_file")
-        if restored is not None and restored.state.strip():
-            return restored.state
-        subtask = self._sensor_state(printer, "subtask_name")
-        if subtask is not None and subtask.state.strip() and subtask.state.strip() != "unknown":
-            return subtask.state
+        for key in ("subtask_name", "gcode_file", "gcode_file_downloaded"):
+            name = self._spoken_name(printer, key)
+            if name is not None:
+                return name
         return UNKNOWN_JOB_NAME
+
+    def _spoken_name(self, printer: PrinterSerial, key: str) -> str | None:
+        """One name sensor's answer, verbatim — or `None` when it named nothing.
+
+        `_sensor_state` already drops an absent or `unavailable` sensor and the bare
+        `unknown` literal, which is `STATE_UNKNOWN` byte for byte. What is left to refuse
+        here is the padded and cased spellings of the same word and a whitespace-only
+        answer, checked once so that no step of `_job_name` depends on which of the two
+        readers caught a given shape. The name returned is *not* stripped: it is the
+        identity the row is stored under and correlated by, kept as the printer said it.
+        """
+        state = self._sensor_state(printer, key)
+        if state is None:
+            return None
+        spoken = state.state.strip()
+        if not spoken or spoken.lower() == STATE_UNKNOWN:
+            return None
+        return state.state
 
     def _text_state(self, printer: PrinterSerial, key: str) -> str | None:
         state = self._sensor_state(printer, key)

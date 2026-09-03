@@ -444,3 +444,24 @@ brings it back on the next print.
 `printer_ended_at - printer_started_at` as the machine's elapsed time, and a five-hour print
 would read as ten. Only a *later* reading is taken: a stale value names an earlier print and
 upstream's truncation rounds down, so corrections only ever move forward.
+
+## 2026-09-03 — A print was named after the file before it
+
+Read off the recorder at the start event of a print at 15:17:33Z, with `ha-bambulab`'s
+debug log beside it:
+
+| Sensor | At `event_print_started` | Rewritten |
+| --- | --- | --- |
+| `subtask_name` | `Professional lab_Smart print AMS lite spool adapter PLA_PETG` | about 2 s *before* the event, by the cloud task fetch |
+| `gcode_file` | `Professional lab_Smart print AMS lite spool adapter PLA_PETG.3mf` | with the task; reads `unknown` between prints |
+| `gcode_file_downloaded` | `696790-P1 -TIE avenger.gcode` — the *previous* print | 15:17:51Z, after the FTP thread parsed the new 3MF |
+
+pybambu fires `event_print_started` synchronously while it processes the MQTT message,
+before any entity is refreshed, so at the bus event every sensor still holds the previous
+message's values; `subtask_name` is current only because it was written two seconds
+earlier. `_job_name` preferred the downloaded file, so every job was stored under the name
+of the print before it. `subtask_name` sometimes arrives in the `Project/Name` slash form.
+
+The numeric prefix on the downloaded-file sensor (`696790-`) is the cached 3MF's byte
+size, not a cloud task id as `display_job_name`'s docstring claimed; the stripping is
+unchanged.

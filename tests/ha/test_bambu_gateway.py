@@ -127,6 +127,17 @@ STAGE = "sensor.a1_00000000testser_estado_actual"
 GCODE_NAME = "sensor.a1_00000000testser_nombre_del_gcode"
 GCODE_NAME_VALUE = "80% + parts, ironning, 0.2mm layer,2 walls,8% infill.3mf"
 
+# The sensor that names the print *being started*. The cloud task fetch writes it about two
+# seconds before `event_print_started`, where `gcode_file_downloaded` is rewritten only after
+# the FTP thread parses the new 3MF, ten to twenty seconds after — so at the start event it
+# is the one sensor already describing this job (docs/12-field-notes.md, 2026-09-03).
+# Stateless in the base harness like the two above, and planted by the tests that mean it;
+# the value is the one the recorder held at 15:17:33Z that day.
+SUBTASK_NAME = "sensor.a1_00000000testser_nombre_de_la_tarea"
+SUBTASK_NAME_VALUE = "Professional lab_Smart print AMS lite spool adapter PLA_PETG"
+# What `gcode_file_downloaded` still read at that same instant: the previous print.
+PREVIOUS_DOWNLOAD = "696790-P1 -TIE avenger.gcode"
+
 # The three job-time sensors frozen in v1.4. Their `translation_key`s were read off the
 # reference instance's registry before the constant was frozen (docs/13 — Traps); the
 # localised entity ids follow the pattern every other row on that instance shows, and
@@ -664,53 +675,88 @@ class TestRemainingTime:
 
 
 class TestJobName:
-    """The job-name reader falling back from the downloaded file to the gcode's name.
+    """The job-name reader, preferring the sensor that names *this* print.
 
-    `gcode_file_downloaded` publishes only when the printer downloads a file and goes
-    `unavailable` across a Home Assistant restart, staying dead until the *next*
-    download — so mid-print after a restart, the Printer tab and every row opened in
-    that window read "unknown print" off a machine verifiably printing something. The
-    `gcode_name` sensor is restored on reconnect and carries the job's name through
-    exactly that gap.
+    Measured at the start event of a print at 15:17:33Z on 2026-09-03
+    (docs/12-field-notes.md): `subtask_name` and `gcode_file` already named the new
+    print, while `gcode_file_downloaded` still named the previous one and went on doing
+    so until 15:17:51Z — upstream rewrites it only after its FTP thread has parsed the
+    new 3MF. A reader that led with the downloaded file, as v2.5's did, stored every job
+    under the name of the print before it. So `subtask_name` leads, `gcode_file` follows,
+    and the downloaded file is the last resort: still the only sensor speaking on a
+    machine whose other two are silent, and the form every historical row carries.
     """
 
-    def reading(self, downloaded: str, gcode_name: str | None) -> str:
-        """The name `current_job_status` reads with both sensors planted as given.
+    def reading(self, downloaded: str, gcode_name: str | None, subtask: str | None = None) -> str:
+        """The name `current_job_status` reads with the sensors planted as given.
 
-        `None` for the gcode-name sensor leaves it stateless — the shape of a machine
-        that never reported it — while the downloaded-file sensor is always planted
-        explicitly, because every scenario here is about what it says or fails to say.
+        `None` leaves a sensor stateless — the shape of a machine that never reported it
+        — while the downloaded-file sensor is always planted explicitly, because every
+        scenario here is about what each one says or fails to say.
         """
         hass = bambu_hass()
         hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, downloaded, {})
         if gcode_name is not None:
             hass.states.by_entity_id[GCODE_NAME] = State(GCODE_NAME, gcode_name, {})
+        if subtask is not None:
+            hass.states.by_entity_id[SUBTASK_NAME] = State(SUBTASK_NAME, subtask, {})
         return BambuLabGateway(as_hass(hass)).current_job_status(A_PRINTER).name
+
+    async def test_the_task_name_wins_when_all_three_speak(self) -> None:
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE, SUBTASK_NAME_VALUE) == SUBTASK_NAME_VALUE
+
+    async def test_a_start_is_named_after_itself_not_after_the_file_before_it(self) -> None:
+        """The recorder's shape at the start event, verbatim: the task sensor names the
+        print that is starting and the downloaded-file sensor still names the previous
+        one. The row opens under the former."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, PREVIOUS_DOWNLOAD, {})
+        hass.states.by_entity_id[SUBTASK_NAME] = State(SUBTASK_NAME, SUBTASK_NAME_VALUE, {})
+        listener = RecordingPrintListener()
+        BambuLabGateway(as_hass(hass)).subscribe_jobs(listener)
+
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        assert listener.received == [
+            PrintStarted(name=SUBTASK_NAME_VALUE, printer=A_PRINTER, plan=None)
+        ]
+
+    async def test_a_task_name_of_unknown_falls_to_the_gcode_file(self) -> None:
+        """The literal the task sensor parks on between prints (2026-08-11) is silence,
+        never a name — and it is silence in every spelling upstream might pad or case
+        it into, not only the bare `STATE_UNKNOWN` the state reader already drops."""
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE, "unknown") == GCODE_NAME_VALUE
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE, " Unknown ") == GCODE_NAME_VALUE
+
+    async def test_the_gcode_file_outranks_the_downloaded_file_when_both_speak(self) -> None:
+        """Reversed from v2.5, which preferred the downloaded form for being the identity
+        historical rows carry. It is also the form that lags the start by ten to twenty
+        seconds, so preferring it named every job after its predecessor."""
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE) == GCODE_NAME_VALUE
+
+    async def test_a_gcode_file_of_unknown_falls_to_the_downloaded_file(self) -> None:
+        """Between prints `gcode_file` can read `unknown` too (2026-09-03)."""
+        assert self.reading(JOB_NAME, "unknown", "unknown") == JOB_NAME
+
+    async def test_the_downloaded_file_answers_when_the_other_two_are_silent(self) -> None:
+        """Blank and unavailable are the same silence as absent: the last sensor still
+        names the job, in the form every historical row carries."""
+        assert self.reading(JOB_NAME, None, None) == JOB_NAME
+        assert self.reading(JOB_NAME, STATE_UNAVAILABLE, "   ") == JOB_NAME
 
     async def test_the_gcode_name_speaks_when_the_downloaded_file_is_dead(self) -> None:
         """The restart shape: downloaded-file `unavailable`, gcode-name restored."""
         assert self.reading(STATE_UNAVAILABLE, GCODE_NAME_VALUE) == GCODE_NAME_VALUE
 
-    async def test_both_sensors_silent_is_the_unknown_job_not_an_exception(self) -> None:
-        """Only when neither sensor speaks does the reader admit it does not know."""
-        assert self.reading(STATE_UNAVAILABLE, STATE_UNAVAILABLE) == UNKNOWN_JOB_NAME
-
-    async def test_the_downloaded_file_still_wins_when_both_speak(self) -> None:
-        """The `NNNN-name.gcode` form is the identity every historical row was named
-        with, so while it speaks it stays the name — a fallback that outranked it would
-        rename the same job between two glances."""
-        assert self.reading(JOB_NAME, GCODE_NAME_VALUE) == JOB_NAME
-
-    async def test_a_blank_downloaded_file_falls_back_not_through(self) -> None:
-        """Whitespace is silence, not a name: a sensor answering `"   "` yields to the
-        fallback rather than naming the job a blank string."""
-        assert self.reading("   ", GCODE_NAME_VALUE) == GCODE_NAME_VALUE
-
-    async def test_a_blank_gcode_name_is_silence_at_the_fallback_too(self) -> None:
-        """The same whitespace rule, applied to the second sensor: a fallback answering
-        `"   "` names nothing, and the reader admits the unknown job rather than
-        passing a blank string down as a name."""
-        assert self.reading(STATE_UNAVAILABLE, "   ") == UNKNOWN_JOB_NAME
+    async def test_all_three_silent_is_the_unknown_job_not_an_exception(self) -> None:
+        """Only when no sensor speaks does the reader admit it does not know — and it
+        admits it in its own words rather than passing a blank or the printer's
+        `unknown` down as a name."""
+        assert self.reading(STATE_UNAVAILABLE, STATE_UNAVAILABLE, STATE_UNAVAILABLE) == (
+            UNKNOWN_JOB_NAME
+        )
+        assert self.reading("   ", "   ", "unknown") == UNKNOWN_JOB_NAME
 
 
 class TestCurrentTrays:
