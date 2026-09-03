@@ -132,7 +132,10 @@ one deducts one printer's grams from the spools in the other printer's trays
 1. Verify idempotency; abort silently if already recorded.
 2. **If no per-tray usage is available at all, open a review (UC-05) with reason
    `UNMAPPED_USAGE`, a zero estimate and an explicit flag, mark the job recorded, and stop.**
-   Deduct nothing.
+   Deduct nothing. The zero estimate names every tray the printer reported *and* every tray
+   of the job's printer that currently holds a spool, each charged to that spool at zero, so
+   the card has a row per loaded tray for the user to fill in; a job that names no printer
+   lists only what it reported.
 3. For each tray with non-zero usage:
    a. Resolve the mounted spool. If none, collect the tray as unresolved and continue.
    b. Append `PRINT_CONSUMPTION` with source `AUTOMATIC`.
@@ -155,7 +158,11 @@ not readable at any single instant: the sensor carrying it is republished in occ
 bursts, each one a pair of rows seconds apart that carry the breakdown and then drop it,
 and it first arrives well after the job starts — so the gateway follows it and keeps the last reading seen during the job, and a job
 that ended before one arrived reports no usage rather than the previous job's
-([12](12-field-notes.md)). A missing figure is not a figure of zero. Recording zero for a print that consumed 84 g is a silent,
+([12](12-field-notes.md)). A re-print whose figures equal its predecessor's announces no weight
+change at all — Home Assistant emits nothing for an identical write — so the gateway also reads
+the sensor at the *parse edge*: the moment upstream's `printable_objects` count rises after the
+new `.3mf` has been read, which happens for an identical re-print too ([12](12-field-notes.md),
+2026-09-03). A missing figure is not a figure of zero. Recording zero for a print that consumed 84 g is a silent,
 optimistic lie, and it is the only failure in this system that leaves no trace at all.
 
 **Which clock stamps the entry.** Step 3b writes `occurred_at` from the job's `ended_at`,

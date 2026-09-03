@@ -444,3 +444,45 @@ brings it back on the next print.
 `printer_ended_at - printer_started_at` as the machine's elapsed time, and a five-hour print
 would read as ten. Only a *later* reading is taken: a stale value names an earlier print and
 upstream's truncation rounds down, so corrections only ever move forward.
+
+## 2026-09-03 — A print was named after the file before it
+
+Read off the recorder at the start event of a print at 15:17:33Z, with `ha-bambulab`'s
+debug log beside it:
+
+| Sensor | At `event_print_started` | Rewritten |
+| --- | --- | --- |
+| `subtask_name` | `Professional lab_Smart print AMS lite spool adapter PLA_PETG` | about 2 s *before* the event, by the cloud task fetch |
+| `gcode_file` | `Professional lab_Smart print AMS lite spool adapter PLA_PETG.3mf` | with the task; reads `unknown` between prints |
+| `gcode_file_downloaded` | `696790-P1 -TIE avenger.gcode` — the *previous* print | 15:17:51Z, after the FTP thread parsed the new 3MF |
+
+pybambu fires `event_print_started` synchronously while it processes the MQTT message,
+before any entity is refreshed, so at the bus event every sensor still holds the previous
+message's values; `subtask_name` is current only because it was written two seconds
+earlier. `_job_name` preferred the downloaded file, so every job was stored under the name
+of the print before it. `subtask_name` sometimes arrives in the `Project/Name` slash form.
+
+The numeric prefix on the downloaded-file sensor (`696790-`) is the cached 3MF's byte
+size, not a cloud task id as `display_job_name`'s docstring claimed; the stripping is
+unchanged.
+
+## 2026-09-03 — An identical re-print republishes nothing
+
+The per-tray plan was lost for a re-print whose figures equalled the previous print's.
+Upstream parsed the file and computed the plan — its debug log read `AMS Tray 2: 7.22m |
+21.88g` at 18:42:08Z — but the `print_weight` sensor's state *and* attributes were
+unchanged, and Home Assistant emits no `state_changed` for an identical write. The recorder
+holds no `print_weight` row between 15:17:41Z and 19:19:30Z. So the state-change tracker
+never ran, the start had already discarded the held reading, `_plan_at_ending` found
+nothing held for a machine it had watched start, and UC-04 opened a review with no figures
+(review `497c3c96`). That review carried no lines at all, so the panel rendered the no-data
+card with no tray rows: the user could neither type the grams nor pick a spool.
+
+The signal that does fire is upstream's `printable_objects` sensor (`unique_id`
+`<serial>_printable_objects`, state the object count, attribute `objects`). It is cleared
+to `0` at print start — upstream logs *Clearing pick data* — and set to the count right
+after the FTP parse, in the same coordinator refresh that writes the per-tray weights, and
+it changes for an identical re-print too: `0` at 18:41:49Z, `1` at 18:42:08Z. The
+cover-image entity changes at the parse as well, but three times per print, one of them a
+cloud cover download that precedes the parse, so it is not used. `gcode_file_downloaded`
+does not change on an identical re-print either.

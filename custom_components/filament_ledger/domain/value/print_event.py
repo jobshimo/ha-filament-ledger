@@ -33,6 +33,14 @@ if TYPE_CHECKING:
     from .identifiers import PrinterSerial, TrayRef
     from .percentage import Percentage
 
+# What a job is called when no name sensor can say. Never blank: the review card and the
+# notification both lead with the name, and an empty string reads as a rendering bug rather
+# than an honest unknown. It lives with the events rather than in the adapter that answers
+# it because the receiving use case has to recognise it: a row opened under this name is
+# corrected by the first observation that carries a real one, and no row is ever renamed
+# *to* it (`TrackPrintJob._plan_observed`).
+UNKNOWN_JOB_NAME = "unknown print"
+
 
 @dataclass(frozen=True, slots=True)
 class PrintStarted:
@@ -200,7 +208,9 @@ class PrintPlanObserved:
     `name` rides along because it suffers the same lag from the same cause: the file sensor
     is republished after the start, so a row opened at the first `prepare` carries the
     previous print's filename until something refreshes it. `None` leaves the stored name
-    alone.
+    alone, and so does `UNKNOWN_JOB_NAME`: a row opened while every name sensor was silent
+    is corrected by the first observation that carries a real name, and a named row is
+    never renamed to the admission that nothing spoke.
 
     `printer_started_at` is the machine's own answer to *when did the print I am
     describing begin*, read off the same sensor the starts carry. It exists so the

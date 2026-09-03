@@ -47,6 +47,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_event import (
+    UNKNOWN_JOB_NAME,
     PrintEnded,
     PrintEvent,
     PrintPlanObserved,
@@ -55,10 +56,7 @@ from custom_components.filament_ledger.domain.value.print_event import (
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.tray_reading import TrayReading
-from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import (
-    UNKNOWN_JOB_NAME,
-    BambuLabGateway,
-)
+from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
 from custom_components.filament_ledger.infrastructure.ha.job_sync import JobSync
 from custom_components.filament_ledger.infrastructure.ha.runtime import LedgerConfigEntry
 from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
@@ -119,6 +117,13 @@ PRINT_ERROR = "binary_sensor.a1_00000000testser_error_de_la_impresion"
 # was never in the captured `print_sensors.json`, so every test that means it plants it.
 STAGE = "sensor.a1_00000000testser_estado_actual"
 
+# The object-count sensor, whose rising edge is the one signal that this job's 3MF has been
+# parsed: upstream clears it to `0` at print start and sets it to the count in the refresh
+# that writes the new per-tray weights, even for a re-print whose weights are unchanged
+# (docs/12-field-notes.md, 2026-09-03). Not in the frozen capture, which predates that
+# reading, so the tests that mean it plant its registry row (`objects_row`) and its state.
+PRINTABLE_OBJECTS = "sensor.a1_00000000testser_objetos_imprimibles"
+
 # The job-name fallback: `gcode_file_downloaded` speaks only at the moment a file is
 # downloaded and stays `unavailable` across a Home Assistant restart, while upstream
 # restores this sensor on reconnect. Deliberately absent from `print_sensors.json` for
@@ -126,6 +131,17 @@ STAGE = "sensor.a1_00000000testser_estado_actual"
 # that mean it — and the value planted is the shape the reference instance publishes.
 GCODE_NAME = "sensor.a1_00000000testser_nombre_del_gcode"
 GCODE_NAME_VALUE = "80% + parts, ironning, 0.2mm layer,2 walls,8% infill.3mf"
+
+# The sensor that names the print *being started*. The cloud task fetch writes it about two
+# seconds before `event_print_started`, where `gcode_file_downloaded` is rewritten only after
+# the FTP thread parses the new 3MF, ten to twenty seconds after — so at the start event it
+# is the one sensor already describing this job (docs/12-field-notes.md, 2026-09-03).
+# Stateless in the base harness like the two above, and planted by the tests that mean it;
+# the value is the one the recorder held at 15:17:33Z that day.
+SUBTASK_NAME = "sensor.a1_00000000testser_nombre_de_la_tarea"
+SUBTASK_NAME_VALUE = "Professional lab_Smart print AMS lite spool adapter PLA_PETG"
+# What `gcode_file_downloaded` still read at that same instant: the previous print.
+PREVIOUS_DOWNLOAD = "696790-P1 -TIE avenger.gcode"
 
 # The three job-time sensors frozen in v1.4. Their `translation_key`s were read off the
 # reference instance's registry before the constant was frozen (docs/13 — Traps); the
@@ -343,6 +359,33 @@ def fire_status_change(hass: FakeHass, state: str, entity_id: str = STATUS) -> N
     The value is the whole payload here: `gcode_state` is a bare string and the ending is
     read off *arriving* at it, so the attributes never enter into it.
     """
+    old_state = hass.states.get(entity_id)
+    new_state = State(entity_id, state, {})
+    hass.states.by_entity_id[entity_id] = new_state
+    hass.bus.async_fire(
+        "state_changed",
+        {"entity_id": entity_id, "old_state": old_state, "new_state": new_state},
+    )
+
+
+def objects_row() -> dict[str, str]:
+    """The object-count sensor's registry row, in the `<serial>_<key>` shape every job
+    sensor of the capture carries — read off the live instance on 2026-09-03 and planted
+    here rather than written into the frozen capture, the way the second machine's rows
+    are."""
+    return {
+        "entity_id": PRINTABLE_OBJECTS,
+        "platform": "bambu_lab",
+        "unique_id": f"{A_PRINTER.value}_printable_objects",
+        "translation_key": "printable_objects",
+        "device_id": PRINTER_DEVICE,
+    }
+
+
+def fire_objects_change(hass: FakeHass, state: str, entity_id: str = PRINTABLE_OBJECTS) -> None:
+    """One move of the object-count sensor: `0` when a print starts, the count once its
+    3MF has been parsed. The count is the whole payload; the `objects` attribute is
+    never read."""
     old_state = hass.states.get(entity_id)
     new_state = State(entity_id, state, {})
     hass.states.by_entity_id[entity_id] = new_state
@@ -664,53 +707,88 @@ class TestRemainingTime:
 
 
 class TestJobName:
-    """The job-name reader falling back from the downloaded file to the gcode's name.
+    """The job-name reader, preferring the sensor that names *this* print.
 
-    `gcode_file_downloaded` publishes only when the printer downloads a file and goes
-    `unavailable` across a Home Assistant restart, staying dead until the *next*
-    download — so mid-print after a restart, the Printer tab and every row opened in
-    that window read "unknown print" off a machine verifiably printing something. The
-    `gcode_name` sensor is restored on reconnect and carries the job's name through
-    exactly that gap.
+    Measured at the start event of a print at 15:17:33Z on 2026-09-03
+    (docs/12-field-notes.md): `subtask_name` and `gcode_file` already named the new
+    print, while `gcode_file_downloaded` still named the previous one and went on doing
+    so until 15:17:51Z — upstream rewrites it only after its FTP thread has parsed the
+    new 3MF. A reader that led with the downloaded file, as v2.5's did, stored every job
+    under the name of the print before it. So `subtask_name` leads, `gcode_file` follows,
+    and the downloaded file is the last resort: still the only sensor speaking on a
+    machine whose other two are silent, and the form every historical row carries.
     """
 
-    def reading(self, downloaded: str, gcode_name: str | None) -> str:
-        """The name `current_job_status` reads with both sensors planted as given.
+    def reading(self, downloaded: str, gcode_name: str | None, subtask: str | None = None) -> str:
+        """The name `current_job_status` reads with the sensors planted as given.
 
-        `None` for the gcode-name sensor leaves it stateless — the shape of a machine
-        that never reported it — while the downloaded-file sensor is always planted
-        explicitly, because every scenario here is about what it says or fails to say.
+        `None` leaves a sensor stateless — the shape of a machine that never reported it
+        — while the downloaded-file sensor is always planted explicitly, because every
+        scenario here is about what each one says or fails to say.
         """
         hass = bambu_hass()
         hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, downloaded, {})
         if gcode_name is not None:
             hass.states.by_entity_id[GCODE_NAME] = State(GCODE_NAME, gcode_name, {})
+        if subtask is not None:
+            hass.states.by_entity_id[SUBTASK_NAME] = State(SUBTASK_NAME, subtask, {})
         return BambuLabGateway(as_hass(hass)).current_job_status(A_PRINTER).name
+
+    async def test_the_task_name_wins_when_all_three_speak(self) -> None:
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE, SUBTASK_NAME_VALUE) == SUBTASK_NAME_VALUE
+
+    async def test_a_start_is_named_after_itself_not_after_the_file_before_it(self) -> None:
+        """The recorder's shape at the start event, verbatim: the task sensor names the
+        print that is starting and the downloaded-file sensor still names the previous
+        one. The row opens under the former."""
+        hass = bambu_hass()
+        hass.states.by_entity_id[GCODE_FILE] = State(GCODE_FILE, PREVIOUS_DOWNLOAD, {})
+        hass.states.by_entity_id[SUBTASK_NAME] = State(SUBTASK_NAME, SUBTASK_NAME_VALUE, {})
+        listener = RecordingPrintListener()
+        BambuLabGateway(as_hass(hass)).subscribe_jobs(listener)
+
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        assert listener.received == [
+            PrintStarted(name=SUBTASK_NAME_VALUE, printer=A_PRINTER, plan=None)
+        ]
+
+    async def test_a_task_name_of_unknown_falls_to_the_gcode_file(self) -> None:
+        """The literal the task sensor parks on between prints (2026-08-11) is silence,
+        never a name — and it is silence in every spelling upstream might pad or case
+        it into, not only the bare `STATE_UNKNOWN` the state reader already drops."""
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE, "unknown") == GCODE_NAME_VALUE
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE, " Unknown ") == GCODE_NAME_VALUE
+
+    async def test_the_gcode_file_outranks_the_downloaded_file_when_both_speak(self) -> None:
+        """Reversed from v2.5, which preferred the downloaded form for being the identity
+        historical rows carry. It is also the form that lags the start by ten to twenty
+        seconds, so preferring it named every job after its predecessor."""
+        assert self.reading(JOB_NAME, GCODE_NAME_VALUE) == GCODE_NAME_VALUE
+
+    async def test_a_gcode_file_of_unknown_falls_to_the_downloaded_file(self) -> None:
+        """Between prints `gcode_file` can read `unknown` too (2026-09-03)."""
+        assert self.reading(JOB_NAME, "unknown", "unknown") == JOB_NAME
+
+    async def test_the_downloaded_file_answers_when_the_other_two_are_silent(self) -> None:
+        """Blank and unavailable are the same silence as absent: the last sensor still
+        names the job, in the form every historical row carries."""
+        assert self.reading(JOB_NAME, None, None) == JOB_NAME
+        assert self.reading(JOB_NAME, STATE_UNAVAILABLE, "   ") == JOB_NAME
 
     async def test_the_gcode_name_speaks_when_the_downloaded_file_is_dead(self) -> None:
         """The restart shape: downloaded-file `unavailable`, gcode-name restored."""
         assert self.reading(STATE_UNAVAILABLE, GCODE_NAME_VALUE) == GCODE_NAME_VALUE
 
-    async def test_both_sensors_silent_is_the_unknown_job_not_an_exception(self) -> None:
-        """Only when neither sensor speaks does the reader admit it does not know."""
-        assert self.reading(STATE_UNAVAILABLE, STATE_UNAVAILABLE) == UNKNOWN_JOB_NAME
-
-    async def test_the_downloaded_file_still_wins_when_both_speak(self) -> None:
-        """The `NNNN-name.gcode` form is the identity every historical row was named
-        with, so while it speaks it stays the name — a fallback that outranked it would
-        rename the same job between two glances."""
-        assert self.reading(JOB_NAME, GCODE_NAME_VALUE) == JOB_NAME
-
-    async def test_a_blank_downloaded_file_falls_back_not_through(self) -> None:
-        """Whitespace is silence, not a name: a sensor answering `"   "` yields to the
-        fallback rather than naming the job a blank string."""
-        assert self.reading("   ", GCODE_NAME_VALUE) == GCODE_NAME_VALUE
-
-    async def test_a_blank_gcode_name_is_silence_at_the_fallback_too(self) -> None:
-        """The same whitespace rule, applied to the second sensor: a fallback answering
-        `"   "` names nothing, and the reader admits the unknown job rather than
-        passing a blank string down as a name."""
-        assert self.reading(STATE_UNAVAILABLE, "   ") == UNKNOWN_JOB_NAME
+    async def test_all_three_silent_is_the_unknown_job_not_an_exception(self) -> None:
+        """Only when no sensor speaks does the reader admit it does not know — and it
+        admits it in its own words rather than passing a blank or the printer's
+        `unknown` down as a name."""
+        assert self.reading(STATE_UNAVAILABLE, STATE_UNAVAILABLE, STATE_UNAVAILABLE) == (
+            UNKNOWN_JOB_NAME
+        )
+        assert self.reading("   ", "   ", "unknown") == UNKNOWN_JOB_NAME
 
 
 class TestCurrentTrays:
@@ -2267,3 +2345,142 @@ class TestFiguresAreForwardedWhileThePrintRuns:
             {a_tray(1): Grams.of(10)},
             {a_tray(1): Grams.of("31.33")},
         ]
+
+
+#: The re-print's plan as upstream logged it at 18:42:08Z — and, byte for byte, the
+#: previous print's, which is the whole case.
+IDENTICAL_REPRINT: dict[str, object] = {"AMS 1 Tray 2": 21.88}
+
+
+class TestAnIdenticalReprintStillReportsItsPlan:
+    """A re-print with exactly the previous print's figures publishes no weight change.
+
+    Upstream parses the new 3MF, computes the same plan, and writes the weight sensor with
+    the same state and the same attributes — and Home Assistant announces nothing for an
+    identical write. The start had already discarded the held reading, so the ending found
+    nothing held for a machine it had watched start and the job went to review without
+    figures (docs/12-field-notes.md, 2026-09-03: not one `print_weight` recorder row
+    between 15:17:41Z and 19:19:30Z, although upstream logged the re-print's `21.88g` at
+    18:42:08Z). The `printable_objects` sensor is cleared to `0` at the start and set to
+    the count right after the parse, in the same refresh, even when the plan is unchanged
+    — `0` at 18:41:49Z, `1` at 18:42:08Z — so its rising edge is when the weight sensor
+    is read.
+    """
+
+    def running_reprint(self) -> tuple[FakeHass, RecordingPrintListener]:
+        """A machine whose weight sensor already holds the figures of the print before,
+        watched through a start and the clearing that follows it — the shape in which no
+        weight change is ever announced again."""
+        hass = bambu_hass(rows=[*REGISTRY_ROWS, objects_row()])
+        hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "40.51", IDENTICAL_REPRINT)
+        hass.states.by_entity_id[PRINTABLE_OBJECTS] = State(PRINTABLE_OBJECTS, "1", {})
+        listener = RecordingPrintListener()
+        BambuLabGateway(as_hass(hass)).subscribe_jobs(listener)
+        fire_job_event(hass, "event_print_started")
+        fire_objects_change(hass, "0")  # upstream clearing the pick data
+        return hass, listener
+
+    def observations(self, listener: RecordingPrintListener) -> list[PrintPlanObserved]:
+        return [e for e in listener.received if isinstance(e, PrintPlanObserved)]
+
+    async def test_the_parse_edge_forwards_the_plan_the_weight_sensor_never_announced(
+        self,
+    ) -> None:
+        hass, listener = self.running_reprint()
+        await hass.drain()
+        assert self.observations(listener) == [], "nothing has been announced since the start"
+
+        fire_objects_change(hass, "1")
+        await hass.drain()
+
+        [observed] = self.observations(listener)
+        assert observed.printer == A_PRINTER
+        assert observed.plan == {a_tray(2): Grams.of("21.88")}
+
+    async def test_the_ending_charges_the_plan_read_at_the_edge(self) -> None:
+        """`_plan_at_ending` finds the reading held, exactly as if the sensor had spoken."""
+        hass, listener = self.running_reprint()
+        fire_objects_change(hass, "1")
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {a_tray(2): Grams.of("21.88")}
+
+    async def test_the_clearing_to_zero_reads_nothing(self) -> None:
+        """`0` is the start clearing the pick data, and the weight sensor beside it still
+        holds the previous print's figures — reading it there would be the very charge
+        the start's discard exists to prevent."""
+        hass, listener = self.running_reprint()
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        assert self.observations(listener) == []
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage is None
+
+    @pytest.mark.parametrize("reading", [STATE_UNAVAILABLE, "unknown", "many", ""])
+    async def test_a_count_that_is_not_a_count_is_silence(self, reading: str) -> None:
+        hass, listener = self.running_reprint()
+
+        fire_objects_change(hass, reading)
+        await hass.drain()
+
+        assert self.observations(listener) == []
+
+    async def test_a_plan_the_weight_sensor_already_announced_is_not_forwarded_twice(
+        self,
+    ) -> None:
+        """A re-print with *different* figures still announces its weight change, and the
+        edge then reads the reading the weight path already holds: one delivery."""
+        hass, listener = self.running_reprint()
+        fire_weight_change(hass, {"AMS 1 Tray 2": 30.0})
+
+        fire_objects_change(hass, "1")
+        await hass.drain()
+
+        assert [o.plan for o in self.observations(listener)] == [{a_tray(2): Grams.of(30)}]
+
+    async def test_a_weight_sensor_silent_at_the_edge_is_left_to_its_own_change(self) -> None:
+        hass, listener = self.running_reprint()
+        hass.states.by_entity_id[WEIGHT] = State(WEIGHT, STATE_UNAVAILABLE)
+
+        fire_objects_change(hass, "1")
+        await hass.drain()
+        assert self.observations(listener) == []
+
+        fire_weight_change(hass, IDENTICAL_REPRINT)
+        await hass.drain()
+        assert len(self.observations(listener)) == 1
+
+    async def test_the_edge_is_watched_and_let_go_with_the_other_trackers(self) -> None:
+        hass = bambu_hass(rows=[*REGISTRY_ROWS, objects_row()])
+        gateway = BambuLabGateway(as_hass(hass))
+        assert PRINTABLE_OBJECTS in gateway.watched_entity_ids
+        listener = RecordingPrintListener()
+        gateway.subscribe_jobs(listener)
+
+        gateway.detach()
+
+        assert hass.bus.listeners == []
+        fire_objects_change(hass, "1")
+        await hass.drain()
+        assert listener.received == []
+
+    async def test_a_machine_without_the_sensor_is_followed_by_its_weights_alone(self) -> None:
+        """The frozen capture has no such row — an upstream that predates the sensor — and
+        the gateway watches exactly what it watched before."""
+        hass = bambu_hass()
+        gateway = BambuLabGateway(as_hass(hass))
+        listener = RecordingPrintListener()
+        gateway.subscribe_jobs(listener)
+        assert PRINTABLE_OBJECTS not in gateway.watched_entity_ids
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 31.33})
+        await hass.drain()
+
+        assert len(self.observations(listener)) == 1
