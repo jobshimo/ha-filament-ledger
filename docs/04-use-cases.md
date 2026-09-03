@@ -132,7 +132,10 @@ one deducts one printer's grams from the spools in the other printer's trays
 1. Verify idempotency; abort silently if already recorded.
 2. **If no per-tray usage is available at all, open a review (UC-05) with reason
    `UNMAPPED_USAGE`, a zero estimate and an explicit flag, mark the job recorded, and stop.**
-   Deduct nothing.
+   Deduct nothing. The zero estimate names every tray the printer reported *and* every tray
+   of the job's printer that currently holds a spool, each charged to that spool at zero, so
+   the card has a row per loaded tray for the user to fill in; a job that names no printer
+   lists only what it reported.
 3. For each tray with non-zero usage:
    a. Resolve the mounted spool. If none, collect the tray as unresolved and continue.
    b. Append `PRINT_CONSUMPTION` with source `AUTOMATIC`.

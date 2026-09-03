@@ -36,6 +36,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     PrintJobId,
     SpoolId,
     TrayRef,
+    new_print_job_id,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
@@ -49,7 +50,7 @@ from custom_components.filament_ledger.infrastructure.persistence.review_reposit
     SqliteReviewRepository,
 )
 
-from .conftest import A_PRINTER, EPOCH, Ledger, a_tray
+from .conftest import A_PRINTER, ANOTHER_PRINTER, EPOCH, Ledger, a_tray
 
 TRAY_1 = a_tray(1)
 TRAY_2 = a_tray(2)
@@ -313,9 +314,11 @@ class TestTheMissingFigureBranch:
         assert review.job_id == job.id
         assert review.reason is ReviewReason.UNMAPPED_USAGE
         assert review.estimator_used is EstimatorKind.NONE
-        # Not even the slots are known: the review documents that a loss happened whose
-        # size nobody can name, with no line inventing one.
-        assert review.lines == ()
+        # The figure is unknown, the loaded tray is not: the review lists it at zero,
+        # charged to the spool in it, so the card has a row to type the grams into
+        # (`TestAReviewWithoutFiguresStillListsTheLoadedTrays`).
+        assert review.estimated_usage == {TRAY_1: Grams.zero()}
+        assert review.charges == [(TRAY_1, ReviewCharge(spool_id, Grams.zero()))]
         [opened] = ledger.events.of(ReviewOpened)
         assert isinstance(opened, ReviewOpened)
         assert opened.reason is ReviewReason.UNMAPPED_USAGE
@@ -331,6 +334,8 @@ class TestTheMissingFigureBranch:
         [review] = await SqliteReviewRepository(ledger.database).list_pending()
         assert review.reason is ReviewReason.UNMAPPED_USAGE
         assert review.estimator_used is EstimatorKind.NONE
+        # Nothing is loaded either, so there is no tray to list: the review documents
+        # that a loss happened whose size nobody can name, with no line inventing one.
         assert review.lines == ()
 
     async def test_an_all_zero_report_becomes_a_review_with_placeholders(
@@ -352,6 +357,101 @@ class TestTheMissingFigureBranch:
         assert review.estimated_usage == {TRAY_1: Grams.zero()}
         # The spool is a fact, the amount is not: a zero charge is what says so.
         assert review.charges == [(TRAY_1, ReviewCharge(spool_id, Grams.zero()))]
+
+
+class TestAReviewWithoutFiguresStillListsTheLoadedTrays:
+    """A review with no lines is a dead end: the panel renders the no-data card with no
+    tray rows, so the user can neither type the grams nor pick a spool. Review `497c3c96`
+    on the reference instance was left exactly there when an identical re-print published
+    no figures (docs/12-field-notes.md, 2026-09-03). The trays the printer holds a spool
+    in are the ones the print could have drawn from, so each is listed at zero and charged
+    to its spool — a placeholder awaiting the user, never a claim.
+    """
+
+    async def test_every_loaded_tray_is_listed_at_zero_charged_to_its_spool(
+        self, ledger: Ledger
+    ) -> None:
+        first = await a_spool(ledger)
+        second = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(first, TRAY_1)
+        await ledger.use_cases.mount_spool.execute(second, TRAY_2)
+
+        job = await ran_to_completion(ledger, None)
+
+        assert await consumption_rows(ledger) == []
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.job_id == job.id
+        assert review.reason is ReviewReason.UNMAPPED_USAGE
+        assert review.estimator_used is EstimatorKind.NONE
+        assert review.estimated_usage == {TRAY_1: Grams.zero(), TRAY_2: Grams.zero()}
+        assert review.charges == [
+            (TRAY_1, ReviewCharge(first, Grams.zero())),
+            (TRAY_2, ReviewCharge(second, Grams.zero())),
+        ]
+
+    async def test_a_reported_tray_and_a_loaded_one_are_both_listed(self, ledger: Ledger) -> None:
+        """The printer named tray 1 at zero and holds a spool in tray 2 only: the report
+        keeps its line, unresolved, and the loaded tray joins it with its spool."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_2)
+
+        await ran_to_completion(ledger, {TRAY_1: Grams.zero()})
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.estimated_usage == {TRAY_1: Grams.zero(), TRAY_2: Grams.zero()}
+        assert review.charges == [(TRAY_2, ReviewCharge(spool_id, Grams.zero()))]
+
+    async def test_another_machines_trays_are_not_listed(self, ledger: Ledger) -> None:
+        """Only the trays in front of this print: a spool loaded in the other machine's
+        slot 1 was not what this job could have drawn from."""
+        mine = await a_spool(ledger)
+        theirs = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(mine, TRAY_1)
+        await ledger.use_cases.mount_spool.execute(theirs, a_tray(1, printer=ANOTHER_PRINTER))
+
+        await ran_to_completion(ledger, None)
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.estimated_usage == {TRAY_1: Grams.zero()}
+        assert review.charges == [(TRAY_1, ReviewCharge(mine, Grams.zero()))]
+
+    async def test_a_job_that_names_no_machine_lists_nothing(self, ledger: Ledger) -> None:
+        """A row from before migration 0008 says nothing about which printer ran it, and
+        which machine's trays to list would be a guess. The review still documents the
+        loss exactly as it always has."""
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
+        job = PrintJob(
+            id=new_print_job_id(),
+            name="bracket_v3.gcode.3mf",
+            state=PrintJobState.FINISHED,
+            started_at=EPOCH,
+            printer=None,
+            ended_at=EPOCH + timedelta(minutes=42),
+        )
+
+        await ledger.use_cases.record_print_consumption.execute(job)
+
+        [review] = await SqliteReviewRepository(ledger.database).list_pending()
+        assert review.job_id == job.id
+        assert review.lines == ()
+        assert await balance_of(ledger, spool_id) == Grams.of(1000)
+
+    async def test_loaded_trays_are_not_added_when_the_printer_reported_figures(
+        self, ledger: Ledger
+    ) -> None:
+        """The normal path is untouched: a report deducts from the trays it names and
+        opens no review for the loaded trays it does not."""
+        consuming = await a_spool(ledger)
+        idle = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(consuming, TRAY_1)
+        await ledger.use_cases.mount_spool.execute(idle, TRAY_2)
+
+        await ran_to_completion(ledger, {TRAY_1: Grams.of("38.2")})
+
+        assert await balance_of(ledger, consuming) == Grams.of("961.8")
+        assert await balance_of(ledger, idle) == Grams.of(1000)
+        assert await SqliteReviewRepository(ledger.database).list_pending() == []
 
 
 class TestUnresolvedSlots:

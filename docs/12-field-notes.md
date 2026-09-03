@@ -475,7 +475,8 @@ unchanged, and Home Assistant emits no `state_changed` for an identical write. T
 holds no `print_weight` row between 15:17:41Z and 19:19:30Z. So the state-change tracker
 never ran, the start had already discarded the held reading, `_plan_at_ending` found
 nothing held for a machine it had watched start, and UC-04 opened a review with no figures
-(review `497c3c96`).
+(review `497c3c96`). That review carried no lines at all, so the panel rendered the no-data
+card with no tray rows: the user could neither type the grams nor pick a spool.
 
 The signal that does fire is upstream's `printable_objects` sensor (`unique_id`
 `<serial>_printable_objects`, state the object count, attribute `objects`). It is cleared
