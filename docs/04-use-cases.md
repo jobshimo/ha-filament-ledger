@@ -155,7 +155,11 @@ not readable at any single instant: the sensor carrying it is republished in occ
 bursts, each one a pair of rows seconds apart that carry the breakdown and then drop it,
 and it first arrives well after the job starts — so the gateway follows it and keeps the last reading seen during the job, and a job
 that ended before one arrived reports no usage rather than the previous job's
-([12](12-field-notes.md)). A missing figure is not a figure of zero. Recording zero for a print that consumed 84 g is a silent,
+([12](12-field-notes.md)). A re-print whose figures equal its predecessor's announces no weight
+change at all — Home Assistant emits nothing for an identical write — so the gateway also reads
+the sensor at the *parse edge*: the moment upstream's `printable_objects` count rises after the
+new `.3mf` has been read, which happens for an identical re-print too ([12](12-field-notes.md),
+2026-09-03). A missing figure is not a figure of zero. Recording zero for a print that consumed 84 g is a silent,
 optimistic lie, and it is the only failure in this system that leaves no trace at all.
 
 **Which clock stamps the entry.** Step 3b writes `occurred_at` from the job's `ended_at`,

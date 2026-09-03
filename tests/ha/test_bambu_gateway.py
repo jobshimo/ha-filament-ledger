@@ -47,6 +47,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_event import (
+    UNKNOWN_JOB_NAME,
     PrintEnded,
     PrintEvent,
     PrintPlanObserved,
@@ -55,10 +56,7 @@ from custom_components.filament_ledger.domain.value.print_event import (
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.tray_reading import TrayReading
-from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import (
-    UNKNOWN_JOB_NAME,
-    BambuLabGateway,
-)
+from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
 from custom_components.filament_ledger.infrastructure.ha.job_sync import JobSync
 from custom_components.filament_ledger.infrastructure.ha.runtime import LedgerConfigEntry
 from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
@@ -118,6 +116,13 @@ PRINT_ERROR = "binary_sensor.a1_00000000testser_error_de_la_impresion"
 # watched. Stateless in the base harness for the same reason the job-time sensors are: it
 # was never in the captured `print_sensors.json`, so every test that means it plants it.
 STAGE = "sensor.a1_00000000testser_estado_actual"
+
+# The object-count sensor, whose rising edge is the one signal that this job's 3MF has been
+# parsed: upstream clears it to `0` at print start and sets it to the count in the refresh
+# that writes the new per-tray weights, even for a re-print whose weights are unchanged
+# (docs/12-field-notes.md, 2026-09-03). Not in the frozen capture, which predates that
+# reading, so the tests that mean it plant its registry row (`objects_row`) and its state.
+PRINTABLE_OBJECTS = "sensor.a1_00000000testser_objetos_imprimibles"
 
 # The job-name fallback: `gcode_file_downloaded` speaks only at the moment a file is
 # downloaded and stays `unavailable` across a Home Assistant restart, while upstream
@@ -354,6 +359,33 @@ def fire_status_change(hass: FakeHass, state: str, entity_id: str = STATUS) -> N
     The value is the whole payload here: `gcode_state` is a bare string and the ending is
     read off *arriving* at it, so the attributes never enter into it.
     """
+    old_state = hass.states.get(entity_id)
+    new_state = State(entity_id, state, {})
+    hass.states.by_entity_id[entity_id] = new_state
+    hass.bus.async_fire(
+        "state_changed",
+        {"entity_id": entity_id, "old_state": old_state, "new_state": new_state},
+    )
+
+
+def objects_row() -> dict[str, str]:
+    """The object-count sensor's registry row, in the `<serial>_<key>` shape every job
+    sensor of the capture carries — read off the live instance on 2026-09-03 and planted
+    here rather than written into the frozen capture, the way the second machine's rows
+    are."""
+    return {
+        "entity_id": PRINTABLE_OBJECTS,
+        "platform": "bambu_lab",
+        "unique_id": f"{A_PRINTER.value}_printable_objects",
+        "translation_key": "printable_objects",
+        "device_id": PRINTER_DEVICE,
+    }
+
+
+def fire_objects_change(hass: FakeHass, state: str, entity_id: str = PRINTABLE_OBJECTS) -> None:
+    """One move of the object-count sensor: `0` when a print starts, the count once its
+    3MF has been parsed. The count is the whole payload; the `objects` attribute is
+    never read."""
     old_state = hass.states.get(entity_id)
     new_state = State(entity_id, state, {})
     hass.states.by_entity_id[entity_id] = new_state
@@ -2313,3 +2345,142 @@ class TestFiguresAreForwardedWhileThePrintRuns:
             {a_tray(1): Grams.of(10)},
             {a_tray(1): Grams.of("31.33")},
         ]
+
+
+#: The re-print's plan as upstream logged it at 18:42:08Z — and, byte for byte, the
+#: previous print's, which is the whole case.
+IDENTICAL_REPRINT: dict[str, object] = {"AMS 1 Tray 2": 21.88}
+
+
+class TestAnIdenticalReprintStillReportsItsPlan:
+    """A re-print with exactly the previous print's figures publishes no weight change.
+
+    Upstream parses the new 3MF, computes the same plan, and writes the weight sensor with
+    the same state and the same attributes — and Home Assistant announces nothing for an
+    identical write. The start had already discarded the held reading, so the ending found
+    nothing held for a machine it had watched start and the job went to review without
+    figures (docs/12-field-notes.md, 2026-09-03: not one `print_weight` recorder row
+    between 15:17:41Z and 19:19:30Z, although upstream logged the re-print's `21.88g` at
+    18:42:08Z). The `printable_objects` sensor is cleared to `0` at the start and set to
+    the count right after the parse, in the same refresh, even when the plan is unchanged
+    — `0` at 18:41:49Z, `1` at 18:42:08Z — so its rising edge is when the weight sensor
+    is read.
+    """
+
+    def running_reprint(self) -> tuple[FakeHass, RecordingPrintListener]:
+        """A machine whose weight sensor already holds the figures of the print before,
+        watched through a start and the clearing that follows it — the shape in which no
+        weight change is ever announced again."""
+        hass = bambu_hass(rows=[*REGISTRY_ROWS, objects_row()])
+        hass.states.by_entity_id[WEIGHT] = State(WEIGHT, "40.51", IDENTICAL_REPRINT)
+        hass.states.by_entity_id[PRINTABLE_OBJECTS] = State(PRINTABLE_OBJECTS, "1", {})
+        listener = RecordingPrintListener()
+        BambuLabGateway(as_hass(hass)).subscribe_jobs(listener)
+        fire_job_event(hass, "event_print_started")
+        fire_objects_change(hass, "0")  # upstream clearing the pick data
+        return hass, listener
+
+    def observations(self, listener: RecordingPrintListener) -> list[PrintPlanObserved]:
+        return [e for e in listener.received if isinstance(e, PrintPlanObserved)]
+
+    async def test_the_parse_edge_forwards_the_plan_the_weight_sensor_never_announced(
+        self,
+    ) -> None:
+        hass, listener = self.running_reprint()
+        await hass.drain()
+        assert self.observations(listener) == [], "nothing has been announced since the start"
+
+        fire_objects_change(hass, "1")
+        await hass.drain()
+
+        [observed] = self.observations(listener)
+        assert observed.printer == A_PRINTER
+        assert observed.plan == {a_tray(2): Grams.of("21.88")}
+
+    async def test_the_ending_charges_the_plan_read_at_the_edge(self) -> None:
+        """`_plan_at_ending` finds the reading held, exactly as if the sensor had spoken."""
+        hass, listener = self.running_reprint()
+        fire_objects_change(hass, "1")
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {a_tray(2): Grams.of("21.88")}
+
+    async def test_the_clearing_to_zero_reads_nothing(self) -> None:
+        """`0` is the start clearing the pick data, and the weight sensor beside it still
+        holds the previous print's figures — reading it there would be the very charge
+        the start's discard exists to prevent."""
+        hass, listener = self.running_reprint()
+
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        assert self.observations(listener) == []
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage is None
+
+    @pytest.mark.parametrize("reading", [STATE_UNAVAILABLE, "unknown", "many", ""])
+    async def test_a_count_that_is_not_a_count_is_silence(self, reading: str) -> None:
+        hass, listener = self.running_reprint()
+
+        fire_objects_change(hass, reading)
+        await hass.drain()
+
+        assert self.observations(listener) == []
+
+    async def test_a_plan_the_weight_sensor_already_announced_is_not_forwarded_twice(
+        self,
+    ) -> None:
+        """A re-print with *different* figures still announces its weight change, and the
+        edge then reads the reading the weight path already holds: one delivery."""
+        hass, listener = self.running_reprint()
+        fire_weight_change(hass, {"AMS 1 Tray 2": 30.0})
+
+        fire_objects_change(hass, "1")
+        await hass.drain()
+
+        assert [o.plan for o in self.observations(listener)] == [{a_tray(2): Grams.of(30)}]
+
+    async def test_a_weight_sensor_silent_at_the_edge_is_left_to_its_own_change(self) -> None:
+        hass, listener = self.running_reprint()
+        hass.states.by_entity_id[WEIGHT] = State(WEIGHT, STATE_UNAVAILABLE)
+
+        fire_objects_change(hass, "1")
+        await hass.drain()
+        assert self.observations(listener) == []
+
+        fire_weight_change(hass, IDENTICAL_REPRINT)
+        await hass.drain()
+        assert len(self.observations(listener)) == 1
+
+    async def test_the_edge_is_watched_and_let_go_with_the_other_trackers(self) -> None:
+        hass = bambu_hass(rows=[*REGISTRY_ROWS, objects_row()])
+        gateway = BambuLabGateway(as_hass(hass))
+        assert PRINTABLE_OBJECTS in gateway.watched_entity_ids
+        listener = RecordingPrintListener()
+        gateway.subscribe_jobs(listener)
+
+        gateway.detach()
+
+        assert hass.bus.listeners == []
+        fire_objects_change(hass, "1")
+        await hass.drain()
+        assert listener.received == []
+
+    async def test_a_machine_without_the_sensor_is_followed_by_its_weights_alone(self) -> None:
+        """The frozen capture has no such row — an upstream that predates the sensor — and
+        the gateway watches exactly what it watched before."""
+        hass = bambu_hass()
+        gateway = BambuLabGateway(as_hass(hass))
+        listener = RecordingPrintListener()
+        gateway.subscribe_jobs(listener)
+        assert PRINTABLE_OBJECTS not in gateway.watched_entity_ids
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 31.33})
+        await hass.drain()
+
+        assert len(self.observations(listener)) == 1

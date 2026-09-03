@@ -90,6 +90,7 @@ from ...domain.value.identifiers import (
 )
 from ...domain.value.percentage import Percentage
 from ...domain.value.print_event import (
+    UNKNOWN_JOB_NAME,
     PrintEnded,
     PrintEvent,
     PrintPlanObserved,
@@ -129,9 +130,16 @@ _TRAY_MARKER = "_tray_"
 # `stage`, `subtask_name`, `online`, `active_tray` and `mqtt_mode` joined in the same pass,
 # from the same read of the same registry. `stage` is the one that matters most: see
 # `_PRINTING_STAGE` below and `BambuLabGateway._is_printing`.
+#
+# `printable_objects` joined on 2026-09-03, off the live instance's registry
+# (`<serial>_printable_objects`), and it is never read for a figure. Its *change* is the one
+# signal that says this job's 3MF has been parsed — including for a re-print whose per-tray
+# figures equal the previous print's, which republishes nothing else at all.
+# `BambuLabGateway._on_objects_state_change` carries the measurement.
 PRINT_SENSOR_KEYS = frozenset(
     {
         "print_weight",
+        "printable_objects",
         "print_status",
         "stage",
         "current_layer",
@@ -259,10 +267,10 @@ _DERIVED_OUTCOMES = {
 _TRAY_WEIGHT_KEY = re.compile(r"AMS (\d+) Tray (\d+)")
 _EXTERNAL_SPOOL_KEY = "External Spool"
 
-# What a job is called when the file sensor cannot say. Never blank: the review card and
-# the notification both lead with the name, and an empty string reads as a rendering bug
-# rather than an honest unknown.
-UNKNOWN_JOB_NAME = "unknown print"
+# What a job is called when the name sensors cannot say is `UNKNOWN_JOB_NAME`, imported
+# above. It lived here until 2026-09-03 and moved to the print events because the receiving
+# use case has to recognise it too: a row opened under it is corrected by the first named
+# observation, and nothing is ever renamed *to* it.
 
 # The three sensors docs/14 §14.5 names for the Printer tab — active tray, online,
 # connection mode — waited here through v1.4 and v2.5 for their keys to be read rather than
@@ -336,6 +344,7 @@ class BambuLabGateway:
         self._unsubscribe_jobs: CALLBACK_TYPE | None = None
         self._unsubscribe_weights: CALLBACK_TYPE | None = None
         self._unsubscribe_status: CALLBACK_TYPE | None = None
+        self._unsubscribe_objects: CALLBACK_TYPE | None = None
         # The last weight-sensor reading each machine *published with tray keys in it*,
         # held here because a single instant is not enough to read it — see
         # `_on_weight_state_change` for the measurements that forced this. Keyed by
@@ -384,6 +393,14 @@ class BambuLabGateway:
             for printer in discovery.printers
             for key in ("print_status", "stage")
             if (entity_id := printer.sensors.get(key)) is not None
+        }
+        # The fifth: the object-count sensor, whose *edge* rather than its value says that
+        # this job's 3MF has been parsed and the weight sensor beside it rewritten. Same
+        # shape as the weights above, and `_on_objects_state_change` says why it exists.
+        self._printer_by_objects = {
+            entity_id: printer.serial
+            for printer in discovery.printers
+            if (entity_id := printer.sensors.get("printable_objects")) is not None
         }
 
     @property
@@ -585,6 +602,16 @@ class BambuLabGateway:
             self._unsubscribe_status = async_track_state_change_event(
                 self._hass, list(self._printer_by_status), self._on_status_state_change
             )
+        # The object-count sensors, for the same consumer: their rising edge is the one
+        # signal that fires for a re-print whose figures equal its predecessor's — the
+        # weight sensor is rewritten with the same state and attributes, and Home
+        # Assistant announces nothing for an identical write. `_on_objects_state_change`
+        # carries the measurement. A machine whose upstream predates the sensor simply has
+        # no entity here and is followed by its weight changes alone, as before.
+        if self._unsubscribe_objects is None and self._printer_by_objects:
+            self._unsubscribe_objects = async_track_state_change_event(
+                self._hass, list(self._printer_by_objects), self._on_objects_state_change
+            )
 
     async def current_trays(self) -> dict[TrayRef, TrayReading]:
         """Every machine's trays as last reported, keyed by reference, in tray order.
@@ -627,6 +654,9 @@ class BambuLabGateway:
         if self._unsubscribe_status is not None:
             self._unsubscribe_status()
             self._unsubscribe_status = None
+        if self._unsubscribe_objects is not None:
+            self._unsubscribe_objects()
+            self._unsubscribe_objects = None
         self._listeners.clear()
         self._job_listeners.clear()
         # Held observations die with the subscription that collected them. A reload builds
@@ -706,7 +736,10 @@ class BambuLabGateway:
           sensor still carries the figures of the job before this one. Reading it live
           would charge this print with its predecessor's plan — the exact defect this
           whole mechanism exists to end. The honest answer is `None`, and UC-04's
-          missing-figure branch opens a review.
+          missing-figure branch opens a review. A re-print whose figures *equal* its
+          predecessor's looks exactly like this from here — the sensor is rewritten with
+          the same values and announces nothing — which is why `_on_objects_state_change`
+          reads it at the parse edge and leaves the reading held for this branch to find.
         - *We did not.* A config-entry reload — which every options change performs — or a
           restart mid-print builds a new gateway, and
           `async_track_state_change_event` only ever fires for *future* changes. So the
@@ -754,12 +787,9 @@ class BambuLabGateway:
         So a shape without tray keys is treated as **a non-observation, never a
         correction**: it leaves whatever was last seen standing. The sensor going
         unavailable is the same silence. Only a reading that speaks the per-tray dialect
-        replaces the held one.
-
-        **The dedupe key is the whole observation**, not the tray half of it: an
-        external-spool figure that changes while the AMS trays stand still is news, and
-        comparing only the plan would swallow exactly the reading the warning below
-        exists to announce.
+        replaces the held one — in `_observe`, which is shared with the parse edge below
+        because a change of this sensor is *one* of the two ways a reading reaches this
+        gateway, and since 2026-09-03 no longer the only one.
         """
         printer = self._printer_by_weight.get(event.data["entity_id"])
         if printer is None:  # unreachable: the tracker watches only resolved entities
@@ -767,6 +797,71 @@ class BambuLabGateway:
         state = event.data["new_state"]
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
+        self._observe(printer, state)
+
+    @callback
+    def _on_objects_state_change(self, event: Event[EventStateChangedData]) -> None:
+        """The parse edge: this job's 3MF has just been read, so read the weight sensor now.
+
+        Runs inside Home Assistant's event loop, so it must never raise — every reader
+        here is total, and `_observe` is the same one the weight path runs.
+
+        **This exists because a re-print with exactly the previous print's figures
+        publishes no weight change at all.** Upstream parses the new file, computes the
+        same plan, and writes the `print_weight` sensor with the same state and the same
+        attributes — and Home Assistant emits no `state_changed` for an identical write.
+        So `_on_weight_state_change` never runs, the start has already discarded the held
+        reading, `_plan_at_ending` finds nothing held for a machine it watched start, and
+        the job reaches the review queue with no figures. Measured on the reference
+        instance (docs/12-field-notes.md, 2026-09-03): not one `print_weight` recorder row
+        between 15:17:41Z and 19:19:30Z, although upstream logged
+        `AMS Tray 2: 7.22m | 21.88g` for the re-print at 18:42:08Z.
+
+        `printable_objects` is the signal that does fire. Upstream clears it to `0` when a
+        print starts and sets it to the object count right after the FTP parse, in the
+        same coordinator refresh that writes the per-tray weights — `0` at 18:41:49Z and
+        `1` at 18:42:08Z for that re-print. So the moment its count rises above zero the
+        weight sensor beside it carries this job's plan, and it is read live *at that
+        instant* rather than waited for. The cover-image entity changes at the parse too
+        and is deliberately not used: it changes three times per print, one of them a
+        cloud cover download that precedes the parse.
+
+        A count of zero is the clearing; `unavailable`, `unknown` and anything that is not
+        an integer are silence; and a weight sensor that is silent at the edge is left to
+        its own change. The reading goes through `_observe` exactly as a weight change
+        does, so a plan the weight path already holds is not forwarded twice, and one it
+        never saw is held and forwarded as if the sensor had announced it.
+        """
+        printer = self._printer_by_objects.get(event.data["entity_id"])
+        if printer is None:  # unreachable: the tracker watches only resolved entities
+            return
+        new_state = event.data["new_state"]
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+        try:
+            count = int(new_state.state)
+        except ValueError:
+            LOGGER.debug(
+                "printable_objects reads %r, which is not an object count", new_state.state
+            )
+            return
+        if count <= 0:
+            return
+        weight = self._sensor_state(printer, "print_weight")
+        if weight is None:
+            return
+        self._observe(printer, weight)
+
+    def _observe(self, printer: PrinterSerial, state: State) -> None:
+        """Hold, forward and announce one weight-sensor reading, whichever path obtained it.
+
+        **The dedupe key is the whole observation**, not the tray half of it: an
+        external-spool figure that changes while the AMS trays stand still is news, and
+        comparing only the plan would swallow exactly the reading the warning below
+        exists to announce. The same comparison is what lets the two paths overlap
+        safely: a weight change and a parse edge reading the same sensor moments apart
+        hold and forward it once.
+        """
         observation = _tray_plan(printer, state)
         if observation is None or self._observations.get(printer) == observation:
             return

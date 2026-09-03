@@ -11,6 +11,7 @@ allowed to go.
 from __future__ import annotations
 
 from custom_components.filament_ledger.application.query import display_job_name
+from custom_components.filament_ledger.domain.value.print_event import UNKNOWN_JOB_NAME
 
 
 class TestDisplayJobName:
@@ -43,10 +44,9 @@ class TestDisplayJobName:
         assert display_job_name("Royal Crest") == "Royal Crest"
 
     def test_the_unknown_print_sentinel_is_untouched(self) -> None:
-        """`bambu_gateway.UNKNOWN_JOB_NAME`, by value rather than by import — this suite
-        runs without Home Assistant. The sentinel carries neither artefact, so it passes
-        through by construction rather than by a special case."""
-        assert display_job_name("unknown print") == "unknown print"
+        """The sentinel carries neither artefact, so it passes through by construction
+        rather than by a special case."""
+        assert display_job_name(UNKNOWN_JOB_NAME) == UNKNOWN_JOB_NAME
 
     def test_a_bare_numeric_prefix_is_a_name_not_a_prefix(self) -> None:
         """`1234-` has nothing after the dash to be the name; stripping would leave

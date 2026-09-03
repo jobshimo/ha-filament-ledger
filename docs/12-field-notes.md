@@ -465,3 +465,23 @@ of the print before it. `subtask_name` sometimes arrives in the `Project/Name` s
 The numeric prefix on the downloaded-file sensor (`696790-`) is the cached 3MF's byte
 size, not a cloud task id as `display_job_name`'s docstring claimed; the stripping is
 unchanged.
+
+## 2026-09-03 — An identical re-print republishes nothing
+
+The per-tray plan was lost for a re-print whose figures equalled the previous print's.
+Upstream parsed the file and computed the plan — its debug log read `AMS Tray 2: 7.22m |
+21.88g` at 18:42:08Z — but the `print_weight` sensor's state *and* attributes were
+unchanged, and Home Assistant emits no `state_changed` for an identical write. The recorder
+holds no `print_weight` row between 15:17:41Z and 19:19:30Z. So the state-change tracker
+never ran, the start had already discarded the held reading, `_plan_at_ending` found
+nothing held for a machine it had watched start, and UC-04 opened a review with no figures
+(review `497c3c96`).
+
+The signal that does fire is upstream's `printable_objects` sensor (`unique_id`
+`<serial>_printable_objects`, state the object count, attribute `objects`). It is cleared
+to `0` at print start — upstream logs *Clearing pick data* — and set to the count right
+after the FTP parse, in the same coordinator refresh that writes the per-tray weights, and
+it changes for an identical re-print too: `0` at 18:41:49Z, `1` at 18:42:08Z. The
+cover-image entity changes at the parse as well, but three times per print, one of them a
+cloud cover download that precedes the parse, so it is not used. `gcode_file_downloaded`
+does not change on an identical re-print either.

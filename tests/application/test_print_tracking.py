@@ -30,6 +30,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_event import (
+    UNKNOWN_JOB_NAME,
     PrintEnded,
     PrintEvent,
     PrintPlanObserved,
@@ -68,9 +69,10 @@ def started(
     printer: PrinterSerial = A_PRINTER,
     printer_started_at: datetime | None = None,
     derived: bool = False,
+    name: str = "bracket_v3.gcode.3mf",
 ) -> PrintStarted:
     return PrintStarted(
-        name="bracket_v3.gcode.3mf",
+        name=name,
         printer=printer,
         plan=plan,
         printer_started_at=printer_started_at,
@@ -977,6 +979,25 @@ class TestAStaleRowRefusesAnotherPrintsPlan:
         [job] = await stored_jobs(ledger)
         assert job.reported_usage == {TRAY_1: Grams.of(9)}
 
+    async def test_an_old_row_under_the_sentinel_is_not_renamed_either(
+        self, ledger: Ledger
+    ) -> None:
+        """The guard is by identity, and a row that would dearly like a name is no
+        exception: the name and the figures belong to the print running now."""
+        await ledger.use_cases.track_print_job.execute(
+            started(name=UNKNOWN_JOB_NAME, printer_started_at=A_PREVIOUS_PRINT)
+        )
+        ledger.clock.advance(hours=4)
+
+        result = await ledger.use_cases.track_print_job.execute(
+            plan_observed(name="bracket_v3.gcode.3mf", printer_started_at=THIS_PRINT)
+        )
+
+        assert result is None
+        [job] = await stored_jobs(ledger)
+        assert job.name == UNKNOWN_JOB_NAME
+        assert job.reported_usage is None
+
 
 class TestADecidedOrphanIsNotAskedAgain:
     """Dismiss, print, the same ghost again (observed live, 2026-08-31).
@@ -1066,6 +1087,37 @@ class TestThePlanIsPersistedWhileTheJobRuns:
 
         [job] = await stored_jobs(ledger)
         assert job.name == "bracket_v3.gcode.3mf"
+
+    async def test_a_row_opened_under_the_sentinel_takes_the_observations_name(
+        self, ledger: Ledger
+    ) -> None:
+        """Every name sensor can be silent at the start — a restart, a reconnect — so the
+        row opens as `unknown print`. The first named observation is the row learning
+        what it is called, and it lands with the figures in one write."""
+        await ledger.use_cases.track_print_job.execute(started(name=UNKNOWN_JOB_NAME))
+
+        await ledger.use_cases.track_print_job.execute(
+            plan_observed({TRAY_1: Grams.of("21.88")}, name="bracket_v3.gcode.3mf")
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.name == "bracket_v3.gcode.3mf"
+        assert job.reported_usage == {TRAY_1: Grams.of("21.88")}
+
+    async def test_an_observation_that_only_knows_the_sentinel_leaves_a_named_row_alone(
+        self, ledger: Ledger
+    ) -> None:
+        """The figures still land; the name is not replaced by the admission that no
+        sensor spoke when they were read."""
+        await ledger.use_cases.track_print_job.execute(started())
+
+        await ledger.use_cases.track_print_job.execute(
+            plan_observed({TRAY_1: Grams.of(31)}, name=UNKNOWN_JOB_NAME)
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.name == "bracket_v3.gcode.3mf"
+        assert job.reported_usage == {TRAY_1: Grams.of(31)}
 
     async def test_figures_with_no_running_job_write_nothing(self, ledger: Ledger) -> None:
         """The sensor republishes between prints. Inventing a row for that would mint a
