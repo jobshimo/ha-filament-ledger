@@ -289,14 +289,14 @@ needs the real string, not a friendly paraphrase of it.
 the queue is deliberate confirmation; a reflex approval is worse than no queue at all.
 
 **A slot with no spool is shown, not hidden.** Rows are keyed by *slot*, and a slot the
-system could not attribute renders with a spool picker in place of the swatch:
+system could not attribute renders with a button into the spool picker in place of the swatch:
 
 ```
 │    Slot 1                            [  28.4 ] g               │
-│      ███ PLA Basic Black                                       │
+│      ███ PLA Basic Black                     Change            │
 │      [ + Add spool ]                                           │
 │    Slot 3                            [  12.1 ] g               │
-│      ⚠ which spool was in this tray?  [ Choose spool ▾ ]       │
+│      ⚠ [ Choose spool… ]                                       │
 │      [ + Add spool ]                                           │
 │                                                                │
 │                          [ Dismiss ]        [ ✓ Approve ]      │
@@ -313,6 +313,15 @@ never disagree about what is legal.
 The alternative designs both lose information: hiding the row discards a real consumption, and
 silently attributing it to whatever is in the slot *now* deducts from the wrong spool. The
 user knows which spool it was. Ask them.
+
+**Every spool choice opens the same picker.** **[ Choose spool… ]** opens the modal the mount
+dialog and the reassign form already use — *Which spool was in slot 3?* over the spools drawn
+as cards, in inventory first and out of filament under their own heading — and one tap
+answers it. Never a native dropdown: a list of names asks the user to remember what a card
+simply shows, and the dropdown this row used to carry was the one place in the panel that
+asked. A row that already names a spool carries **Change**, which opens the same picker,
+because a tray the review froze to the wrong spool is exactly the tray the user needs to
+re-attribute; approval sends the new spool as an assignment and leaves an untouched row alone.
 
 **A tray that fed from more than one spool.** A spool empties mid-print and is replaced in the
 same tray. The printer reports one figure for that tray, and it belongs to two spools:

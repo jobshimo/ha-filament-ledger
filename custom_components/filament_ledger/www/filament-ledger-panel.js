@@ -708,12 +708,17 @@ class FilamentLedgerPanel extends HTMLElement {
   /** True while the user is mid-task and a repaint would interrupt them. */
   _busy() {
     if (this._dialog) return true;
-    // A tray the user has split is an edit in progress even with nothing focused: the
-    // extra charge rows exist only in the DOM, and a repaint would throw them away along
-    // with every figure typed into them. A review always arrives with at most one charge
-    // per tray, so a second row is always the user's own work. Same judgement as the
-    // dialog above — a held update is recoverable, a discarded decision is not.
-    if (this.shadowRoot.querySelector(".rv-charge + .rv-charge")) return true;
+    // The spool picker is a dialog the renderer knows nothing about (`_openSpoolPicker`):
+    // it is appended beside the paint rather than drawn by it, so a repaint would take it
+    // down in the middle of a choice.
+    if (this.shadowRoot.querySelector(".picker-layer")) return true;
+    // A review card the user has touched is an edit in progress even with nothing
+    // focused: a figure typed, a spool picked or a tray split exists only in the DOM, and
+    // a repaint would throw all of it away. `_syncReviewCard` marks the card on every one
+    // of those, and the refresh that follows approve or dismiss repaints it away. Same
+    // judgement as the dialog above — a held update is recoverable, a discarded decision
+    // is not.
+    if (this.shadowRoot.querySelector(".rv-card[data-edited]")) return true;
     const focused = this.shadowRoot.activeElement;
     return Boolean(focused && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName));
   }
@@ -1032,7 +1037,10 @@ class FilamentLedgerPanel extends HTMLElement {
         );
         break;
       case "open-spool-picker":
-        this._openSpoolPicker(target.closest("form"));
+        // The button itself, not its form: the picker reads what it was opened for off the
+        // button's surroundings (a charge row, a reassign form) and writes the choice back
+        // there, so this line is the same for every surface that carries the button.
+        this._openSpoolPicker(target);
         break;
       case "picker-pick":
         this._pickSpool(id);
@@ -3042,9 +3050,9 @@ class FilamentLedgerPanel extends HTMLElement {
    * With one charge the tray reads exactly as it always has: a swatch, a name, and the
    * tray's own figure, because with one charge the two numbers are the same number and
    * showing it twice would invite them to disagree. `[ + Add spool ]` is what reveals the
-   * per-charge fields, and `data-frozen` is what the collapsed row renders off — the spool
-   * the review froze, so a tray that has been split and unsplit comes back to a picker
-   * rather than to a name it can no longer change.
+   * per-charge fields. `data-frozen` is the spool the review froze, kept for
+   * `_approveReview` to compare against: a row the picker re-attributed is sent as an
+   * assignment, an untouched one is not sent at all.
    */
   reviewTray(line) {
     const t = this._t;
@@ -3064,7 +3072,7 @@ class FilamentLedgerPanel extends HTMLElement {
           <input class="rv-amt num" type="number" min="0" step="0.1"
             value="${esc(line.estimated_g.toFixed(1))}"> g
         </div>
-        <div class="rv-charges">${this.reviewCharges(charges, frozen)}</div>
+        <div class="rv-charges">${this.reviewCharges(charges)}</div>
         <div class="rv-trayfoot">
           <button class="link" data-action="review-add">${t("review.addSpool")}</button>
           <span class="rv-left"></span>
@@ -3075,17 +3083,23 @@ class FilamentLedgerPanel extends HTMLElement {
   /**
    * A tray's charge rows. One row is the collapsed form; two or more is the split.
    *
-   * Rebuilt whole whenever a charge is added or removed, from values read back out of the
-   * DOM, so the panel keeps one renderer for both densities — the alternative is markup
-   * that is assembled in one place and patched in another, which is how the two drift.
+   * Rebuilt whole whenever a charge is added, removed or picked, from values read back
+   * out of the DOM, so the panel keeps one renderer for both densities — the alternative
+   * is markup that is assembled in one place and patched in another, which is how the
+   * two drift.
+   *
+   * **Every spool choice goes through the picker, never a native `<select>`.** A row that
+   * names a spool carries **Change** and a row that names none carries **Choose spool…**;
+   * both open `_openSpoolPicker`, the same modal the reassign form and the mount dialog
+   * use, where the spools are drawn as they are — colour, name, balance — rather than
+   * listed by name. This row used to hold the panel's one remaining dropdown, and the
+   * user found it unintuitive: a list of names asks them to remember what a card would
+   * simply show. The row remembers its choice on `data-spool-id`, which is the one thing
+   * `_trayCharges` reads, so the picker and the typed fields feed one reader.
    */
-  reviewCharges(charges, frozen) {
+  reviewCharges(charges) {
     const t = this._t;
     const single = charges.length === 1;
-    // Retired spools stay out of the picker, by either route — charging one is refused by
-    // the domain (docs/14 §14.4.5). The overview already omits them; the filter is stated
-    // so the rule is visible where the picker is read.
-    const spools = this._spools.filter((s) => s.state !== "DISCARDED" && s.state !== "DELETED");
     return charges
       .map((charge) => {
         // Named off the *unfiltered* list: a spool retired since the review opened is
@@ -3094,22 +3108,16 @@ class FilamentLedgerPanel extends HTMLElement {
         const spool = charge.spool_id
           ? this._spools.find((s) => s.id === charge.spool_id)
           : null;
-        const named = single && charge.spool_id && charge.spool_id === frozen;
-        const who = named
+        // The frozen row offers Change like any other: a tray the review froze to the
+        // wrong spool is exactly the tray the user needs to re-attribute, and
+        // `_approveReview` already sends the assignment when the id differs from
+        // `data-frozen`.
+        const who = charge.spool_id
           ? `<span class="rv-dot" style="background:${esc(spool?.colour ?? "transparent")}"></span>
-             <span class="rv-spool">${spool ? esc(spool.name) : t("review.unknownSpool")}</span>`
-          : `<span class="rv-warn">${charge.spool_id ? "" : "⚠"}</span>
-             <span class="rv-pickline">${single ? t("review.whichSpool") : ""}
-               <select class="rv-pick">
-                 <option value="">${t("review.chooseSpool")}</option>
-                 ${spools
-                   .map(
-                     (s) =>
-                       `<option value="${esc(s.id)}" ${s.id === charge.spool_id ? "selected" : ""}>${esc(s.name)} — ${s.balance_g} g</option>`,
-                   )
-                   .join("")}
-               </select>
-             </span>`;
+             <span class="rv-spool">${spool ? esc(spool.name) : t("review.unknownSpool")}</span>
+             <button class="link" data-action="open-spool-picker">${t("act.change")}</button>`
+          : `<span class="rv-warn">⚠</span>
+             <button class="rv-choose" data-action="open-spool-picker">${t("review.chooseSpool")}</button>`;
         // The per-charge figure and its two buttons exist only in the split: with one
         // charge the tray's own figure is the charge's figure, by the invariant.
         const share = single
@@ -3119,7 +3127,8 @@ class FilamentLedgerPanel extends HTMLElement {
                title="${t("review.loadRestTitle")}">${t("review.loadRest")}</button>
              <button class="rowact" data-action="review-drop"
                title="${t("review.dropChargeTitle")}">×</button>`;
-        return `<div class="rv-charge${charge.spool_id ? "" : " unresolved"}">${who}${share}</div>`;
+        return `<div class="rv-charge${charge.spool_id ? "" : " unresolved"}"
+          data-spool-id="${esc(charge.spool_id)}">${who}${share}</div>`;
       })
       .join("");
   }
@@ -3127,18 +3136,20 @@ class FilamentLedgerPanel extends HTMLElement {
   /**
    * A tray's charges as the DOM currently holds them.
    *
-   * The collapsed row carries no figure of its own, so it reports the tray's — which is
-   * what the domain does with a single charge, and saying it here keeps the remainder, the
-   * hint and the approval payload reading one shape rather than three.
+   * Every row carries its spool on `data-spool-id` — the frozen spool, the picked one, or
+   * nothing yet — because the picker is a button and a button holds no value; the row
+   * holds it for the button. The collapsed row carries no figure of its own, so it
+   * reports the tray's — which is what the domain does with a single charge, and saying
+   * it here keeps the remainder, the hint and the approval payload reading one shape
+   * rather than three.
    */
   _trayCharges(tray) {
     const rows = [...tray.querySelectorAll(".rv-charge")];
     const trayAmount = tray.querySelector(".rv-amt").value;
     return rows.map((row) => {
-      const pick = row.querySelector(".rv-pick");
       const share = row.querySelector(".rv-share");
       return {
-        spool_id: pick ? pick.value : tray.dataset.frozen,
+        spool_id: row.dataset.spoolId || "",
         amount: share ? share.value : trayAmount,
       };
     });
@@ -3168,9 +3179,14 @@ class FilamentLedgerPanel extends HTMLElement {
    * that tray confirms (docs/02 §2.3), so what is left to charge is a subtraction, and
    * the button below merely performs it. Approve is disabled while any tray is short —
    * the button and the domain rule must never disagree about what is legal.
+   *
+   * Every edit to a card ends here — a keystroke, a pick, a split, a distribution — so
+   * this is where the card is marked as the user's work in progress. `_busy` reads the
+   * mark and holds live pushes off the card until the decision that ends it repaints.
    */
   _syncReviewCard(card) {
     const t = this._t;
+    card.dataset.edited = "";
     let total = 0;
     let invalid = false;
     const unattributed = [];
@@ -3269,7 +3285,7 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   _renderCharges(tray, charges) {
-    tray.querySelector(".rv-charges").innerHTML = this.reviewCharges(charges, tray.dataset.frozen);
+    tray.querySelector(".rv-charges").innerHTML = this.reviewCharges(charges);
     this._syncReviewCard(tray.closest(".rv-card"));
   }
 
@@ -3322,8 +3338,8 @@ class FilamentLedgerPanel extends HTMLElement {
   /**
    * Approve with only the overrides the user actually changed: `amounts` carries a tray
    * only when its value differs from what the card DISPLAYED — the estimate seeded into
-   * the input at one decimal — and `assign` only the pickers with a choice. The
-   * comparison must round `data-orig` the same way the seed did (`toFixed(1)`):
+   * the input at one decimal — and `assign` only the rows whose spool the picker changed.
+   * The comparison must round `data-orig` the same way the seed did (`toFixed(1)`):
    * `data-orig` keeps the full-precision estimate for Distribute's basis, and comparing
    * the one-decimal input against it would flag every untouched tray as edited whenever
    * the estimate carries sub-0.1 g precision, silently replacing the frozen estimate
@@ -4183,8 +4199,8 @@ class FilamentLedgerPanel extends HTMLElement {
     const subject = this._movementSubject(this._dialog.movement_id);
     if (!subject) return this.staleSubject();
     const moved = Math.abs(subject.amount_g).toFixed(1);
-    // The same filter the review card's picker applies: a spool that is out of inventory
-    // cannot be charged, and the backend refuses it (docs/14 §14.3).
+    // The same filter `_openSpoolPicker` applies, for the seed and the empty case: a spool
+    // that is out of inventory cannot be charged, and the backend refuses it (docs/14 §14.3).
     const candidates = this._spools.filter(
       (s) => s.id !== subject.spool_id && s.state !== "DISCARDED" && s.state !== "DELETED",
     );
@@ -4512,18 +4528,39 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * The reassign form's picker, layered over the open dialog and patched in place.
+   * The one spool picker, layered over whatever asked for it and patched in place.
    *
-   * Deliberately NOT `this._dialog` and NOT `render()`: a repaint rebuilds the dialog's
-   * markup wholesale, and the grams being typed two fields down would not survive it —
-   * the same reason `_syncReassignForm` patches instead of rendering. The overlay is
-   * appended beside the dialog, the root's delegated listener sees its buttons like any
-   * other node's, and picking writes the hidden input and the field's face directly.
+   * Every surface that asks the user to name a spool opens this — the reassign form's
+   * field and the review card's charge rows today — and none of them offers a native
+   * `<select>`. The dropdown showed a spool as a line of text; the picker shows it as the
+   * spool it is, colour and balance leading, exactly as the mount dialog draws it. The
+   * user found the list unintuitive and the cards obvious, which is the whole argument.
+   *
+   * Deliberately NOT `this._dialog` and NOT `render()`: a repaint rebuilds the surface
+   * wholesale, and the grams being typed beside the button would not survive it — the
+   * same reason `_syncReassignForm` and `_syncReviewCard` patch instead of rendering.
+   * The overlay is appended beside the surface, the root's delegated listener sees its
+   * buttons like any other node's, and picking writes the choice back to the surface
+   * directly. `_busy` counts the overlay as a dialog, so a live push waits for it.
+   *
+   * What the choice is written to is read off the button's surroundings rather than
+   * passed in, so a new surface needs a button and a branch in `_pickSpool`, no more.
+   * Retired spools stay out of the picker by every route — charging one is refused by
+   * the domain (docs/14 §14.4.5). The overview already omits them; the filter is stated
+   * here so the rule is visible where the picker is read.
    */
-  _openSpoolPicker(form) {
+  _openSpoolPicker(button) {
     const t = this._t;
-    this._pickerForm = form;
-    const exclude = form.dataset.exclude;
+    const row = button.closest(".rv-charge");
+    const form = button.closest("form");
+    this._picker = row
+      ? {
+          kind: "review-charge",
+          node: row,
+          title: t("review.pickTitle", { slot: row.closest(".rv-tray").dataset.slot }),
+        }
+      : { kind: "reassign", node: form, title: t("dlg.reassignTo"), exclude: form.dataset.exclude };
+    const { title, exclude } = this._picker;
     const candidates = this._spools.filter(
       (s) => s.id !== exclude && s.state !== "DISCARDED" && s.state !== "DELETED",
     );
@@ -4531,7 +4568,7 @@ class FilamentLedgerPanel extends HTMLElement {
     layer.className = "scrim picker-layer";
     layer.dataset.action = "close-picker";
     layer.innerHTML = `<div class="modal picker-modal">
-      <h3>${t("dlg.reassignTo")}</h3>
+      <h3>${title}</h3>
       ${this.spoolPickerSections(candidates, "picker-pick")}
       <div class="actions"><button type="button" data-action="close-picker">${t("act.cancel")}</button></div>
     </div>`;
@@ -4540,15 +4577,31 @@ class FilamentLedgerPanel extends HTMLElement {
 
   _closeSpoolPicker() {
     this._root.querySelector(".picker-layer")?.remove();
-    this._pickerForm = null;
+    this._picker = null;
+    // The overlay was holding live pushes off the screen (`_busy`); with it gone, the
+    // surface underneath decides for itself whether it is still busy.
+    this._releaseLive();
   }
 
+  /**
+   * Write the choice back to whatever opened the picker, then close it.
+   *
+   * The reassign form takes it as its hidden input and the field's face. A charge row
+   * takes it on `data-spool-id` and is redrawn through the same renderer that built it,
+   * from what the DOM holds, so a share typed on a sibling row survives. A button raises
+   * no `input` event, so the card sync the typed fields get for free from `_onInput`
+   * happens here, inside `_renderCharges`.
+   */
   _pickSpool(id) {
-    const form = this._pickerForm;
+    const { kind, node } = this._picker ?? {};
     const chosen = this._spools.find((s) => s.id === id);
-    if (form && chosen) {
-      form.querySelector("input[name=to_spool_id]").value = id;
-      form.querySelector(".spool-field .sf-card").innerHTML = this.spoolChoiceBody(chosen);
+    if (node && chosen && kind === "reassign") {
+      node.querySelector("input[name=to_spool_id]").value = id;
+      node.querySelector(".spool-field .sf-card").innerHTML = this.spoolChoiceBody(chosen);
+    } else if (node && chosen) {
+      node.dataset.spoolId = id;
+      const tray = node.closest(".rv-tray");
+      this._renderCharges(tray, this._trayCharges(tray));
     }
     this._closeSpoolPicker();
   }
@@ -5155,14 +5208,12 @@ table.ledger td.src { padding-left: 14px; }
 input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; border-radius: 8px;
   border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
   color: var(--fl-ink); text-align: right; font-variant-numeric: tabular-nums; }
-/* The picker sits inside its own charge row now, so it stretches rather than claiming a
-   line of its own the way it did when the tray and its one spool shared a row. */
-.rv-pickline { flex: 1 1 180px; min-width: 0; font-size: 12.5px;
-  color: var(--fl-ink-dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rv-charge button.link { align-self: center; font-size: 12.5px; white-space: nowrap; }
-.rv-pick { font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px;
-  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
-  color: var(--fl-ink); }
+/* The unresolved row's way into the spool picker: the reassign field's accent, sized for
+   a row. A button and not a <select>, because the choice is made in the picker. */
+.rv-choose { padding: 6px 12px; font-size: 13px; color: var(--fl-accent-bright);
+  border-color: var(--fl-accent-line); }
+.rv-choose:hover { color: var(--fl-ink-bright); border-color: var(--fl-accent); }
 .rv-total { align-self: flex-end; font-size: 13px; color: var(--fl-ink-dim);
   border-top: 1px solid var(--fl-line); padding-top: 5px;
   font-variant-numeric: tabular-nums; }
@@ -5484,7 +5535,7 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
   .stat { flex-basis: calc(50% - 1px); padding: 15px 16px; }
   .stat .v { font-size: 24px; }
   .big { font-size: 26px; }
-  .tray-actions button, .trash-acts button, .rowact { min-height: var(--fl-tap); }
+  .tray-actions button, .trash-acts button, .rowact, .rv-choose { min-height: var(--fl-tap); }
   /* The rail wraps at this width anyway, so the two that end a spool's life take a line of
      their own rather than trailing whichever corrective button happened to end a row. */
   .sp-life { flex-basis: 100%; margin-left: 0; }
