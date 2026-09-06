@@ -366,10 +366,12 @@ an upstream refactor into a corrupted ledger.
   weight change at all, so the gateway also watches `printable_objects` and reads the weight
   sensor live the moment that count rises above zero ([12](12-field-notes.md), 2026-09-03).
 - Tray numbering is *ours* to define. `AMS 1 Tray 1` maps to the tray reference for tray 1
-  of AMS 1 **on the machine whose event is being translated**. An `External Spool` figure is
-  still dropped with a warning: a spool on the direct feed now has a location that names its
-  machine ([02 §2.2](02-domain-model.md)), which is a different question from a consumption
-  figure having a tray to be deducted through. The translation lives in the gateway and
+  of AMS 1 **on the machine whose event is being translated**. An `External Spool` figure
+  maps to that machine's direct feed (`ExternalFeed`, [02 §2.3](02-domain-model.md)) and is
+  deducted from whichever spool is mounted there, exactly as a tray's figure is. Until v2.8
+  it was dropped with a warning — usage had no key for the holder beside the AMS — so every
+  print fed from it ended figureless and opened a review asking what the printer had already
+  said ([12](12-field-notes.md), 2026-09-06). The translation lives in the gateway and
   nowhere else.
 - **The printer's serial is read off the job sensors' `unique_id`s**, which upstream writes
   as `<serial>_<translation_key>` — so removing the key that matched leaves the serial. That

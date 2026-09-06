@@ -30,6 +30,7 @@ from custom_components.filament_ledger.application.detect_spool import DetectSpo
 from custom_components.filament_ledger.application.move_spool import (
     EditSpoolDetails,
     MountSpool,
+    MountSpoolExternally,
     UnmountSpool,
 )
 from custom_components.filament_ledger.application.query import Queries
@@ -181,6 +182,7 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             discard_filament=DiscardFilament(spools, movements, clock, events, database),
             adjust_spool=AdjustSpool(spools, movements, clock, events, database),
             mount_spool=MountSpool(spools, clock, events, database),
+            mount_spool_externally=MountSpoolExternally(spools, events, database),
             unmount_spool=UnmountSpool(spools, events, database),
             # `auto_mount` carries the production default. `auto_register` deliberately
             # does not: the captured Bambu fixtures these suites replay carry material

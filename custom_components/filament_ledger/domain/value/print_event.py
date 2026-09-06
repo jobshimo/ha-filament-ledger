@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from .grams import Grams
-    from .identifiers import PrinterSerial, TrayRef
+    from .identifiers import Feed, PrinterSerial
     from .percentage import Percentage
 
 # What a job is called when no name sensor can say. Never blank: the review card and the
@@ -96,7 +96,7 @@ class PrintStarted:
 
     name: str
     printer: PrinterSerial
-    plan: dict[TrayRef, Grams] | None = None
+    plan: dict[Feed, Grams] | None = None
     printer_started_at: datetime | None = None
     derived: bool = False
 
@@ -153,7 +153,7 @@ class PrintEnded:
     layer_reached: int | None = None
     total_layers: int | None = None
     progress: Percentage | None = None
-    reported_usage: dict[TrayRef, Grams] | None = None
+    reported_usage: dict[Feed, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
     printer_started_at: datetime | None = None
@@ -178,10 +178,10 @@ class PrintEnded:
         _refuse_negative_usage(self.reported_usage)
 
 
-def _refuse_negative_usage(usage: dict[TrayRef, Grams] | None) -> None:
-    for tray, used in (usage or {}).items():
+def _refuse_negative_usage(usage: dict[Feed, Grams] | None) -> None:
+    for feed, used in (usage or {}).items():
         if used.is_negative:
-            msg = f"usage for {tray} cannot be negative, got {used}"
+            msg = f"usage for {feed} cannot be negative, got {used}"
             raise InvalidValueError(msg)
 
 
@@ -224,17 +224,19 @@ class PrintPlanObserved:
     """
 
     printer: PrinterSerial
-    plan: dict[TrayRef, Grams]
+    plan: dict[Feed, Grams]
     name: str | None = None
     printer_started_at: datetime | None = None
 
     def __post_init__(self) -> None:
         # An observation of nothing is the silence this event exists to be distinguished
         # from. The adapter drops those before they get here; this is the backstop that
-        # keeps an empty mapping from being written over a real plan.
+        # keeps an empty mapping from being written over a real plan. A plan naming only
+        # the direct feed is a plan: since v2.8 that position is keyed like a tray.
         if not self.plan:
-            msg = "a plan observation carries at least one tray; silence is not an event"
+            msg = "a plan observation carries at least one feed; silence is not an event"
             raise InvalidValueError(msg)
+        _refuse_negative_usage(self.plan)
 
 
 PrintEvent = PrintStarted | PrintEnded | PrintPlanObserved

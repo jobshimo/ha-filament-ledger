@@ -14,8 +14,9 @@ stable is upstream's own identity: `platform == "bambu_lab"` plus the `translati
 `tray` for the AMS trays, and the job sensors' keys listed in `PRINT_SENSOR_KEYS`. The
 tray translation lives here and nowhere else, per docs/05 §5.8 — and so does the
 per-tray-attribute translation: `AMS 1 Tray 1` becomes the tray reference for tray 1 of
-AMS 1, and an `External Spool` figure is dropped with a warning, because the domain keys
-usage by tray and inventing a fifth tray would be a lie with a number on it.
+AMS 1, and `External Spool` becomes the machine's direct feed (`ExternalFeed`), keyed
+beside the trays since v2.8 — until then it was dropped with a warning, and every print
+fed from the holder ended figureless (docs/12-field-notes.md, 2026-09-06).
 
 **A printer's serial comes off its job sensors' own `unique_id`s**, which upstream writes
 as `<serial>_<translation_key>` — `00000000TESTSER_print_weight` in the frozen registry
@@ -82,6 +83,8 @@ from ...domain.value.identifiers import (
     ABSENT_TAG_SENTINEL,
     UNIDENTIFIED_PRINTER,
     AmsIndex,
+    ExternalFeed,
+    Feed,
     PrinterSerial,
     ReelUid,
     SlotIndex,
@@ -723,7 +726,7 @@ class BambuLabGateway:
             except Exception:
                 LOGGER.exception("print listener failed for %s", type(event).__name__)
 
-    def _plan_at_ending(self, printer: PrinterSerial) -> dict[TrayRef, Grams] | None:
+    def _plan_at_ending(self, printer: PrinterSerial) -> dict[Feed, Grams] | None:
         """The per-tray breakdown a finishing job is charged with, or `None`.
 
         The held reading first: it is the last one published *during* this job, and the
@@ -855,10 +858,10 @@ class BambuLabGateway:
     def _observe(self, printer: PrinterSerial, state: State) -> None:
         """Hold, forward and announce one weight-sensor reading, whichever path obtained it.
 
-        **The dedupe key is the whole observation**, not the tray half of it: an
-        external-spool figure that changes while the AMS trays stand still is news, and
-        comparing only the plan would swallow exactly the reading the warning below
-        exists to announce. The same comparison is what lets the two paths overlap
+        **The dedupe key is the whole observation.** The plan now carries the direct
+        feed's figure beside the trays' (`_tray_plan`), so a reading whose trays stand
+        still while the external spool moves is a new observation by the same comparison
+        that catches a tray moving. The same comparison is what lets the two paths overlap
         safely: a weight change and a parse edge reading the same sensor moments apart
         hold and forward it once.
         """
@@ -872,9 +875,10 @@ class BambuLabGateway:
         # overwritten by the next print. The reference instance lost 62.23 g that way —
         # published, held, and never written anywhere the user could see.
         #
-        # Only a plan that names trays travels. An observation whose plan is empty is the
-        # printer naming no AMS trays, and `PrintPlanObserved` refuses it rather than let a
-        # blank overwrite a real reading on the row.
+        # Only a plan that names a position travels. An observation whose plan is empty
+        # is the printer naming neither a tray nor its direct feed, and
+        # `PrintPlanObserved` refuses it rather than let a blank overwrite a real reading
+        # on the row.
         if observation.plan:
             self._hass.async_create_background_task(
                 self._deliver_job(
@@ -890,21 +894,9 @@ class BambuLabGateway:
                 ),
                 name=f"filament_ledger plan {printer}",
             )
-        # Both warnings are raised here rather than inside the translation, so each one
-        # fires once per *new* observation. Inside, they would repeat on every republish
-        # for the length of a print, which is how a real warning becomes scenery.
-        if observation.external is not None:
-            # The domain keys usage by tray (docs/02 §2.3); an external-spool figure has
-            # no tray to land in. A spool on the direct feed now has a *location* that
-            # names its machine, which is a different question from a consumption figure
-            # having a tray to be deducted through — so this stays dropped, and dropping
-            # it silently would be the optimistic lie this project exists to prevent.
-            LOGGER.warning(
-                "printer %s reports %r g on the external spool; this ledger tracks AMS "
-                "consumption only, so the figure is not recorded",
-                printer,
-                observation.external,
-            )
+        # The warning is raised here rather than inside the translation, so it fires once
+        # per *new* observation. Inside, it would repeat on every republish for the length
+        # of a print, which is how a real warning becomes scenery.
         for key in observation.other_ams:
             LOGGER.warning(
                 "per-tray figure for %r on printer %s ignored; one AMS per printer is tracked",
@@ -1689,15 +1681,17 @@ class _WeightObservation:
     """One weight-sensor reading, whole — the unit the gateway holds and compares.
 
     Everything the reading said, not merely the part that is consumed: `plan` is what a
-    job is charged with, and the other two are what has to be *announced* about it. They
-    travel together because they are deduped together — a reading whose trays stand still
-    while its external-spool figure moves is a new observation, and comparing the plan
-    alone would silently drop the one reading the warning exists for.
+    job is charged with, and `other_ams` is what has to be *announced* about it. They
+    travel together because they are deduped together, so the announcement fires once per
+    new reading rather than once per republish.
+
+    The external-spool figure used to be a third member, carried only to be warned about.
+    Since v2.8 it is a plan entry like any tray's, keyed by `ExternalFeed`, so a reading
+    whose trays stand still while the direct feed's figure moves is a new observation by
+    the same comparison that catches a tray moving.
     """
 
-    plan: dict[TrayRef, Grams]
-    #: The external-spool figure, verbatim, when the reading named one.
-    external: object | None = None
+    plan: dict[Feed, Grams]
     #: The keys naming an AMS this ledger does not track, verbatim, in reading order.
     other_ams: tuple[str, ...] = ()
 
@@ -1712,21 +1706,30 @@ def _tray_plan(printer: PrinterSerial, state: State) -> _WeightObservation | Non
     flicker pair, and a sensor that never had a breakdown. That is silence, and the
     caller's whole job is to leave a real reading standing in its place. A shape that
     *does* speak the dialect translates to an observation whose plan may be empty, which
-    is the printer naming no AMS trays and is a different fact from silence
+    is the printer naming no position at all and is a different fact from silence
     (docs/04-use-cases.md UC-04).
 
-    Nothing here warns. Both of the things worth saying out loud — an external-spool
-    figure and a second AMS — ride out on the observation instead, so the caller can say
-    them once per new reading rather than once per republish.
+    **The `External Spool` figure is a plan entry, keyed by the machine's direct feed.**
+    Until v2.8 it was carried out only to be warned about, because usage had no key for
+    the holder beside the AMS; a print fed from it then ended with no figure and opened a
+    review asking what the printer had already said (docs/12-field-notes.md, 2026-09-06).
+    It is parsed by the same rule as a tray's figure and skipped on the same terms.
+
+    Nothing here warns. The one thing worth saying out loud — a second AMS — rides out on
+    the observation instead, so the caller can say it once per new reading rather than
+    once per republish.
     """
-    weights: dict[TrayRef, Grams] = {}
-    external: object | None = None
+    weights: dict[Feed, Grams] = {}
     other_ams: list[str] = []
     recognised = False
     for key, value in state.attributes.items():
         if key == _EXTERNAL_SPOOL_KEY:
             recognised = True
-            external = value
+            grams = _weight(value)
+            if grams is None:
+                LOGGER.debug("external-spool figure reads %r; skipped", value)
+                continue
+            weights[ExternalFeed(printer)] = grams
             continue
         match = _TRAY_WEIGHT_KEY.fullmatch(key)
         if match is None:
@@ -1748,7 +1751,7 @@ def _tray_plan(printer: PrinterSerial, state: State) -> _WeightObservation | Non
         weights[tray] = grams
     if not recognised:
         return None
-    return _WeightObservation(plan=weights, external=external, other_ams=tuple(other_ams))
+    return _WeightObservation(plan=weights, other_ams=tuple(other_ams))
 
 
 def _reel_weight(value: object) -> Grams | None:

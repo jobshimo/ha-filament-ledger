@@ -114,7 +114,8 @@ system.**
 
 **Trigger** — `PrinterGateway` reports a job reaching `FINISHED`.
 
-**Input** — `PrintJobId`, per-tray reported usage keyed by `TrayRef`.
+**Input** — `PrintJobId`, reported usage keyed by `Feed` — one figure per AMS tray, and one
+for the printer's direct feed when the print drew from it ([02 §2.3](02-domain-model.md)).
 
 The job this deducts against is the one the ending correlated to, and correlation is **per
 machine**: an upstream ending carries no job id, so it is matched to the newest `RUNNING` row
@@ -132,12 +133,13 @@ one deducts one printer's grams from the spools in the other printer's trays
 1. Verify idempotency; abort silently if already recorded.
 2. **If no per-tray usage is available at all, open a review (UC-05) with reason
    `UNMAPPED_USAGE`, a zero estimate and an explicit flag, mark the job recorded, and stop.**
-   Deduct nothing. The zero estimate names every tray the printer reported *and* every tray
-   of the job's printer that currently holds a spool, each charged to that spool at zero, so
-   the card has a row per loaded tray for the user to fill in; a job that names no printer
-   lists only what it reported.
-3. For each tray with non-zero usage:
-   a. Resolve the mounted spool. If none, collect the tray as unresolved and continue.
+   Deduct nothing. The zero estimate names every position the printer reported *and* every
+   position of the job's printer that currently holds a spool — its trays and its direct
+   feed — each charged to that spool at zero, so the card has a row per loaded position for
+   the user to fill in; a job that names no printer lists only what it reported.
+3. For each position with non-zero usage:
+   a. Resolve the mounted spool — the spool in that tray, or the spool on that printer's
+      direct feed (`location_of`). If none, collect the position as unresolved and continue.
    b. Append `PRINT_CONSUMPTION` with source `AUTOMATIC`.
 4. Re-evaluate confidence for affected spools.
 5. Run anomaly detection.

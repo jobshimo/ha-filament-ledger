@@ -217,6 +217,9 @@ const EN = {
 
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Slot [[slot]]",
+  // The fifth position on a machine: the holder beside the AMS that feeds the extruder
+  // directly. Named by what it is, because it has no slot number to be named by.
+  "ams.external": "External spool",
   "ams.empty": "Empty",
   // A tray the machine reports occupied by a reel with no readable chip — third-party
   // filament. The ledger cannot identify it on its own; the Mount button beside it is
@@ -373,6 +376,8 @@ const EN = {
   "review.whichSpool": "which spool was in this tray?",
   "review.chooseSpool": "Choose spool…",
   "review.slotWord": "slot [[slot]]",
+  // Mid-sentence beside `review.slotWord`: the position with no slot number.
+  "review.externalWord": "the external spool",
   "review.blockedHint": "Approve is disabled until [[slots]] has a spool, or its amount is 0.",
   "review.invalidAmounts": "Amounts must be zero or positive numbers.",
 
@@ -541,6 +546,7 @@ const EN = {
 
   // -- dialog: mount -----------------------------------------------------------------
   "dlg.mountTitle": "Mount in slot [[slot]]",
+  "dlg.mountExternalTitle": "Mount as external spool",
   "dlg.mountNone": "Every spool is already mounted. Unmount one first.",
   // The layered spool picker (mount dialog, and the reassign form's field). Two
   // sections: what can feed a print, and what the ledger says is spent. Spent spools
@@ -548,6 +554,9 @@ const EN = {
   // names — but choosing one must read as deliberate, so it is labelled, never mixed in.
   "picker.inventory": "In inventory",
   "picker.spent": "Out of filament",
+  // The picker's title when a review tray asks — the same question the row already
+  // poses in lower case, asked in full over the choices.
+  "picker.reviewTitle": "Which spool was in this tray?",
   "act.change": "Change",
   "dlg.mountSpool": "Spool",
 
@@ -840,6 +849,7 @@ const ES = {
 
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Bandeja [[slot]]",
+  "ams.external": "Bobina externa",
   "ams.empty": "Vacía",
   "ams.chipless": "Hay una bobina sin chip",
   "ams.note":
@@ -995,6 +1005,7 @@ const ES = {
   "review.remainderHint":
     "Aprobar está desactivado hasta que cada gramo de [[slots]] esté cargado a una bobina.",
   "review.slotWord": "la bandeja [[slot]]",
+  "review.externalWord": "la bobina externa",
   "review.blockedHint":
     "Aprobar está desactivado hasta que [[slots]] tenga una bobina, o su cantidad sea 0.",
   "review.invalidAmounts": "Las cantidades deben ser números cero o positivos.",
@@ -1154,9 +1165,11 @@ const ES = {
 
   // -- diálogo: montar ---------------------------------------------------------------
   "dlg.mountTitle": "Montar en la bandeja [[slot]]",
+  "dlg.mountExternalTitle": "Montar como bobina externa",
   "dlg.mountNone": "Todas las bobinas están ya montadas. Desmonte una primero.",
   "picker.inventory": "En inventario",
   "picker.spent": "Sin saldo",
+  "picker.reviewTitle": "¿Qué bobina había en esta bandeja?",
   "act.change": "Cambiar",
   "dlg.mountSpool": "Bobina",
 

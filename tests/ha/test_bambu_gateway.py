@@ -39,6 +39,7 @@ from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     UNIDENTIFIED_PRINTER,
     AmsIndex,
+    ExternalFeed,
     PrinterSerial,
     ReelUid,
     SpoolId,
@@ -1120,8 +1121,10 @@ class TestJobEventTranslation:
     async def test_a_republished_breakdown_translates_its_tray_keys(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """`AMS 1 Tray n` becomes `a_tray(n)` here and nowhere else (docs/05 §5.8).
-        The external-spool figure has no AMS slot to land in, so it is dropped loudly."""
+        """`AMS 1 Tray n` becomes `a_tray(n)` here and nowhere else (docs/05 §5.8), and
+        `External Spool` becomes the machine's direct feed — a plan entry like the trays',
+        not a warning. Until v2.8 it was dropped loudly, and every print fed from the
+        holder ended figureless (docs/12-field-notes.md, 2026-09-06)."""
         hass = bambu_hass()
         listener = self.subscribed(hass)
         fire_job_event(hass, "event_print_started")
@@ -1136,23 +1139,50 @@ class TestJobEventTranslation:
 
         ended = listener.received[-1]
         assert isinstance(ended, PrintEnded)
-        assert ended.reported_usage == {a_tray(1): Grams.of("28.4"), a_tray(2): Grams.of("6.1")}
-        assert "external spool" in caplog.text
+        assert ended.reported_usage == {
+            a_tray(1): Grams.of("28.4"),
+            a_tray(2): Grams.of("6.1"),
+            ExternalFeed(A_PRINTER): Grams.of("1.2"),
+        }
+        assert "external spool" not in caplog.text
 
-    async def test_the_external_spool_warning_does_not_repeat_per_republish(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The sensor is republished repeatedly through a print. The figure is still
-        dropped loudly, but *once per observation* — the same attributes again is the same
-        observation, not news."""
+    async def test_a_print_fed_only_from_the_external_spool_still_has_a_plan(self) -> None:
+        """The shape that used to end every such print in a figureless review: the sensor
+        names the direct feed and no tray. That is a plan naming one position, observed
+        and reported like any other."""
         hass = bambu_hass()
-        self.subscribed(hass)
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
 
-        with caplog.at_level(logging.WARNING):
-            for _ in range(3):
-                fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 1.2})
+        fire_weight_change(hass, {"External Spool": 49.59})
+        await hass.drain()
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
 
-        assert caplog.text.count("external spool") == 1
+        observed = [event for event in listener.received if isinstance(event, PrintPlanObserved)]
+        assert [event.plan for event in observed] == [{ExternalFeed(A_PRINTER): Grams.of("49.59")}]
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {ExternalFeed(A_PRINTER): Grams.of("49.59")}
+
+    async def test_a_republished_external_figure_is_one_observation_not_three(self) -> None:
+        """The sensor is republished repeatedly through a print. The same attributes again
+        is the same observation, not news — for the direct feed's figure exactly as for
+        a tray's."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        for _ in range(3):
+            fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 1.2})
+        await hass.drain()
+
+        observed = [event for event in listener.received if isinstance(event, PrintPlanObserved)]
+        assert len(observed) == 1
+        assert observed[0].plan == {
+            a_tray(1): Grams.of("28.4"),
+            ExternalFeed(A_PRINTER): Grams.of("1.2"),
+        }
 
     @pytest.mark.parametrize(
         "unusable",
@@ -1345,19 +1375,24 @@ class TestJobEventTranslation:
         assert isinstance(ended, PrintEnded)
         assert ended.reported_usage is None
 
-    async def test_a_changed_external_figure_is_announced_even_when_the_trays_stand_still(
-        self, caplog: pytest.LogCaptureFixture
+    async def test_a_changed_external_figure_is_a_new_observation_when_the_trays_stand_still(
+        self,
     ) -> None:
-        """The dedupe key is the whole reading. Comparing only the tray plan would drop
-        this republish as a repeat and swallow the figure the warning exists to name."""
+        """The direct feed's figure is part of the plan, so a reading whose trays stand
+        still while it moves is a new observation by the one comparison the gateway
+        makes — there is no second key to forget."""
         hass = bambu_hass()
-        self.subscribed(hass)
+        listener = self.subscribed(hass)
 
-        with caplog.at_level(logging.WARNING):
-            fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 1.2})
-            fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 7.5})
+        fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 1.2})
+        fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "External Spool": 7.5})
+        await hass.drain()
 
-        assert caplog.text.count("external spool") == 2
+        observed = [event for event in listener.received if isinstance(event, PrintPlanObserved)]
+        assert [event.plan[ExternalFeed(A_PRINTER)] for event in observed] == [
+            Grams.of("1.2"),
+            Grams.of("7.5"),
+        ]
 
     async def test_a_second_ams_is_named_once_per_reading_not_once_per_republish(
         self, caplog: pytest.LogCaptureFixture

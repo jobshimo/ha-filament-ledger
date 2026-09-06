@@ -42,8 +42,8 @@ from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import PrintJobId, ReviewId, SpoolId, TrayRef
-from ..domain.value.location import AmsSlot
+from ..domain.value.identifiers import Feed, PrintJobId, ReviewId, SpoolId, position_note
+from ..domain.value.location import location_of
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.review import EstimatorKind, ReviewReason, ReviewState
 from .errors import ReviewNotFoundError, SpoolNotFoundError
@@ -67,7 +67,7 @@ class OpenPendingReviewCommand:
 
     job: PrintJob
     reason: ReviewReason
-    amounts: dict[TrayRef, Grams] | None = None
+    amounts: dict[Feed, Grams] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,9 +82,9 @@ class ApproveReviewCommand:
     """
 
     review_id: ReviewId
-    amounts: dict[TrayRef, Grams] | None = None
-    assignments: dict[TrayRef, SpoolId] | None = None
-    charges: dict[TrayRef, tuple[ReviewCharge, ...]] | None = None
+    amounts: dict[Feed, Grams] | None = None
+    assignments: dict[Feed, SpoolId] | None = None
+    charges: dict[Feed, tuple[ReviewCharge, ...]] | None = None
     note: str | None = None
 
 
@@ -141,7 +141,7 @@ class OpenPendingReview:
     async def _open(
         self,
         command: OpenPendingReviewCommand,
-        estimates: dict[TrayRef, Grams],
+        estimates: dict[Feed, Grams],
         estimator_used: EstimatorKind,
     ) -> ReviewOpened:
         """The transactional core: runs inside a unit of work the caller holds."""
@@ -156,10 +156,11 @@ class OpenPendingReview:
         # happens to be in the slot on Friday. The mounted spool freezes as one charge for
         # the whole estimate, which is the honest proposal for a tray nobody has told us
         # was shared. No mounted spool freezes as no charge at all — a fact worth
-        # recording, not an error.
+        # recording, not an error. The direct feed freezes by the same rule, through the
+        # one mapping from a position to the place a spool is mounted (`location_of`).
         lines: list[ReviewLine] = []
         for tray in sorted(estimates):
-            mounted = await self.spools.find_by_location(AmsSlot(tray))
+            mounted = await self.spools.find_by_location(location_of(tray))
             lines.append(
                 ReviewLine(
                     tray=tray,
@@ -188,7 +189,7 @@ class OpenPendingReview:
 
     async def _estimates_for(
         self, command: OpenPendingReviewCommand
-    ) -> tuple[dict[TrayRef, Grams], EstimatorKind]:
+    ) -> tuple[dict[Feed, Grams], EstimatorKind]:
         if command.amounts is not None:
             # UC-04 already knows the figures; `NONE` records that no estimator touched
             # them (see `EstimatorKind` for why the same member is also the no-data flag).
@@ -295,7 +296,7 @@ class ApproveReview:
                         source=MovementSource.USER_CONFIRMED,
                         occurred_at=now,
                         # The single-machine sentence, for the reason UC-04's note gives.
-                        note=f"Slot {tray.slot} of a reviewed print",
+                        note=f"{position_note(tray)} of a reviewed print",
                         # Both keys, deliberately: without `review_id` the history can say
                         # *confirmed by you* but not which decision confirmed it, and the
                         # queue stops being an audit trail the moment it resolves.

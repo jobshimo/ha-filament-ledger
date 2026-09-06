@@ -486,3 +486,24 @@ it changes for an identical re-print too: `0` at 18:41:49Z, `1` at 18:42:08Z. Th
 cover-image entity changes at the parse as well, but three times per print, one of them a
 cloud cover download that precedes the parse, so it is not used. `gcode_file_downloaded`
 does not change on an identical re-print either.
+
+## 2026-09-06 — Every print from the external spool ended in an empty review
+
+Eight prints fed from the A1's external spool holder over one evening, and all eight opened a
+review card asking what the print had used. The printer had said: the log carried, at
+11:41:04Z, *printer <SERIAL> reports '49.59' g on the external spool; this ledger tracks AMS
+consumption only, so the figure is not recorded*. The `print_weight` sensor publishes that
+figure under the attribute key `External Spool`, beside the `AMS 1 Tray n` keys, in the same
+burst and the same shape; the gateway parsed it and threw it away by design, because usage
+was keyed by `TrayRef` and the holder has no tray. Each job row then closed with
+`reported_usage = []`, UC-04 found nothing consuming, and opened an `UNMAPPED_USAGE` review —
+on the released 2.7.4, with no lines at all (`estimated_usage = []`), so the card could not
+even be filled in.
+
+Two things were missing, not one. The ledger could *locate* a spool on the direct feed
+(`ExternalSpool`, v2.0) but never *charge* it, and the panel offered no way to mount one there
+in the first place — the live database held spools in trays 1, 3 and 4 and none on the
+holder. v2.8 keys usage by `Feed` (a tray or `ExternalFeed`), carries the figure into the plan
+like a tray's, deducts it from whichever spool is mounted on the holder, lists the holder
+among a figureless review's placeholders, and gives the AMS view a fifth position to mount
+into.

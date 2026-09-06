@@ -19,7 +19,7 @@ from decimal import Decimal
 from ...domain.error import EstimationUnavailableError
 from ...domain.model.print_job import PrintJob
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import TrayRef
+from ...domain.value.identifiers import Feed
 from ...domain.value.review import EstimatorKind
 
 ONE = Decimal(1)
@@ -32,7 +32,7 @@ class LinearProgressEstimator:
     def kind(self) -> EstimatorKind:
         return EstimatorKind.LINEAR_PROGRESS
 
-    async def estimate(self, job: PrintJob) -> dict[TrayRef, Grams]:
+    async def estimate(self, job: PrintJob) -> dict[Feed, Grams]:
         """Per-tray grams: the best available progress signal times the slicer's totals.
 
         Signals in order of preference (docs/07-consumption-estimation.md §7.3): layers,
