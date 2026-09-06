@@ -33,9 +33,9 @@ from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    Feed,
     PrintJobId,
     SpoolId,
-    TrayRef,
     new_print_job_id,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
@@ -69,7 +69,7 @@ async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
     return await ledger.use_cases.register_spool.execute(command)
 
 
-def finished(reported_usage: dict[TrayRef, Grams] | None = None) -> PrintEnded:
+def finished(reported_usage: dict[Feed, Grams] | None = None) -> PrintEnded:
     return PrintEnded(
         outcome=PrintJobState.FINISHED,
         name="bracket_v3.gcode.3mf",
@@ -82,9 +82,7 @@ def finished(reported_usage: dict[TrayRef, Grams] | None = None) -> PrintEnded:
     )
 
 
-async def ran_to_completion(
-    ledger: Ledger, reported_usage: dict[TrayRef, Grams] | None
-) -> PrintJob:
+async def ran_to_completion(ledger: Ledger, reported_usage: dict[Feed, Grams] | None) -> PrintJob:
     """One whole lifecycle through the seam as wired: a start, then the FINISHED ending."""
     await ledger.use_cases.track_print_job.execute(
         PrintStarted(name="bracket_v3.gcode.3mf", printer=A_PRINTER, plan=None)

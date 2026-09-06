@@ -22,10 +22,10 @@ from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    Feed,
     PrinterSerial,
     PrintJobId,
     SpoolId,
-    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
@@ -64,7 +64,7 @@ async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
 
 
 def started(
-    plan: dict[TrayRef, Grams] | None = None,
+    plan: dict[Feed, Grams] | None = None,
     *,
     printer: PrinterSerial = A_PRINTER,
     printer_started_at: datetime | None = None,
@@ -85,7 +85,7 @@ def ended(
     *,
     layer_reached: int | None = 71,
     total_layers: int | None = 209,
-    reported_usage: dict[TrayRef, Grams] | None = None,
+    reported_usage: dict[Feed, Grams] | None = None,
     raw_print_error: int | None = None,
     printer_started_at: datetime | None = None,
     printer_ended_at: datetime | None = None,
@@ -254,7 +254,7 @@ class TestTwoSignalsForOneEnding:
         spool_id = await a_spool(ledger)
         await ledger.use_cases.mount_spool.execute(spool_id, TRAY_1)
         await ledger.use_cases.track_print_job.execute(started())
-        usage = {TRAY_1: Grams.of("248.41")}
+        usage: dict[Feed, Grams] = {TRAY_1: Grams.of("248.41")}
         await ledger.use_cases.track_print_job.execute(
             ended(PrintJobState.FINISHED, reported_usage=usage)
         )
@@ -272,7 +272,7 @@ class TestAStartingPrint:
     async def test_a_start_becomes_a_running_job_with_the_plan_preserved(
         self, ledger: Ledger
     ) -> None:
-        plan = {TRAY_1: Grams.of(209), TRAY_2: Grams.of(31)}
+        plan: dict[Feed, Grams] = {TRAY_1: Grams.of(209), TRAY_2: Grams.of(31)}
 
         job_id = await ledger.use_cases.track_print_job.execute(started(plan))
 
@@ -914,7 +914,7 @@ class TestTheStartTimeThatIsStaleForTheFirstMinute:
 
 
 def plan_observed(
-    plan: dict[TrayRef, Grams] | None = None,
+    plan: dict[Feed, Grams] | None = None,
     *,
     name: str | None = None,
     printer: PrinterSerial = A_PRINTER,

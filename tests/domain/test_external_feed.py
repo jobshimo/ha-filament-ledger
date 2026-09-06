@@ -12,6 +12,7 @@ import pytest
 
 from custom_components.filament_ledger.domain.value.identifiers import (
     ExternalFeed,
+    Feed,
     PrinterSerial,
     position_note,
 )
@@ -34,7 +35,7 @@ class TestOrdering:
         """One canonical order for a mixed mapping: a printer's trays by AMS and slot, then
         its direct feed, then the next machine — whichever side of the comparison the
         direct feed lands on."""
-        feeds = [
+        feeds: list[Feed] = [
             ExternalFeed(ANOTHER_PRINTER),
             a_tray(2, printer=ANOTHER_PRINTER),
             ExternalFeed(A_PRINTER),
@@ -61,7 +62,7 @@ class TestOrdering:
 
     def test_a_stranger_is_refused_rather_than_ordered(self) -> None:
         with pytest.raises(TypeError):
-            _ = ExternalFeed(A_PRINTER) < "tray"  # type: ignore[operator]
+            _ = ExternalFeed(A_PRINTER) < "tray"
 
     def test_it_is_a_dictionary_key_distinct_from_every_tray(self) -> None:
         usage = {a_tray(1): 1, ExternalFeed(A_PRINTER): 2, ExternalFeed(A_PRINTER): 3}

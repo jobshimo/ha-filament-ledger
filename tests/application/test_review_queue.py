@@ -48,10 +48,10 @@ from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    Feed,
     PrintJobId,
     ReviewId,
     SpoolId,
-    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.material import Material, MaterialKind
 from custom_components.filament_ledger.domain.value.percentage import Percentage
@@ -91,7 +91,7 @@ def a_job(
     *,
     layer_reached: int | None = 71,
     total_layers: int | None = 209,
-    reported_usage: dict[TrayRef, Grams] | None = None,
+    reported_usage: dict[Feed, Grams] | None = None,
     state: PrintJobState = PrintJobState.CANCELLED,
 ) -> PrintJob:
     return PrintJob(
@@ -112,7 +112,7 @@ async def opened(
     job: PrintJob,
     *,
     reason: ReviewReason = ReviewReason.CANCELLED,
-    amounts: dict[TrayRef, Grams] | None = None,
+    amounts: dict[Feed, Grams] | None = None,
 ) -> ReviewId:
     return await ledger.use_cases.open_pending_review.execute(
         OpenPendingReviewCommand(job=job, reason=reason, amounts=amounts)
