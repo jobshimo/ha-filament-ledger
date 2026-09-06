@@ -46,7 +46,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     from .application.adjust_spool import AdjustSpool, DiscardFilament
     from .application.delete_spool import DeleteSpool, RestoreSpool
     from .application.detect_spool import DetectSpool
-    from .application.move_spool import EditSpoolDetails, MountSpool, UnmountSpool
+    from .application.move_spool import (
+        EditSpoolDetails,
+        MountSpool,
+        MountSpoolExternally,
+        UnmountSpool,
+    )
     from .application.query import Queries
     from .application.reassign_movement import ReassignMovement
     from .application.reconcile_spool import ReconcileSpool
@@ -165,6 +170,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         discard_filament=DiscardFilament(spools, movements, clock, events, database, anomalies),
         adjust_spool=AdjustSpool(spools, movements, clock, events, database, anomalies),
         mount_spool=MountSpool(spools, clock, events, database),
+        mount_spool_externally=MountSpoolExternally(spools, events, database),
         unmount_spool=UnmountSpool(spools, events, database),
         # Both flags are read here, once: an options change reloads this entry (see
         # `_reload_on_options_change` below), so the rebuilt use case always carries the

@@ -27,6 +27,7 @@ from custom_components.filament_ledger.domain.event import (
     SpoolDepleted,
     SpoolDetected,
     SpoolMounted,
+    SpoolMountedExternally,
     SpoolRegistered,
     SpoolRestored,
     SpoolUnmounted,
@@ -52,7 +53,7 @@ from custom_components.filament_ledger.infrastructure.ha.event_bridge import (
     HomeAssistantEventBus,
 )
 
-from ..application.conftest import a_tray
+from ..application.conftest import A_PRINTER, a_tray
 from .conftest import FakeHass, as_hass
 
 SPOOL = SpoolId("spool-1")
@@ -73,6 +74,12 @@ class TestTranslation:
                 "filament_ledger_spool_mounted",
                 {"spool_id": "spool-1", "printer": "00000000TESTSER", "ams": 1, "slot": 2},
                 id="a-spool-is-mounted",
+            ),
+            pytest.param(
+                SpoolMountedExternally(spool_id=SPOOL, printer=A_PRINTER),
+                "filament_ledger_spool_mounted",
+                {"spool_id": "spool-1", "printer": "00000000TESTSER", "external": True},
+                id="a-spool-is-mounted-on-the-direct-feed",
             ),
             pytest.param(
                 SpoolUnmounted(spool_id=SPOOL),

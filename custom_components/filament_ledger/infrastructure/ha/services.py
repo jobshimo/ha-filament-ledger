@@ -49,6 +49,8 @@ from ...domain.value.identifiers import (
     MIN_AMS_INDEX,
     MIN_AMS_SLOT,
     AmsIndex,
+    ExternalFeed,
+    Feed,
     PrinterSerial,
     ReviewId,
     SlotIndex,
@@ -70,15 +72,43 @@ from .runtime import LedgerRuntime, runtimes
 # ceremony rather than precision. With several followed the absence is refused rather than
 # resolved, and the automation gets a message naming the machines it could have meant
 # (`LedgerRuntime.tray_printer`, docs/05 §5.4).
+#
+# `feed: external` names the printer's direct feed instead of a tray (v2.8), and then no
+# slot is given: the spool holder beside the AMS has none. Absent, or `ams`, means a tray —
+# the shape every automation written before the direct feed had a key still sends.
 _TRAY = vol.Schema(
     {
         vol.Optional("printer"): vol.Any(cv.string, None),
-        vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
-        vol.Required("slot"): vol.All(
-            vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+        vol.Optional("feed"): vol.Any("ams", "external", None),
+        vol.Optional("ams"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX))),
+        vol.Optional("slot"): vol.Any(
+            None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
         ),
     }
 )
+
+
+def _names_a_position(entry: dict[str, Any]) -> dict[str, Any]:
+    """A tray needs its slot; the direct feed needs `feed: external`. Cross-field, so a
+    validator rather than a marker, and `vol.Invalid` so it is refused with the rest."""
+    if entry.get("feed") != "external" and entry.get("slot") is None:
+        msg = "name a slot, or feed: external for the printer's own spool holder"
+        raise vol.Invalid(msg)
+    return entry
+
+
+def _position(extra: dict[Any, Any]) -> vol.All:
+    """`_TRAY` plus what one call adds to it, with the cross-field rule attached."""
+    return vol.All(_TRAY.extend(extra), _names_a_position)
+
+
+def _mount_names_a_position(data: dict[str, Any]) -> dict[str, Any]:
+    """The mount's own form of the same rule: a slot, or `external: true`."""
+    if not data.get("external") and data.get("slot") is None:
+        msg = "name a slot, or external: true for the printer's own spool holder"
+        raise vol.Invalid(msg)
+    return data
+
 
 # One entry of a tray's attribution (docs/05 §5.4). Non-negative for the same reason
 # `amounts` is: a charge of minus five grams has no physical reading.
@@ -129,7 +159,12 @@ ADJUST_SCHEMA = vol.Schema(
     }
 )
 
-MOUNT_SCHEMA = _TRAY.extend({vol.Required("spool_id"): cv.string})
+# `external: true` mounts on the printer's direct feed rather than in a tray, and then the
+# slot is left out — the same terms the panel's mount uses (docs/05 §5.4, v2.8).
+MOUNT_SCHEMA = vol.All(
+    _TRAY.extend({vol.Required("spool_id"): cv.string, vol.Optional("external"): cv.boolean}),
+    _mount_names_a_position,
+)
 
 UNMOUNT_SCHEMA = vol.Schema({vol.Required("spool_id"): cv.string})
 
@@ -142,10 +177,10 @@ APPROVE_REVIEW_SCHEMA = vol.Schema(
         # slot these used to be, because a tray takes three parts to name. A negative
         # confirmation has no physical reading, so it is refused at the schema too.
         vol.Optional("amounts"): [
-            _TRAY.extend({vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0))})
+            _position({vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0))})
         ],
-        vol.Optional("assign"): [_TRAY.extend({vol.Required("spool_id"): cv.string})],
-        vol.Optional("charges"): [_TRAY.extend({vol.Required("charges"): [_CHARGE]})],
+        vol.Optional("assign"): [_position({vol.Required("spool_id"): cv.string})],
+        vol.Optional("charges"): [_position({vol.Required("charges"): [_CHARGE]})],
         vol.Optional("note"): cv.string,
     }
 )
@@ -176,32 +211,46 @@ def _charges(entries: list[dict[str, Any]]) -> tuple[ReviewCharge, ...]:
     )
 
 
-def _tray(runtime: LedgerRuntime, data: dict[str, Any]) -> TrayRef:
-    """One tray reference, off the service call. `_TRAY` states what an absent half means.
+def _printer(runtime: LedgerRuntime, data: dict[str, Any]) -> PrinterSerial:
+    """The machine a call names, or the one this ledger follows when it names none.
 
     An absent printer is answered by the runtime rather than by a bare sentinel, for the
     reason `LedgerRuntime.tray_printer` gives — which is also what keeps an automation
     written against v1 landing in the tray it has always landed in.
     """
     printer = data.get("printer")
+    return PrinterSerial(printer) if printer else runtime.tray_printer
+
+
+def _feed(runtime: LedgerRuntime, data: dict[str, Any]) -> Feed:
+    """One consumption position, off the service call. `_TRAY` states what an absent half
+    means; `feed: external` is the direct feed, and a tray without a slot named neither."""
+    printer = _printer(runtime, data)
+    if data.get("feed") == "external":
+        return ExternalFeed(printer)
+    slot = data.get("slot")
+    if slot is None:
+        msg = "a tray needs a slot; the external spool is named by feed: external"
+        raise InvalidValueError(msg)
+    ams = data.get("ams")
     return TrayRef(
-        printer=PrinterSerial(printer) if printer else runtime.tray_printer,
-        ams=AmsIndex(int(data.get("ams", TRACKED_AMS.value))),
-        slot=SlotIndex(int(data["slot"])),
+        printer=printer,
+        ams=AmsIndex(int(ams if ams is not None else TRACKED_AMS.value)),
+        slot=SlotIndex(int(slot)),
     )
 
 
 def _by_tray[T](
     runtime: LedgerRuntime, entries: list[dict[str, Any]], read: Callable[[dict[str, Any]], T]
-) -> dict[TrayRef, T]:
-    """A per-tray list as a mapping, refusing a tray named twice.
+) -> dict[Feed, T]:
+    """A per-position list as a mapping, refusing a position named twice.
 
     A YAML list can carry one tray twice where the map these used to be could not, and two
     answers to one question must not be resolved by keeping the last.
     """
-    mapped: dict[TrayRef, T] = {}
+    mapped: dict[Feed, T] = {}
     for entry in entries:
-        tray = _tray(runtime, entry)
+        tray = _feed(runtime, entry)
         if tray in mapped:
             msg = f"{tray} is named twice in one call; state it once"
             raise InvalidValueError(msg)
@@ -282,10 +331,19 @@ def async_register_services(hass: HomeAssistant) -> None:
 
     async def mount_spool(call: ServiceCall) -> None:
         runtime = _runtime(hass)
+        data = dict(call.data)
+        spool_id = SpoolId(data["spool_id"])
         async with _translated_errors():
-            await runtime.use_cases.mount_spool.execute(
-                SpoolId(call.data["spool_id"]), _tray(runtime, dict(call.data))
-            )
+            if data.get("external"):
+                await runtime.use_cases.mount_spool_externally.execute(
+                    spool_id, _printer(runtime, data)
+                )
+            else:
+                feed = _feed(runtime, data)
+                if not isinstance(feed, TrayRef):
+                    msg = "mount_spool names a slot, or external: true for the direct feed"
+                    raise InvalidValueError(msg)
+                await runtime.use_cases.mount_spool.execute(spool_id, feed)
         await runtime.async_refresh()
 
     async def unmount_spool(call: ServiceCall) -> None:

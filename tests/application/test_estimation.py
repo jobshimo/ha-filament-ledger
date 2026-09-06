@@ -15,8 +15,8 @@ from custom_components.filament_ledger.domain.error import EstimationUnavailable
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    Feed,
     PrintJobId,
-    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
@@ -39,7 +39,7 @@ def a_job(
     layer_reached: int | None = None,
     total_layers: int | None = None,
     progress: Percentage | None = None,
-    reported_usage: dict[TrayRef, Grams] | None = None,
+    reported_usage: dict[Feed, Grams] | None = None,
 ) -> PrintJob:
     return PrintJob(
         id=PrintJobId("job-under-estimation"),
@@ -95,7 +95,7 @@ class TestRefusals:
 
     @pytest.mark.parametrize("usage", [None, {}], ids=["missing", "empty"])
     async def test_no_totals_to_scale_raises_rather_than_guesses(
-        self, usage: dict[TrayRef, Grams] | None
+        self, usage: dict[Feed, Grams] | None
     ) -> None:
         job = a_job(layer_reached=30, total_layers=100, reported_usage=usage)
         with pytest.raises(EstimationUnavailableError):

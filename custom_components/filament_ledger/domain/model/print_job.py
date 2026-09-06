@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from ..error import InvalidValueError
 from ..value.grams import Grams
-from ..value.identifiers import PrinterSerial, PrintJobId, TrayRef
+from ..value.identifiers import Feed, PrinterSerial, PrintJobId
 from ..value.percentage import Percentage
 from ..value.print_job_state import PrintJobState
 
@@ -30,10 +30,12 @@ class PrintJob:
     *totals the plan would have consumed*, which is exactly what `LinearProgressEstimator`
     scales by progress. One field, because the printer reports one set of numbers.
 
-    **Keyed by `TrayRef`, not by a bare tray number.** The printer reports one figure per
+    **Keyed by `Feed`, not by a bare tray number.** The printer reports one figure per
     tray, and a tray is only identified once its printer and AMS unit are named — two
     machines both have a tray 1, so a figure keyed by the number alone would be deducted
-    from whichever spool happened to be in *a* tray 1.
+    from whichever spool happened to be in *a* tray 1. The direct feed is the other key
+    (`ExternalFeed`): the printer reports its figure beside the trays' and it is
+    deducted the same way, from whichever spool is mounted on that holder.
 
     `None` and an empty mapping are different facts, and the schema keeps the column
     nullable for that reason: `None` means the per-tray figure never materialised — a known
@@ -80,7 +82,7 @@ class PrintJob:
     layer_reached: int | None = None
     total_layers: int | None = None
     progress: Percentage | None = None
-    reported_usage: dict[TrayRef, Grams] | None = None
+    reported_usage: dict[Feed, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
     printer_started_at: datetime | None = None

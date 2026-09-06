@@ -12,7 +12,15 @@ from typing import Protocol
 from .service.anomaly_detector import Anomaly
 from .value.confidence import Confidence
 from .value.grams import Grams
-from .value.identifiers import MovementId, PrintJobId, ReviewId, SpoolId, TagUid, TrayRef
+from .value.identifiers import (
+    MovementId,
+    PrinterSerial,
+    PrintJobId,
+    ReviewId,
+    SpoolId,
+    TagUid,
+    TrayRef,
+)
 from .value.movement_type import MovementType
 from .value.review import ReviewReason, ReviewState
 
@@ -32,6 +40,19 @@ class SpoolRegistered(DomainEvent):
 class SpoolMounted(DomainEvent):
     spool_id: SpoolId
     tray: TrayRef
+
+
+@dataclass(frozen=True, slots=True)
+class SpoolMountedExternally(DomainEvent):
+    """A spool was put on a printer's direct feed — the holder beside the AMS.
+
+    Its own event rather than a `SpoolMounted` with no tray: every subscriber of that one
+    reads the tray's three parts off it, and a bridge that had to guess whether `tray` was
+    a tray would be the kind of reader this vocabulary exists to spare.
+    """
+
+    spool_id: SpoolId
+    printer: PrinterSerial
 
 
 @dataclass(frozen=True, slots=True)

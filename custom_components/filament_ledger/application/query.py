@@ -905,8 +905,8 @@ def _descending[K](totals: dict[K, Grams]) -> list[tuple[K, Grams]]:
     return sorted(totals.items(), key=lambda item: -item[1].milligrams)
 
 
-# The two machine artefacts a reported job name carries (docs/05 §5.8): the cloud task id
-# the downloaded-file sensor prefixes — digits, a dash, and only when a name actually
+# The two machine artefacts a reported job name carries (docs/05 §5.8): the byte-size
+# prefix the downloaded-file sensor writes — digits, a dash, and only when a name actually
 # follows, so a name that *is* `1234-` keeps itself — and one trailing slicer extension.
 # One, deliberately: `vase.gcode.3mf` names a file whose inner form is still a name.
 _JOB_NAME_ID_PREFIX = re.compile(r"^\d+-(?=\S)")
@@ -919,8 +919,11 @@ def display_job_name(name: str) -> str:
     The raw name is an **identity**: `TrackPrintJob` correlates an ending to its start by
     it, and the free-text history filter matches against it as stored, so the ledger keeps
     it byte-for-byte as the printer reported. But the reported form is a machine's —
-    `2429842-Royal Crest.gcode` leads with a cloud task id and trails a file extension no
-    reader asked for. This strips exactly those two artefacts and nothing else.
+    `2429842-Royal Crest.gcode` leads with a numeric prefix and trails a file extension no
+    reader asked for. The prefix is the byte size of the cached 3MF, which is how
+    `ha-bambulab`'s `gcode_file_downloaded` sensor names the file it fetched — not a cloud
+    task id, as this docstring said until 2026-09-03 (docs/12-field-notes.md). This strips
+    exactly those two artefacts and nothing else.
 
     A name the stripping would reduce to nothing comes back verbatim — `123-.gcode` shown
     raw is odd, shown blank it is a rendering bug — and the gateway's `unknown print`

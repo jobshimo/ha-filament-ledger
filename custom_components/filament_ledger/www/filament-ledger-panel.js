@@ -223,17 +223,30 @@ const typedGrams = (raw) => {
 /**
  * The tray one review row is about, read back off the element that rendered it.
  *
- * The three parts travel together because a tray takes all three to name — the review
- * card renders exactly what the backend froze, and the approval sends exactly that back.
+ * The parts travel together because a tray takes all of them to name — the review card
+ * renders exactly what the backend froze, and the approval sends exactly that back.
+ * `feed` says which kind of position it is: an AMS tray is `printer` + `ams` + `slot`,
+ * and the printer's own external spool (direct feed) is `printer` alone, with `ams` and
+ * `slot` sent as **null** rather than omitted, so the entry always has the same keys and
+ * the backend never has to guess whether a missing slot means "external" or "forgot".
+ *
  * `ams` and `slot` are numbers on the wire and come out of `dataset` as strings, so they
  * go back as numbers; the schema would coerce them, but a payload that reads as the data
- * it describes is worth the two calls.
+ * it describes is worth the two calls. An external line renders them as empty strings,
+ * and `Number("")` is 0 — a slot that does not exist — which is why the branch is on the
+ * feed and not on the strings.
  */
-const trayRef = (element) => ({
-  printer: element.dataset.printer,
-  ams: Number(element.dataset.ams),
-  slot: Number(element.dataset.slot),
-});
+const trayRef = (element) => {
+  const feed = element.dataset.feed === "external" ? "external" : "ams";
+  return feed === "external"
+    ? { printer: element.dataset.printer, ams: null, slot: null, feed }
+    : {
+        printer: element.dataset.printer,
+        ams: Number(element.dataset.ams),
+        slot: Number(element.dataset.slot),
+        feed,
+      };
+};
 
 /**
  * One end of the history's date filter, as the instant the reader means.
@@ -574,6 +587,27 @@ class FilamentLedgerPanel extends HTMLElement {
     return space;
   }
 
+  /**
+   * What one mount sends, for whichever position the open dialog was raised on.
+   *
+   * Two positions, one command. An AMS tray names its `slot` inside the tray space above.
+   * The printer's external spool — the direct feed beside the AMS — has no slot and no AMS
+   * unit, so it sends `external: true` in place of the slot and only the machine from the
+   * tray space: an `ams` ordinal on a position that is not in the AMS would be a claim
+   * about a unit the spool is not in. Both paths (`mount-pick` and the form submit) build
+   * from here so they cannot disagree about the shape.
+   */
+  _mountPayload(spoolId) {
+    const dialog = this._dialog ?? {};
+    const space = this._traySpace(dialog.printer);
+    if (dialog.external) {
+      const payload = { spool_id: spoolId, external: true };
+      if (space.printer) payload.printer = space.printer;
+      return payload;
+    }
+    return { spool_id: spoolId, ...space, slot: dialog.slot };
+  }
+
   /** *active*, *sealed*, *discarded*, *deleted* — the derived state, in words. */
   stateLabel(state) {
     const key = `state.${state}`;
@@ -714,6 +748,17 @@ class FilamentLedgerPanel extends HTMLElement {
     // per tray, so a second row is always the user's own work. Same judgement as the
     // dialog above — a held update is recoverable, a discarded decision is not.
     if (this.shadowRoot.querySelector(".rv-charge + .rv-charge")) return true;
+    // The layered spool picker is a decision half-made: it is appended beside the view
+    // rather than kept in `_dialog`, so the check above does not see it, and a repaint
+    // would tear it out from under the finger that opened it.
+    if (this.shadowRoot.querySelector(".picker-layer")) return true;
+    // A spool chosen for a review tray lives only in that row's hidden input until Approve
+    // sends it. Nothing is focused once the picker closes, so without this the very next
+    // held update would quietly put the frozen (or empty) spool back.
+    for (const tray of this.shadowRoot.querySelectorAll(".rv-tray")) {
+      const pick = tray.querySelector(".rv-pick");
+      if (pick && pick.value !== tray.dataset.frozen) return true;
+    }
     const focused = this.shadowRoot.activeElement;
     return Boolean(focused && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName));
   }
@@ -1019,20 +1064,28 @@ class FilamentLedgerPanel extends HTMLElement {
         };
         this.render();
         break;
+      case "mount-external":
+        // The fifth position on a machine: the spool holder beside the AMS that feeds the
+        // extruder directly. Same dialog, same picker, no slot — `external` is what the
+        // payload carries in the slot's place (`_mountPayload`).
+        this._dialog = {
+          kind: "mount",
+          external: true,
+          slot: null,
+          printer: target.dataset.printer || null,
+        };
+        this.render();
+        break;
       case "mount-pick":
         // The tap IS the choice: `guarded` closes the dialog and refreshes on success,
         // and an error keeps the message in the bar — the same contract every form
         // submit in this file follows.
-        this.guarded(() =>
-          this.call("spools/mount", {
-            spool_id: id,
-            ...this._traySpace(this._dialog?.printer),
-            slot: this._dialog?.slot,
-          }),
-        );
+        this.guarded(() => this.call("spools/mount", this._mountPayload(id)));
         break;
       case "open-spool-picker":
-        this._openSpoolPicker(target.closest("form"));
+        // The picker serves two hosts: the reassign form and one charge row of a review
+        // tray. The nearest of the two is the scope the choice is written back into.
+        this._openSpoolPicker(target.closest("form, .rv-charge"));
         break;
       case "picker-pick":
         this._pickSpool(id);
@@ -1390,13 +1443,7 @@ class FilamentLedgerPanel extends HTMLElement {
         );
         break;
       case "mount":
-        this.guarded(() =>
-          this.call("spools/mount", {
-            spool_id: data.spool_id,
-            ...this._traySpace(this._dialog.printer),
-            slot: this._dialog.slot,
-          }),
-        );
+        this.guarded(() => this.call("spools/mount", this._mountPayload(data.spool_id)));
         break;
       case "dismiss-review":
         this.guarded(() =>
@@ -2144,8 +2191,10 @@ class FilamentLedgerPanel extends HTMLElement {
    */
   _amsPrinters() {
     const followed = this._printer?.tracking?.printers ?? [];
+    // A machine is occupied by whatever is mounted on it, in a tray or on the external
+    // holder: a reel on a stale printer's direct feed is as real as one in its AMS.
     const occupied = this._spools
-      .filter((s) => s.location.kind === "AMS_SLOT")
+      .filter((s) => s.location.kind === "AMS_SLOT" || s.location.kind === "EXTERNAL_SPOOL")
       .map((s) => s.location.printer);
     return [...new Set([...followed, ...occupied.filter((p) => p != null).sort()])];
   }
@@ -2192,10 +2241,18 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * One machine's four trays.
+   * One machine's positions: its four AMS trays, then its external spool.
    *
-   * `printer` is null only in the one-anonymous-space case above; the mount button then
-   * names no printer and the backend resolves the absence, which is the same path a v1
+   * The external spool is the holder beside the AMS that feeds the extruder directly. It
+   * is a fifth place a reel can be and be consumed from, so it gets the fifth card, drawn
+   * with the same markup as a tray: the same ring, the same buttons, the same empty state
+   * with the same [ Mount ]. What differs is only what the backend needs to name it — no
+   * slot — and the heading, which says what it is rather than a number. A ledger whose
+   * spools never report an `EXTERNAL_SPOOL` location simply shows the card empty; nothing
+   * is invented to fill it.
+   *
+   * `printer` is null only in the one-anonymous-space case above; the mount buttons then
+   * name no printer and the backend resolves the absence, which is the same path a v1
    * automation takes.
    */
   amsSection(printer, named, followed) {
@@ -2203,8 +2260,9 @@ class FilamentLedgerPanel extends HTMLElement {
     // A location names its printer, so the match names it too — otherwise a spool an
     // automation mounted into another machine's tray 3 would appear here as though it were
     // in this one's.
-    const here = (location) =>
-      location.kind === "AMS_SLOT" && (printer === null || location.printer === printer);
+    const onThisMachine = (location) => printer === null || location.printer === printer;
+    const here = (location) => location.kind === "AMS_SLOT" && onThisMachine(location);
+    const machine = esc(printer ?? "");
     const slots = [1, 2, 3, 4].map((slot) => {
       const spool = this._spools.find((s) => here(s.location) && s.location.slot === slot);
       if (!spool) {
@@ -2214,42 +2272,72 @@ class FilamentLedgerPanel extends HTMLElement {
         // button then does for a third-party reel what the chip does for a Bambu one,
         // because consumption already charges by location, not by tag.
         const chipless = this._trayStatus(printer, slot) === "NO_TAG";
-        return `<div class="card tray empty-tray">
-          <div class="n">${t("ams.slot", { slot })}</div>
-          <div class="muted">${t(chipless ? "ams.chipless" : "ams.empty")}</div>
-          <button data-action="mount-slot" data-slot="${slot}"
-                  data-printer="${esc(printer ?? "")}">${t("act.mount")}</button>
-        </div>`;
+        return this.emptyPositionCard(
+          t("ams.slot", { slot }),
+          t(chipless ? "ams.chipless" : "ams.empty"),
+          `<button data-action="mount-slot" data-slot="${slot}"
+                  data-printer="${machine}">${t("act.mount")}</button>`,
+        );
       }
-      // A tray keeps showing an empty spool: the reel is still physically loaded, and a
-      // slot that emptied itself on screen would be a lie about the machine (docs/06 §6.4).
-      return `<div class="card tray ${spool.state === "DEPLETED" ? "depleted" : ""}">
-        <div class="tray-head">
-          <div class="n">${t("ams.slot", { slot })}</div>
-          ${this.spoolMenu(spool)}
-        </div>
-        <div class="tray-art">
-          ${spoolRing("slot", spool.percentage, spool.colour)}
-          <div class="ring-mid">
-            <span class="ring-hub" style="background:${esc(spool.colour)}"></span>
-          </div>
-        </div>
-        <div class="name">${esc(spool.name)}</div>
-        <div class="big">${spool.balance_g}<small> g</small></div>
-        <div class="barline">
-          <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
-          <span class="pct">${spool.percentage}%</span>
-        </div>
-        <div class="foot">${this.confidenceChip(spool.confidence)}</div>
-        <div class="tray-actions">
-          <button data-action="open" data-id="${esc(spool.id)}">${t("act.open")}</button>
-          <button data-action="unmount" data-id="${esc(spool.id)}">${t("act.unmount")}</button>
-        </div>
-      </div>`;
+      return this.positionCard(t("ams.slot", { slot }), spool);
     });
+    const external = this._spools.find(
+      (s) => s.location.kind === "EXTERNAL_SPOOL" && onThisMachine(s.location),
+    );
+    slots.push(
+      external
+        ? this.positionCard(t("ams.external"), external)
+        : this.emptyPositionCard(
+            t("ams.external"),
+            t("ams.empty"),
+            `<button data-action="mount-external" data-printer="${machine}">${t("act.mount")}</button>`,
+          ),
+    );
     return `<div class="ams-space">
       ${named ? this.machineHeading(printer, followed) : ""}
       <div class="trays">${slots.join("")}</div>
+    </div>`;
+  }
+
+  /** A position with nothing the ledger knows of in it, and the button that changes that. */
+  emptyPositionCard(heading, word, mountButton) {
+    return `<div class="card tray empty-tray">
+      <div class="n">${heading}</div>
+      <div class="muted">${word}</div>
+      ${mountButton}
+    </div>`;
+  }
+
+  /**
+   * A position holding a spool — an AMS tray or the external holder, the card is the same.
+   *
+   * A position keeps showing an empty spool: the reel is still physically loaded, and a
+   * slot that emptied itself on screen would be a lie about the machine (docs/06 §6.4).
+   */
+  positionCard(heading, spool) {
+    const t = this._t;
+    return `<div class="card tray ${spool.state === "DEPLETED" ? "depleted" : ""}">
+      <div class="tray-head">
+        <div class="n">${heading}</div>
+        ${this.spoolMenu(spool)}
+      </div>
+      <div class="tray-art">
+        ${spoolRing("slot", spool.percentage, spool.colour)}
+        <div class="ring-mid">
+          <span class="ring-hub" style="background:${esc(spool.colour)}"></span>
+        </div>
+      </div>
+      <div class="name">${esc(spool.name)}</div>
+      <div class="big">${spool.balance_g}<small> g</small></div>
+      <div class="barline">
+        <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
+        <span class="pct">${spool.percentage}%</span>
+      </div>
+      <div class="foot">${this.confidenceChip(spool.confidence)}</div>
+      <div class="tray-actions">
+        <button data-action="open" data-id="${esc(spool.id)}">${t("act.open")}</button>
+        <button data-action="unmount" data-id="${esc(spool.id)}">${t("act.unmount")}</button>
+      </div>
     </div>`;
   }
 
@@ -2997,10 +3085,12 @@ class FilamentLedgerPanel extends HTMLElement {
     // the domain rule (02 §2.3) must never disagree about what is legal. A tray freezes
     // with at most one charge, so nothing can start out partly attributed; the running
     // remainder in `_syncReviewCard` is what watches for that as the user types.
-    const blockedSlots = review.lines
+    // Named by feed and slot, not by slot alone: the external spool has no slot number and
+    // the hint has to call it what the card calls it.
+    const blockedTrays = review.lines
       .filter((line) => !line.charges.length && line.estimated_g !== 0)
-      .map((line) => line.slot);
-    const blocked = blockedSlots.length > 0;
+      .map((line) => ({ feed: line.feed ?? "ams", slot: line.slot }));
+    const blocked = blockedTrays.length > 0;
 
     return `
       <article class="card rv-card" data-id="${esc(review.id)}">
@@ -3026,7 +3116,7 @@ class FilamentLedgerPanel extends HTMLElement {
           <button class="primary rv-approve" data-action="review-approve" data-id="${esc(review.id)}"
             ${blocked ? "disabled" : ""}>${t("review.approve")}</button>
         </div>
-        <div class="rv-hint muted small" ${blocked ? "" : "hidden"}>${this._approveHint(blockedSlots)}</div>
+        <div class="rv-hint muted small" ${blocked ? "" : "hidden"}>${this._approveHint(blockedTrays)}</div>
       </article>`;
   }
 
@@ -3045,9 +3135,17 @@ class FilamentLedgerPanel extends HTMLElement {
    * per-charge fields, and `data-frozen` is what the collapsed row renders off — the spool
    * the review froze, so a tray that has been split and unsplit comes back to a picker
    * rather than to a name it can no longer change.
+   *
+   * A line is one of two feeds. `ams` is a tray, named by `ams` + `slot`; `external` is
+   * the printer's own spool holder, which has neither. The feed rides on the element as
+   * `data-feed` so `trayRef` can send the line back in the shape it arrived in, and the
+   * label says "External spool" rather than a slot number that does not exist. A line
+   * with no `feed` at all is a tray — the shape every review had before the external
+   * spool was a place a print could draw from.
    */
   reviewTray(line) {
     const t = this._t;
+    const external = line.feed === "external";
     const frozen = line.charges.length === 1 ? line.charges[0].spool_id : "";
     const charges = line.charges.length
       ? line.charges.map((c) => ({ spool_id: c.spool_id, amount: c.amount_g.toFixed(1) }))
@@ -3056,11 +3154,12 @@ class FilamentLedgerPanel extends HTMLElement {
         [{ spool_id: "", amount: "" }];
 
     return `
-      <div class="rv-tray" data-printer="${esc(line.printer)}" data-ams="${esc(line.ams)}"
+      <div class="rv-tray" data-feed="${external ? "external" : "ams"}"
+        data-printer="${esc(line.printer)}" data-ams="${esc(line.ams)}"
         data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}"
         data-frozen="${esc(frozen)}">
         <div class="rv-row">
-          <span class="rv-slot">${t("ams.slot", { slot: line.slot })}</span>
+          <span class="rv-slot">${external ? t("ams.external") : t("ams.slot", { slot: line.slot })}</span>
           <input class="rv-amt num" type="number" min="0" step="0.1"
             value="${esc(line.estimated_g.toFixed(1))}"> g
         </div>
@@ -3078,37 +3177,45 @@ class FilamentLedgerPanel extends HTMLElement {
    * Rebuilt whole whenever a charge is added or removed, from values read back out of the
    * DOM, so the panel keeps one renderer for both densities — the alternative is markup
    * that is assembled in one place and patched in another, which is how the two drift.
+   *
+   * Choosing the spool goes through the layered picker, never a `<select>`. The dropdown
+   * this row used to carry was judged not intuitive — a list of names with no colour and
+   * no ring, on a phone at the printer — and the picker that shipped in v2.7.3 is the one
+   * surface this panel has for choosing a spool: the mount dialog uses it, the reassign
+   * form uses it, and a review row that looked different would be the third way to do
+   * the same thing. What survives of the old control is its contract: a hidden `.rv-pick`
+   * holds the chosen id, so `_trayCharges`, `_syncReviewCard` and the approval payload
+   * read exactly what they always read. The button beside it is the field's face, and
+   * `_pickSpool` patches that face in place when the choice is made.
    */
   reviewCharges(charges, frozen) {
     const t = this._t;
     const single = charges.length === 1;
-    // Retired spools stay out of the picker, by either route — charging one is refused by
-    // the domain (docs/14 §14.4.5). The overview already omits them; the filter is stated
-    // so the rule is visible where the picker is read.
-    const spools = this._spools.filter((s) => s.state !== "DISCARDED" && s.state !== "DELETED");
     return charges
       .map((charge) => {
         // Named off the *unfiltered* list: a spool retired since the review opened is
         // still the spool this tray froze, and calling it unknown would hide the very
-        // fact the user needs in order to understand the refusal that follows.
+        // fact the user needs in order to understand the refusal that follows. The picker
+        // itself filters the retired out (`_openSpoolPicker`, docs/14 §14.4.5).
         const spool = charge.spool_id
           ? this._spools.find((s) => s.id === charge.spool_id)
           : null;
         const named = single && charge.spool_id && charge.spool_id === frozen;
+        // The face: the spool's own card once one is chosen, otherwise the invitation.
+        // "Change" appears only when there is something to change from.
+        const face = spool
+          ? this.spoolChoiceBody(spool)
+          : `<span class="sf-empty">${charge.spool_id ? t("review.unknownSpool") : t("review.chooseSpool")}</span>`;
         const who = named
           ? `<span class="rv-dot" style="background:${esc(spool?.colour ?? "transparent")}"></span>
              <span class="rv-spool">${spool ? esc(spool.name) : t("review.unknownSpool")}</span>`
           : `<span class="rv-warn">${charge.spool_id ? "" : "⚠"}</span>
              <span class="rv-pickline">${single ? t("review.whichSpool") : ""}
-               <select class="rv-pick">
-                 <option value="">${t("review.chooseSpool")}</option>
-                 ${spools
-                   .map(
-                     (s) =>
-                       `<option value="${esc(s.id)}" ${s.id === charge.spool_id ? "selected" : ""}>${esc(s.name)} — ${s.balance_g} g</option>`,
-                   )
-                   .join("")}
-               </select>
+               <input type="hidden" class="rv-pick" value="${esc(charge.spool_id)}">
+               <button type="button" class="mount-choice spool-field rv-choose" data-action="open-spool-picker">
+                 <span class="sf-card">${face}</span>
+                 <span class="sf-change">${spool ? t("act.change") : ""}</span>
+               </button>
              </span>`;
         // The per-charge figure and its two buttons exist only in the split: with one
         // charge the tray's own figure is the charge's figure, by the invariant.
@@ -3145,19 +3252,30 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * Why Approve is disabled, naming the slots (docs/06 §6.3).
+   * Why Approve is disabled, naming the positions (docs/06 §6.3).
    *
    * Built as markup here and as `textContent` in `_syncReviewCard`; the sentence is one
    * key either way, so the two can never say different things about the same card.
    */
-  _approveHint(slots) {
-    if (!slots.length) return "";
-    return fill(this._t("review.blockedHint"), "slots", this._slotList(slots));
+  _approveHint(trays) {
+    if (!trays.length) return "";
+    return fill(this._t("review.blockedHint"), "slots", this._slotList(trays));
   }
 
-  /** The trays a hint is about, as prose: *slot 1 and slot 3*. */
-  _slotList(slots) {
-    return slots.map((slot) => this._t("review.slotWord", { slot })).join(this._t("act.and"));
+  /**
+   * The positions a hint is about, as prose: *slot 1 and slot 3*, or *slot 1 and the
+   * external spool*. Each entry is `{ feed, slot }` — the external spool has no slot
+   * number, so it is named by what it is rather than by a number it does not have.
+   */
+  _slotList(trays) {
+    return trays.map((tray) => this._trayWord(tray)).join(this._t("act.and"));
+  }
+
+  /** One position, mid-sentence: *slot 3* or *the external spool*. */
+  _trayWord(tray) {
+    return tray.feed === "external"
+      ? this._t("review.externalWord")
+      : this._t("review.slotWord", { slot: tray.slot });
   }
 
   /**
@@ -3198,10 +3316,12 @@ class FilamentLedgerPanel extends HTMLElement {
         attributed += share;
         if (share !== 0 && !charge.spool_id) missing = true;
       }
-      if (missing) unattributed.push(tray.dataset.slot);
+      // The position, by feed and slot, so the hint can name the external spool as such.
+      const which = { feed: tray.dataset.feed, slot: tray.dataset.slot };
+      if (missing) unattributed.push(which);
 
       const left = round1(amount - attributed);
-      if (left !== 0) unbalanced.push(tray.dataset.slot);
+      if (left !== 0) unbalanced.push(which);
       leftEl.textContent =
         left > 0
           ? t("review.remaining", { grams: left.toFixed(1) })
@@ -3346,9 +3466,10 @@ class FilamentLedgerPanel extends HTMLElement {
    */
   _approveReview(card, reviewId) {
     const payload = { review_id: reviewId };
-    // Lists of per-tray entries, not objects keyed by slot: a tray takes three parts to
-    // name and a JSON key holds one. Each entry repeats the tray the card rendered, read
-    // straight back off the element the review's own line built.
+    // Lists of per-tray entries, not objects keyed by slot: a tray takes several parts to
+    // name and a JSON key holds one. Each entry repeats the position the card rendered,
+    // read straight back off the element the review's own line built — `trayRef` puts
+    // `feed` on every entry, and an external line goes back with `ams` and `slot` null.
     const amounts = [];
     const assign = [];
     const charges = [];
@@ -4452,17 +4573,28 @@ class FilamentLedgerPanel extends HTMLElement {
       </form>`;
   }
 
+  /**
+   * The mount dialog, for a tray or for the external spool — the title is the only line
+   * that knows which.
+   *
+   * A spool already mounted anywhere is not offered, whether it sits in a tray or on the
+   * external holder: the empty-state sentence promises *unmount one first*, and a list
+   * that quietly let a mounted reel be moved would make that sentence a lie.
+   */
   mountForm() {
     const t = this._t;
-    const slot = this._dialog.slot;
-    const available = this._spools.filter((s) => s.location.kind !== "AMS_SLOT");
+    const { slot, external } = this._dialog;
+    const available = this._spools.filter(
+      (s) => s.location.kind !== "AMS_SLOT" && s.location.kind !== "EXTERNAL_SPOOL",
+    );
+    const title = external ? t("dlg.mountExternalTitle") : t("dlg.mountTitle", { slot });
     if (!available.length) {
-      return `<h3>${t("dlg.mountTitle", { slot })}</h3>
+      return `<h3>${title}</h3>
         <p class="muted">${t("dlg.mountNone")}</p>
         ${this.formActions(null)}`;
     }
     return `
-      <h3>${t("dlg.mountTitle", { slot })}</h3>
+      <h3>${title}</h3>
       ${this.spoolPickerSections(available, "mount-pick")}
       ${this.formActions(null)}`;
   }
@@ -4512,26 +4644,40 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * The reassign form's picker, layered over the open dialog and patched in place.
+   * The layered spool picker, over whichever surface asked for it, patched in place.
+   *
+   * One picker, two hosts. `scope` is either the reassign `form` or one `.rv-charge` row
+   * of a review tray — the two places this panel asks *which spool?* mid-edit — and the
+   * rule is that both ask with this and nothing else: the `<select>` the review row used
+   * to carry was judged not intuitive, and a spool is chosen by its colour and its ring
+   * (06 §6.8), which a dropdown cannot draw. The host decides only the title and where
+   * the answer is written (`_pickSpool`).
    *
    * Deliberately NOT `this._dialog` and NOT `render()`: a repaint rebuilds the dialog's
    * markup wholesale, and the grams being typed two fields down would not survive it —
-   * the same reason `_syncReassignForm` patches instead of rendering. The overlay is
-   * appended beside the dialog, the root's delegated listener sees its buttons like any
-   * other node's, and picking writes the hidden input and the field's face directly.
+   * the same reason `_syncReassignForm` patches instead of rendering, and the same reason
+   * a review card is never re-rendered from a handler. The overlay is appended beside the
+   * view, the root's delegated listener sees its buttons like any other node's, and
+   * picking writes the hidden input and the field's face directly.
+   *
+   * Retired spools stay out, by either host — charging one is refused by the domain
+   * (docs/14 §14.4.5) — and a host may name one more to leave out (`data-exclude`: the
+   * reassign form's own spool, which a charge cannot be moved onto).
    */
-  _openSpoolPicker(form) {
+  _openSpoolPicker(scope) {
+    if (!scope) return;
     const t = this._t;
-    this._pickerForm = form;
-    const exclude = form.dataset.exclude;
+    this._pickerScope = scope;
+    const exclude = scope.dataset.exclude;
     const candidates = this._spools.filter(
       (s) => s.id !== exclude && s.state !== "DISCARDED" && s.state !== "DELETED",
     );
+    const title = scope.matches("form") ? t("dlg.reassignTo") : t("picker.reviewTitle");
     const layer = document.createElement("div");
     layer.className = "scrim picker-layer";
     layer.dataset.action = "close-picker";
     layer.innerHTML = `<div class="modal picker-modal">
-      <h3>${t("dlg.reassignTo")}</h3>
+      <h3>${title}</h3>
       ${this.spoolPickerSections(candidates, "picker-pick")}
       <div class="actions"><button type="button" data-action="close-picker">${t("act.cancel")}</button></div>
     </div>`;
@@ -4540,15 +4686,33 @@ class FilamentLedgerPanel extends HTMLElement {
 
   _closeSpoolPicker() {
     this._root.querySelector(".picker-layer")?.remove();
-    this._pickerForm = null;
+    this._pickerScope = null;
   }
 
+  /**
+   * Write the choice back into the host that asked, and repaint only its face.
+   *
+   * The reassign form keeps the id in `to_spool_id`; a review row keeps it in `.rv-pick`,
+   * the same hidden field the old dropdown's value lived in, so everything that reads a
+   * tray's charges is unchanged. A review row then also drops its *unresolved* mark and
+   * re-derives its card — the Approve button and the hint are about exactly this.
+   */
   _pickSpool(id) {
-    const form = this._pickerForm;
+    const scope = this._pickerScope;
     const chosen = this._spools.find((s) => s.id === id);
-    if (form && chosen) {
-      form.querySelector("input[name=to_spool_id]").value = id;
-      form.querySelector(".spool-field .sf-card").innerHTML = this.spoolChoiceBody(chosen);
+    if (scope && chosen) {
+      const isForm = scope.matches("form");
+      const input = scope.querySelector(isForm ? "input[name=to_spool_id]" : "input.rv-pick");
+      if (input) input.value = id;
+      const field = scope.querySelector(".spool-field");
+      field.querySelector(".sf-card").innerHTML = this.spoolChoiceBody(chosen);
+      field.querySelector(".sf-change").textContent = this._t("act.change");
+      if (!isForm) {
+        scope.classList.remove("unresolved");
+        const warn = scope.querySelector(".rv-warn");
+        if (warn) warn.textContent = "";
+        this._syncReviewCard(scope.closest(".rv-card"));
+      }
     }
     this._closeSpoolPicker();
   }
@@ -5160,9 +5324,14 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
 .rv-pickline { flex: 1 1 180px; min-width: 0; font-size: 12.5px;
   color: var(--fl-ink-dim); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rv-charge button.link { align-self: center; font-size: 12.5px; white-space: nowrap; }
-.rv-pick { font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px;
-  border: 1px solid var(--fl-line); background: var(--fl-surface-sunken);
-  color: var(--fl-ink); }
+/* The row's spool field is the same card the reassign form shows, drawn one size down so
+   it sits in a charge row rather than owning the modal: a smaller ring, tighter padding,
+   and it stretches to the line it is on. Unresolved reads as a dashed outline — a place
+   for a spool, not a spool — and the face inside carries the invitation. */
+.rv-charge .spool-field { flex: 1 1 220px; min-width: 0; padding: 8px 10px; }
+.rv-charge .spool-field .mc-art { width: 44px; height: 44px; }
+.rv-charge.unresolved .spool-field { border-style: dashed; border-color: var(--fl-line-strong); }
+.spool-field .sf-empty { color: var(--fl-ink-dim); font-size: 13px; }
 .rv-total { align-self: flex-end; font-size: 13px; color: var(--fl-ink-dim);
   border-top: 1px solid var(--fl-line); padding-top: 5px;
   font-variant-numeric: tabular-nums; }

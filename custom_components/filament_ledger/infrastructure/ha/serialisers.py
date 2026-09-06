@@ -30,6 +30,7 @@ from ...application.query import (
 )
 from ...domain.model.movement import Movement
 from ...domain.value.grams import Grams, total
+from ...domain.value.identifiers import Feed, TrayRef
 
 if TYPE_CHECKING:
     # Type-only: `tray_sync` imports the gateway, which imports Home Assistant — and the
@@ -558,11 +559,12 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
         "estimated_total_g": grams(total([line.estimated for line in review.lines])),
         "lines": [
             {
-                # The tray in full, because approving sends these three back and a bare
-                # number would no longer say which tray was meant.
-                "printer": line.tray.printer.value,
-                "ams": line.tray.ams.value,
-                "slot": line.tray.slot.value,
+                # The position in full, because approving sends it back and a bare number
+                # would no longer say which tray was meant. `feed` says which kind: an
+                # AMS tray carries its three parts, the printer's direct feed carries the
+                # machine alone and nulls for the tray half, and the panel labels it by
+                # name rather than by a slot it does not have (docs/06 §6.3).
+                **_feed_fields(line.tray),
                 "estimated_g": grams(line.estimated),
                 "charges": [
                     {"spool_id": charge.spool_id, "amount_g": grams(charge.amount)}
@@ -572,3 +574,14 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
             for line in review.lines
         ],
     }
+
+
+def _feed_fields(feed: Feed) -> dict[str, Any]:
+    if isinstance(feed, TrayRef):
+        return {
+            "printer": feed.printer.value,
+            "feed": "ams",
+            "ams": feed.ams.value,
+            "slot": feed.slot.value,
+        }
+    return {"printer": feed.printer.value, "feed": "external", "ams": None, "slot": None}

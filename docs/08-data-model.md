@@ -140,7 +140,7 @@ CREATE TABLE print_job (
     layer_reached    INTEGER,
     total_layers     INTEGER,
     progress_pct     REAL,
-    reported_usage   TEXT,                       -- JSON [{printer, ams, slot, mg}]
+    reported_usage   TEXT,                       -- JSON [{printer, ams, slot, mg} | {printer, external: true, mg}]
     raw_gcode_state  TEXT,                       -- verbatim, see Q1
     raw_print_error  INTEGER,                    -- verbatim, see Q1
     consumption_recorded INTEGER NOT NULL DEFAULT 0,
@@ -214,6 +214,12 @@ appear in a printer serial, and nobody can promise that about somebody else's ha
 of objects has no such problem and stays readable in a database browser, which is where a
 stored document is actually inspected. `slot_resolution` had already been a list since 0004,
 so this is one shape rather than two.
+
+**The printer's direct feed is an entry too (v2.8): `{"printer": …, "external": true, "mg": …}`.**
+No tray half, because the holder beside the AMS has none, and no migration, because the shape
+is recognised by a key no tray entry ever carried — every document written before it still
+reads as trays, and the two kinds sit in one column side by side
+([02 §2.3](02-domain-model.md)).
 
 `slot_resolution` is the attribution, and since migration 0004 it carries a `spool_id`. It was
 a `{slot: spool_id|null}` map, which was the one limitation that mattered: a spool that empties
