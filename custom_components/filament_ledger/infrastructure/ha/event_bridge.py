@@ -28,6 +28,7 @@ from ...domain.event import (
     SpoolDepleted,
     SpoolDetected,
     SpoolMounted,
+    SpoolMountedExternally,
     SpoolRegistered,
     SpoolRestored,
     SpoolUnmounted,
@@ -98,6 +99,16 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
             }
         case SpoolMounted(spool_id, tray):
             return event_name("spool_mounted"), {"spool_id": spool_id, **_tray_fields(tray)}
+        case SpoolMountedExternally(spool_id, printer):
+            # The same bus name as a tray mount: an automation that reacts to *a spool
+            # went into the machine* wants both, and the panel's live subscription
+            # listens by name (`LEDGER_EVENTS`). `external` is what tells them apart,
+            # and no tray half is sent because there is none to send.
+            return event_name("spool_mounted"), {
+                "spool_id": spool_id,
+                "printer": printer.value,
+                "external": True,
+            }
         case SpoolUnmounted(spool_id):
             return event_name("spool_unmounted"), {"spool_id": spool_id}
         case MovementRecorded(spool_id, movement_type, amount, new_balance):

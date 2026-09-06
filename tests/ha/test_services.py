@@ -162,7 +162,11 @@ class TestSchemas:
                 {"spool_id": "s", "reason": "r"},
                 id="adjust-without-an-amount",
             ),
-            pytest.param(SERVICE_MOUNT_SPOOL, {"spool_id": "s"}, id="mount-without-a-slot"),
+            pytest.param(
+                SERVICE_MOUNT_SPOOL,
+                {"spool_id": "s", "external": "maybe"},
+                id="mount-with-a-non-boolean-external",
+            ),
             pytest.param(
                 SERVICE_MOUNT_SPOOL, {"spool_id": "s", "slot": 9}, id="mount-past-the-last-slot"
             ),
@@ -284,6 +288,26 @@ class TestEachServiceReachesTheLedger:
         await services.call(SERVICE_UNMOUNT_SPOOL, spool_id=spool_id)
         detail = await harness.ledger.use_cases.queries.detail(spool_id)
         assert detail.summary.spool.location.__class__.__name__ == "Storage"
+
+    async def test_mount_external_puts_the_spool_on_the_direct_feed(
+        self, services: ServiceGateway, harness: Harness
+    ) -> None:
+        """`external: true` names the holder beside the AMS instead of a tray (v2.8), and
+        the holder takes one spool: mounting a second there sends the first to storage."""
+        first = await a_spool(harness.ledger)
+        second = await a_spool(harness.ledger)
+
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=first, external=True)
+        detail = await harness.ledger.use_cases.queries.detail(first)
+        assert detail.summary.spool.location.__class__.__name__ == "ExternalSpool"
+
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=second, external=True)
+        assert (
+            await harness.ledger.use_cases.queries.detail(first)
+        ).summary.spool.location.__class__.__name__ == "Storage"
+        assert (
+            await harness.ledger.use_cases.queries.detail(second)
+        ).summary.spool.location.__class__.__name__ == "ExternalSpool"
 
     async def test_approve_review_converts_the_estimate_into_movements(
         self, services: ServiceGateway, harness: Harness

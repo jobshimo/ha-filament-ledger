@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from .adjust_spool import AdjustSpool, DiscardFilament
 from .delete_spool import DeleteSpool, RestoreSpool
 from .detect_spool import DetectSpool
-from .move_spool import EditSpoolDetails, MountSpool, UnmountSpool
+from .move_spool import EditSpoolDetails, MountSpool, MountSpoolExternally, UnmountSpool
 from .query import Queries
 from .reassign_movement import ReassignMovement
 from .reconcile_spool import ReconcileSpool
@@ -29,6 +29,7 @@ class UseCases:
     discard_filament: DiscardFilament
     adjust_spool: AdjustSpool
     mount_spool: MountSpool
+    mount_spool_externally: MountSpoolExternally
     unmount_spool: UnmountSpool
     detect_spool: DetectSpool
     edit_spool_details: EditSpoolDetails

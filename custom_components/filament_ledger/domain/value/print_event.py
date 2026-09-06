@@ -30,8 +30,16 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from .grams import Grams
-    from .identifiers import PrinterSerial, TrayRef
+    from .identifiers import Feed, PrinterSerial
     from .percentage import Percentage
+
+# What a job is called when no name sensor can say. Never blank: the review card and the
+# notification both lead with the name, and an empty string reads as a rendering bug rather
+# than an honest unknown. It lives with the events rather than in the adapter that answers
+# it because the receiving use case has to recognise it: a row opened under this name is
+# corrected by the first observation that carries a real one, and no row is ever renamed
+# *to* it (`TrackPrintJob._plan_observed`).
+UNKNOWN_JOB_NAME = "unknown print"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +96,7 @@ class PrintStarted:
 
     name: str
     printer: PrinterSerial
-    plan: dict[TrayRef, Grams] | None = None
+    plan: dict[Feed, Grams] | None = None
     printer_started_at: datetime | None = None
     derived: bool = False
 
@@ -145,7 +153,7 @@ class PrintEnded:
     layer_reached: int | None = None
     total_layers: int | None = None
     progress: Percentage | None = None
-    reported_usage: dict[TrayRef, Grams] | None = None
+    reported_usage: dict[Feed, Grams] | None = None
     raw_gcode_state: str | None = None
     raw_print_error: int | None = None
     printer_started_at: datetime | None = None
@@ -170,10 +178,10 @@ class PrintEnded:
         _refuse_negative_usage(self.reported_usage)
 
 
-def _refuse_negative_usage(usage: dict[TrayRef, Grams] | None) -> None:
-    for tray, used in (usage or {}).items():
+def _refuse_negative_usage(usage: dict[Feed, Grams] | None) -> None:
+    for feed, used in (usage or {}).items():
         if used.is_negative:
-            msg = f"usage for {tray} cannot be negative, got {used}"
+            msg = f"usage for {feed} cannot be negative, got {used}"
             raise InvalidValueError(msg)
 
 
@@ -200,7 +208,9 @@ class PrintPlanObserved:
     `name` rides along because it suffers the same lag from the same cause: the file sensor
     is republished after the start, so a row opened at the first `prepare` carries the
     previous print's filename until something refreshes it. `None` leaves the stored name
-    alone.
+    alone, and so does `UNKNOWN_JOB_NAME`: a row opened while every name sensor was silent
+    is corrected by the first observation that carries a real name, and a named row is
+    never renamed to the admission that nothing spoke.
 
     `printer_started_at` is the machine's own answer to *when did the print I am
     describing begin*, read off the same sensor the starts carry. It exists so the
@@ -214,17 +224,19 @@ class PrintPlanObserved:
     """
 
     printer: PrinterSerial
-    plan: dict[TrayRef, Grams]
+    plan: dict[Feed, Grams]
     name: str | None = None
     printer_started_at: datetime | None = None
 
     def __post_init__(self) -> None:
         # An observation of nothing is the silence this event exists to be distinguished
         # from. The adapter drops those before they get here; this is the backstop that
-        # keeps an empty mapping from being written over a real plan.
+        # keeps an empty mapping from being written over a real plan. A plan naming only
+        # the direct feed is a plan: since v2.8 that position is keyed like a tray.
         if not self.plan:
-            msg = "a plan observation carries at least one tray; silence is not an event"
+            msg = "a plan observation carries at least one feed; silence is not an event"
             raise InvalidValueError(msg)
+        _refuse_negative_usage(self.plan)
 
 
 PrintEvent = PrintStarted | PrintEnded | PrintPlanObserved

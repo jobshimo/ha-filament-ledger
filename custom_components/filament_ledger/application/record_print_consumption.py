@@ -8,7 +8,10 @@ within flow-rate variance, which is the same variance a scale would find
 Everything the printer could not attribute degrades to a review instead of a guess: a tray
 that consumed with no spool mounted in it, and a job with no usable per-tray figure at all.
 Neither throws, and neither is treated as zero — a missing figure is not a figure of zero,
-and recording zero for a print that consumed 84 g is a silent, optimistic lie.
+and recording zero for a print that consumed 84 g is a silent, optimistic lie. The
+figureless review still names the trays: every tray the job's printer holds a spool in is
+listed at zero, because a card with no rows gives the user nothing to type the grams into
+(`_trays_to_ask_about`).
 
 The whole flow — the job row, the movements, any review, and the `consumption_recorded`
 flag — runs in **one unit of work**. The flag is the single idempotency guard, and it only
@@ -33,13 +36,18 @@ from ..domain.event import (
 from ..domain.model.movement import record
 from ..domain.model.print_job import PrintJob
 from ..domain.port.clock import Clock
-from ..domain.port.repositories import MovementRepository, PrintJobRepository, SpoolRepository
+from ..domain.port.repositories import (
+    MovementRepository,
+    PrintJobRepository,
+    SpoolFilter,
+    SpoolRepository,
+)
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.service.anomaly_detector import AnomalyDetector
 from ..domain.service.balance_calculator import balance
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import TrayRef
-from ..domain.value.location import AmsSlot
+from ..domain.value.identifiers import Feed, position_note
+from ..domain.value.location import Storage, feed_of, location_of
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.review import ReviewReason
 from .review_queue import OpenPendingReview, OpenPendingReviewCommand
@@ -86,8 +94,12 @@ class RecordPrintConsumption:
                 # Step 2: no usable per-tray figure — never materialised (`None`), named
                 # no trays (`{}`), or named only zeros. A review documents the gap with
                 # zero placeholders and the explicit no-data flag; nothing is deducted,
-                # because a missing figure is not a figure of zero.
-                to_publish += await self._review_opened(recorded, dict(job.reported_usage or {}))
+                # because a missing figure is not a figure of zero. The placeholders
+                # cover every tray the printer reported *and* every tray it currently
+                # holds a spool in, so the card has a row per loaded tray to type into.
+                to_publish += await self._review_opened(
+                    recorded, await self._trays_to_ask_about(job)
+                )
             else:
                 to_publish += await self._deduct(recorded, consuming)
 
@@ -95,12 +107,10 @@ class RecordPrintConsumption:
         for event in to_publish:
             await self.events.publish(event)
 
-    async def _deduct(
-        self, recorded: PrintJob, consuming: dict[TrayRef, Grams]
-    ) -> list[DomainEvent]:
+    async def _deduct(self, recorded: PrintJob, consuming: dict[Feed, Grams]) -> list[DomainEvent]:
         """Steps 3–7: one PRINT_CONSUMPTION per resolved tray, one review for the rest."""
         events: list[DomainEvent] = []
-        unresolved: dict[TrayRef, Grams] = {}
+        unresolved: dict[Feed, Grams] = {}
         now = self.clock.now()
         # Separate facts: the print finished when the job says it did; `now` is merely
         # when the ledger heard about it (docs/08-data-model.md).
@@ -118,7 +128,11 @@ class RecordPrintConsumption:
         occurred_at = recorded.ended_at if recorded.ended_at is not None else now
 
         for tray, used in sorted(consuming.items()):
-            mounted = await self.spools.find_by_location(AmsSlot(tray))
+            # A tray resolves to the spool in that tray; the direct feed resolves to the
+            # spool on that printer's holder. One rule for both (`location_of`), so the
+            # figure the printer reports as `External Spool` is deducted exactly as a
+            # tray's is rather than dropped on the way in — which until v2.8 it was.
+            mounted = await self.spools.find_by_location(location_of(tray))
             if mounted is None:
                 # Collected, not guessed: the figure goes to a review carrying a null
                 # resolution, where the user supplies the missing half (step 7).
@@ -135,7 +149,7 @@ class RecordPrintConsumption:
                     # Still the single-machine sentence: the ledger follows one printer,
                     # this note is what a user reads in the history, and naming a serial
                     # they have never had to think about would be noise, not precision.
-                    note=f"Slot {tray.slot} of {recorded.name}",
+                    note=f"{position_note(tray)} of {recorded.name}",
                     job_id=recorded.id,
                 )
             )
@@ -163,8 +177,40 @@ class RecordPrintConsumption:
             events += await self._review_opened(recorded, unresolved)
         return events
 
+    async def _trays_to_ask_about(self, job: PrintJob) -> dict[Feed, Grams]:
+        """The trays a figureless review lists: the reported ones, plus every loaded one.
+
+        A review with no lines is a dead end. The panel renders the no-data card with no
+        tray rows, so the user can neither type the grams nor pick the spool — which is
+        exactly where review `497c3c96` was left on the reference instance when an
+        identical re-print published no figures (docs/12-field-notes.md, 2026-09-03).
+        The trays the job's printer holds a spool in are the ones the print could have
+        drawn from, so each of them is listed at zero — a placeholder awaiting the user,
+        never a claim — and `OpenPendingReview._open` freezes the mounted spool as that
+        zero charge, which is what puts a spool's name on the row.
+
+        Reported positions keep whatever the printer said (zeros, on this branch) and are
+        not listed twice. A job that names no printer — a row from before migration 0008
+        — adds nothing: which machine's trays to list would be a guess, and the review
+        still documents the loss as it always has. Every mounted position of this printer
+        is listed, the direct feed included — since v2.8 it is keyed like a tray
+        (docs/02 §2.3) — and only this printer's, because another machine's spools were
+        not in front of this print.
+        """
+        amounts = dict(job.reported_usage or {})
+        if job.printer is None:
+            return amounts
+        for spool in await self.spools.list(SpoolFilter(mounted_only=True)):
+            location = spool.location
+            if isinstance(location, Storage):
+                continue
+            feed = feed_of(location)
+            if feed.printer == job.printer:
+                amounts.setdefault(feed, Grams.zero())
+        return amounts
+
     async def _review_opened(
-        self, recorded: PrintJob, amounts: dict[TrayRef, Grams]
+        self, recorded: PrintJob, amounts: dict[Feed, Grams]
     ) -> list[DomainEvent]:
         """Open the UNMAPPED_USAGE review inside the ambient unit, tolerating a race.
 

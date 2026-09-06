@@ -24,6 +24,7 @@ from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    ExternalFeed,
     PrintJobId,
     ReviewId,
     SpoolId,
@@ -870,6 +871,23 @@ class TestMountAndUnmount:
             "label": "Storage",
         }
 
+    async def test_external_true_mounts_on_the_direct_feed_with_no_slot_at_all(
+        self, ws: WsClient
+    ) -> None:
+        """The fifth position of the AMS view (docs/06 §6.4, v2.8): the panel sends
+        `external: true` and no slot, and the spool lands on the printer's own holder."""
+        spool_id = await a_created_spool(ws)
+
+        await ws.result_dict(MOUNT, spool_id=spool_id, printer=A_PRINTER.value, external=True)
+        (payload,) = await ws.result_list(LIST)
+        assert payload["location"] == {
+            "kind": "EXTERNAL_SPOOL",
+            "printer": A_PRINTER.value,
+            "ams": None,
+            "slot": None,
+            "label": "External spool",
+        }
+
     async def test_a_caller_that_names_no_printer_lands_in_the_tray_space_in_use(
         self, ws: WsClient, harness: Harness
     ) -> None:
@@ -991,8 +1009,10 @@ class TestReviewsList:
             "lines": [
                 {
                     # The tray in full: approving sends these three back, and a bare
-                    # number would no longer say which tray was meant.
+                    # number would no longer say which tray was meant. `feed` says
+                    # which kind of position the line is (docs/05 §5.4, v2.8).
                     "printer": A_PRINTER.value,
+                    "feed": "ams",
                     "ams": 1,
                     "slot": 1,
                     "estimated_g": 71.0,
@@ -1013,12 +1033,65 @@ class TestReviewsList:
         assert payload["lines"] == [
             {
                 "printer": A_PRINTER.value,
+                "feed": "ams",
                 "ams": 1,
                 "slot": 1,
                 "estimated_g": 71.0,
                 "charges": [],
             }
         ]
+
+    async def test_a_line_for_the_direct_feed_travels_by_feed_and_is_approved_by_it(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The printer's own spool holder is a review line since v2.8 (docs/06 §6.3): it
+        crosses the wire as `feed: external` with no tray half, and the panel sends it
+        back the same way — here as an assignment, the queue's commonest answer."""
+        spool_id = await a_created_spool(ws)
+        job = PrintJob(
+            id=PrintJobId("job-ext"),
+            name="badge.gcode.3mf",
+            state=PrintJobState.CANCELLED,
+            started_at=EPOCH,
+            layer_reached=60,
+            total_layers=120,
+            progress=Percentage.of(50),
+            reported_usage={ExternalFeed(A_PRINTER): Grams.of(25)},
+            raw_gcode_state="pause",
+        )
+        review_id = await harness.ledger.use_cases.open_pending_review.execute(
+            OpenPendingReviewCommand(job=job, reason=ReviewReason.CANCELLED)
+        )
+
+        (payload,) = await ws.result_list(REVIEWS_LIST)
+        assert payload["lines"] == [
+            {
+                "printer": A_PRINTER.value,
+                "feed": "external",
+                "ams": None,
+                "slot": None,
+                "estimated_g": 12.5,
+                "charges": [],
+            }
+        ]
+
+        await ws.result_dict(
+            REVIEWS_APPROVE,
+            review_id=review_id,
+            assign=[
+                {
+                    "printer": A_PRINTER.value,
+                    "feed": "external",
+                    "ams": None,
+                    "slot": None,
+                    "spool_id": spool_id,
+                }
+            ],
+        )
+
+        assert await ws.result_list(REVIEWS_LIST) == []
+        detail = await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))
+        assert detail.summary.balance == Grams.of("987.5")
 
     async def test_a_64_bit_hms_code_crosses_the_wire_as_the_exact_decimal_string(
         self, ws: WsClient, harness: Harness
@@ -1064,6 +1137,7 @@ class TestReviewsList:
         assert payload["lines"] == [
             {
                 "printer": A_PRINTER.value,
+                "feed": "ams",
                 "ams": 1,
                 "slot": 1,
                 "estimated_g": 0.0,

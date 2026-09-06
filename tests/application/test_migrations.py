@@ -24,9 +24,11 @@ from custom_components.filament_ledger.domain.port.repositories import SpoolFilt
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     UNIDENTIFIED_PRINTER,
+    Feed,
     PrintJobId,
     ReviewId,
     SpoolId,
+    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.location import (
     AmsSlot,
@@ -609,22 +611,29 @@ def _new_semantics(review: PendingReview) -> Semantics:
     answerable for reviews written afterwards is the whole point of the change.
     """
     estimated = {
-        tray.slot.value: amount.milligrams for tray, amount in review.estimated_usage.items()
+        _slot_of(tray): amount.milligrams for tray, amount in review.estimated_usage.items()
     }
     confirmed = (
-        {tray.slot.value: amount.milligrams for tray, amount in review.confirmed_usage.items()}
+        {_slot_of(tray): amount.milligrams for tray, amount in review.confirmed_usage.items()}
         if review.confirmed_usage is not None
         else None
     )
     resolution: dict[int, str | None] = {}
     for line in review.lines:
-        assert len(line.charges) <= 1, f"0004 invented a split on slot {line.tray.slot}"
-        resolution[line.tray.slot.value] = line.charges[0].spool_id if line.charges else None
+        assert len(line.charges) <= 1, f"0004 invented a split on slot {_slot_of(line.tray)}"
+        resolution[_slot_of(line.tray)] = line.charges[0].spool_id if line.charges else None
     charges = [
-        (tray.slot.value, amount.milligrams, spool_id)
+        (_slot_of(tray), amount.milligrams, spool_id)
         for tray, amount, spool_id in review.confirmed_charges
     ]
     return estimated, confirmed, resolution, charges
+
+
+def _slot_of(feed: Feed) -> int:
+    """The slot a migrated line names. Every row these migrations wrote is a tray — the
+    direct feed only became a key in v2.8 — so anything else here is a migration bug."""
+    assert isinstance(feed, TrayRef), f"a migrated review names a tray, not {feed}"
+    return feed.slot.value
 
 
 async def _staged_at_version_three_for_0004(
