@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 
 from ...domain.model.pending_review import PendingReview, ReviewCharge, ReviewLine
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import PrintJobId, ReviewId, SpoolId, TrayRef
+from ...domain.value.identifiers import Feed, PrintJobId, ReviewId, SpoolId
 from ...domain.value.review import EstimatorKind, ReviewReason, ReviewState
 from .database import Database
 from .tray_json import tray_fields, tray_from
@@ -63,7 +63,7 @@ def _lines_from_columns(estimated_json: str, charges_json: str) -> tuple[ReviewL
     entry pointing at an unknown tray is dropped rather than resurrected as a line with no
     figure behind it.
     """
-    charges: dict[TrayRef, list[ReviewCharge]] = {}
+    charges: dict[Feed, list[ReviewCharge]] = {}
     for entry in json.loads(charges_json):
         charges.setdefault(tray_from(entry), []).append(
             ReviewCharge(spool_id=SpoolId(entry["spool_id"]), amount=Grams(int(entry["mg"])))
@@ -75,7 +75,7 @@ def _lines_from_columns(estimated_json: str, charges_json: str) -> tuple[ReviewL
     )
 
 
-def _confirmed_to_json(confirmed: dict[TrayRef, Grams] | None) -> str | None:
+def _confirmed_to_json(confirmed: dict[Feed, Grams] | None) -> str | None:
     if confirmed is None:
         return None
     return json.dumps(
@@ -83,7 +83,7 @@ def _confirmed_to_json(confirmed: dict[TrayRef, Grams] | None) -> str | None:
     )
 
 
-def _confirmed_from_json(text: str | None) -> dict[TrayRef, Grams] | None:
+def _confirmed_from_json(text: str | None) -> dict[Feed, Grams] | None:
     if text is None:
         return None
     return {tray_from(entry): Grams(int(entry["mg"])) for entry in json.loads(text)}

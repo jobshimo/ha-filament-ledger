@@ -56,6 +56,8 @@ from ...domain.value.identifiers import (
     MIN_AMS_INDEX,
     MIN_AMS_SLOT,
     AmsIndex,
+    ExternalFeed,
+    Feed,
     MovementId,
     PrinterSerial,
     ReviewId,
@@ -94,15 +96,48 @@ from .tray_sync import TraySyncResult
 #: refused rather than resolved, because every way of picking one is a guess with somebody's
 #: spool on the other end (`LedgerRuntime.tray_printer`). The panel sends all three, because
 #: the printer glance already told it what they are.
+#:
+#: **`feed` names the kind of position** (docs/05 §5.4, v2.8): `ams` — or absent, which is
+#: every payload written before the direct feed had a key — carries the tray's three parts;
+#: `external` names the printer's own spool holder and carries the machine alone, with the
+#: tray half absent or null. The panel sends nulls because it renders both kinds off one
+#: shape; `_feed` is where the two are told apart.
 _TRAY = vol.Schema(
     {
         vol.Optional("printer"): vol.Any(str, None),
-        vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
-        vol.Required("slot"): vol.All(
-            vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+        vol.Optional("feed"): vol.Any("ams", "external", None),
+        vol.Optional("ams"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX))),
+        vol.Optional("slot"): vol.Any(
+            None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
         ),
     }
 )
+
+
+def _names_a_position(entry: dict[str, Any]) -> dict[str, Any]:
+    """A tray needs its slot; the direct feed needs `feed: external`.
+
+    Cross-field, so a validator rather than a marker — and `vol.Invalid`, so a payload
+    naming neither is refused before any handler runs, exactly like a slot past the last.
+    """
+    if entry.get("feed") != "external" and entry.get("slot") is None:
+        msg = "name a slot, or feed: external for the printer's own spool holder"
+        raise vol.Invalid(msg)
+    return entry
+
+
+def _position(extra: dict[Any, Any]) -> vol.All:
+    """`_TRAY` plus what one payload adds to it, with the cross-field rule attached."""
+    return vol.All(_TRAY.extend(extra), _names_a_position)
+
+
+def _mount_names_a_position(msg: dict[str, Any]) -> dict[str, Any]:
+    """The mount's own form of the same rule: a slot, or `external: true`."""
+    if not msg.get("external") and msg.get("slot") is None:
+        msg_text = "name a slot, or external: true for the printer's own spool holder"
+        raise vol.Invalid(msg_text)
+    return msg
+
 
 #: How many colours one history filter may name. A household's palette is a few dozen, so
 #: the bound costs nobody anything — and it is here because an unbounded list eventually
@@ -132,25 +167,44 @@ def _charges(entries: list[dict[str, Any]]) -> tuple[ReviewCharge, ...]:
     )
 
 
-def _tray(runtime: LedgerRuntime, payload: dict[str, Any]) -> TrayRef:
-    """One tray reference, off the wire. `_TRAY` states what an absent half means.
+def _printer(runtime: LedgerRuntime, payload: dict[str, Any]) -> PrinterSerial:
+    """The machine a payload names — or the one this ledger follows when it names none.
 
     An absent printer is answered by the runtime, never by a bare sentinel:
     `LedgerRuntime.tray_printer` says why that distinction decides whether a caller lands
     in the tray space the ledger actually uses or in a second one where every slot is free.
     """
     printer = payload.get("printer")
+    return PrinterSerial(printer) if printer else runtime.tray_printer
+
+
+def _feed(runtime: LedgerRuntime, payload: dict[str, Any]) -> Feed:
+    """One consumption position, off the wire. `_TRAY` states what an absent half means.
+
+    The direct feed is named by `feed: "external"` and nothing else; a tray is everything
+    else, and a tray without a slot is a payload that named neither — refused as a value
+    rather than crashed on, because the schema had to let the slot be absent for the
+    external shape's sake.
+    """
+    printer = _printer(runtime, payload)
+    if payload.get("feed") == "external":
+        return ExternalFeed(printer)
+    slot = payload.get("slot")
+    if slot is None:
+        msg = "a tray needs a slot; the external spool is named by feed = external"
+        raise InvalidValueError(msg)
+    ams = payload.get("ams")
     return TrayRef(
-        printer=PrinterSerial(printer) if printer else runtime.tray_printer,
-        ams=AmsIndex(int(payload.get("ams", TRACKED_AMS.value))),
-        slot=SlotIndex(int(payload["slot"])),
+        printer=printer,
+        ams=AmsIndex(int(ams if ams is not None else TRACKED_AMS.value)),
+        slot=SlotIndex(int(slot)),
     )
 
 
 def _by_tray[T](
     runtime: LedgerRuntime, entries: list[dict[str, Any]], read: Callable[[dict[str, Any]], T]
-) -> dict[TrayRef, T]:
-    """A wire list of per-tray entries as a mapping, refusing a tray named twice.
+) -> dict[Feed, T]:
+    """A wire list of per-position entries as a mapping, refusing a position named twice.
 
     These three payloads were JSON objects keyed by slot until a tray needed three parts to
     name it, and an object could not be keyed twice. A list can, and two entries for one
@@ -158,9 +212,9 @@ def _by_tray[T](
     instruction disappears. Refused as an invalid value, which reaches the panel as a
     sentence rather than as a stack trace.
     """
-    mapped: dict[TrayRef, T] = {}
+    mapped: dict[Feed, T] = {}
     for entry in entries:
-        tray = _tray(runtime, entry)
+        tray = _feed(runtime, entry)
         if tray in mapped:
             msg = f"{tray} is named twice in one payload; state it once"
             raise InvalidValueError(msg)
@@ -543,17 +597,26 @@ async def handle_adjust(
 
 
 @websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/spools/mount",
-        vol.Required("spool_id"): str,
-        # The tray, in the three parts `_TRAY` documents — and on the same terms: naming
-        # only a slot means the tray space this ledger follows, while there is one.
-        vol.Optional("printer"): vol.Any(str, None),
-        vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
-        vol.Required("slot"): vol.All(
-            vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+    vol.All(
+        vol.Schema(
+            {
+                vol.Required("type"): f"{DOMAIN}/spools/mount",
+                vol.Required("spool_id"): str,
+                # The tray, in the three parts `_TRAY` documents — and on the same
+                # terms: naming only a slot means the tray space this ledger follows,
+                # while there is one. `external: true` names the printer's direct feed
+                # instead of a tray, and then the slot is not sent at all: the holder
+                # beside the AMS has none. One or the other, never neither.
+                vol.Optional("printer"): vol.Any(str, None),
+                vol.Optional("external"): bool,
+                vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
+                vol.Optional("slot"): vol.All(
+                    vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+                ),
+            }
         ),
-    }
+        _mount_names_a_position,
+    )
 )
 @websocket_api.async_response
 @guarded
@@ -561,7 +624,15 @@ async def handle_mount(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     runtime = _runtime(hass)
-    await runtime.use_cases.mount_spool.execute(SpoolId(msg["spool_id"]), _tray(runtime, msg))
+    spool_id = SpoolId(msg["spool_id"])
+    if msg.get("external"):
+        await runtime.use_cases.mount_spool_externally.execute(spool_id, _printer(runtime, msg))
+    else:
+        feed = _feed(runtime, msg)
+        if not isinstance(feed, TrayRef):  # pragma: no cover - the schema has no feed key here
+            msg_text = "a tray mount names a slot"
+            raise InvalidValueError(msg_text)
+        await runtime.use_cases.mount_spool.execute(spool_id, feed)
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"ok": True})
 
@@ -603,10 +674,10 @@ async def handle_reviews_list(
         # parts to name and a JSON key holds one. Amounts are bounded non-negative here as
         # well as in the domain — a negative confirmation has no physical reading.
         vol.Optional("amounts"): [
-            _TRAY.extend({vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0))})
+            _position({vol.Required("amount_g"): vol.All(vol.Coerce(float), vol.Range(min=0))})
         ],
-        vol.Optional("assign"): [_TRAY.extend({vol.Required("spool_id"): str})],
-        vol.Optional("charges"): [_TRAY.extend({vol.Required("charges"): [_CHARGE]})],
+        vol.Optional("assign"): [_position({vol.Required("spool_id"): str})],
+        vol.Optional("charges"): [_position({vol.Required("charges"): [_CHARGE]})],
         vol.Optional("note"): vol.Any(str, None),
     }
 )

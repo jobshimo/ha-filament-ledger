@@ -288,6 +288,15 @@ needs the real string, not a friendly paraphrase of it.
 **Approve is never the default focus.** No accidental Enter-key approval. The whole point of
 the queue is deliberate confirmation; a reflex approval is worse than no queue at all.
 
+**The direct feed is a row too (v2.8).** A line whose `feed` is `external` is the printer's
+own spool holder; it renders under the label *External spool* where a tray row shows
+*Slot n*, and it is filled in, split and approved exactly like a tray row. It exists because
+every print fed from the holder used to end in a card with nothing on it
+([12](12-field-notes.md), 2026-09-06). The AMS view offers the holder as a fifth position
+beside the four trays, with the same mount and unmount affordances, so there is a spool for
+the row to be charged to. **Choosing a spool, on this row and everywhere else, goes through
+the layered picker modal — never a native dropdown.**
+
 **A slot with no spool is shown, not hidden.** Rows are keyed by *slot*, and a slot the
 system could not attribute renders with a spool picker in place of the swatch:
 

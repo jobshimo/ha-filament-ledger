@@ -23,6 +23,7 @@ from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     AmsIndex,
+    Feed,
     PrinterSerial,
     PrintJobId,
     SlotIndex,
@@ -130,7 +131,7 @@ def a_cancelled_job(
     *,
     layer_reached: int | None = 71,
     total_layers: int | None = 209,
-    reported_usage: dict[TrayRef, Grams] | None = None,
+    reported_usage: dict[Feed, Grams] | None = None,
 ) -> PrintJob:
     """The worked example from docs/06-ui-spec.md §6.3: bracket_v3, stopped at layer 71."""
     return PrintJob(

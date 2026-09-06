@@ -159,6 +159,77 @@ class TrayRef:
         return f"AMS {self.ams} tray {self.slot} on printer {self.printer}"
 
 
+@dataclass(frozen=True, slots=True)
+class ExternalFeed:
+    """A printer's direct feed — the spool holder beside the AMS — as a consumption position.
+
+    The second kind of place a print draws filament from, and until v2.8 the one the
+    ledger could name as a *location* (`ExternalSpool`, docs/02 §2.2) but not as a *key*:
+    per-tray usage was keyed by `TrayRef` alone, so the figure the printer reports under
+    `External Spool` had nowhere to land and was dropped with a warning. Every print fed
+    from the holder then ended with no figure at all and opened a review asking the user
+    what the machine had already said (docs/12-field-notes.md, 2026-09-06).
+
+    Named after its machine for the reason `ExternalSpool` is: each printer has exactly
+    one direct feed, and two machines make *the external spool* two positions.
+
+    **Sorts after every tray of its own printer.** `TrayRef` orders itself and refuses a
+    stranger; this class answers the reflected comparison instead, so one `sorted()` over
+    a mixed mapping — the deduction loop, the review card, the persisted JSON — still sees
+    one canonical order: a printer's trays by AMS and slot, then its direct feed, then the
+    next printer.
+    """
+
+    printer: PrinterSerial
+
+    def __str__(self) -> str:
+        return f"external spool on printer {self.printer}"
+
+    def _key(self) -> tuple[str, int, int, int]:
+        return (self.printer.value, 1, 0, 0)
+
+    @staticmethod
+    def _key_of(other: object) -> tuple[str, int, int, int] | None:
+        if isinstance(other, ExternalFeed):
+            return other._key()
+        if isinstance(other, TrayRef):
+            return (other.printer.value, 0, other.ams.value, other.slot.value)
+        return None
+
+    def __lt__(self, other: object) -> bool:
+        key = self._key_of(other)
+        return NotImplemented if key is None else self._key() < key
+
+    def __le__(self, other: object) -> bool:
+        key = self._key_of(other)
+        return NotImplemented if key is None else self._key() <= key
+
+    def __gt__(self, other: object) -> bool:
+        key = self._key_of(other)
+        return NotImplemented if key is None else self._key() > key
+
+    def __ge__(self, other: object) -> bool:
+        key = self._key_of(other)
+        return NotImplemented if key is None else self._key() >= key
+
+
+# Where a print draws filament from: an AMS tray, or the printer's direct feed. The key of
+# a job's usage and of a review's estimate since v2.8; every reader that used to take a
+# `TrayRef` takes one of these, and the direct feed's own value object says how the two
+# still sort as one sequence.
+Feed = TrayRef | ExternalFeed
+
+
+def position_note(feed: Feed) -> str:
+    """How a movement note names the position a print drew from: *Slot 3*, or *External
+    spool*. The single-machine sentence — no serial — for the reason UC-04 gives: the note
+    is what a user reads in the history, and a serial they never had to think about would
+    be noise rather than precision."""
+    if isinstance(feed, TrayRef):
+        return f"Slot {feed.slot}"
+    return "External spool"
+
+
 # What the printer reports for a tray holding a spool with no readable tag. Sixteen zeros
 # is a sentinel for "nothing was read", never a serial — see docs/12-field-notes.md.
 # Public because the whole boundary shares the fact: the gateway translates it to `None`

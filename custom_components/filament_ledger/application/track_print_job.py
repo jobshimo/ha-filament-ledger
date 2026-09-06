@@ -34,6 +34,7 @@ from ..domain.port.repositories import PrintJobRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.identifiers import PrinterSerial, PrintJobId, new_print_job_id
 from ..domain.value.print_event import (
+    UNKNOWN_JOB_NAME,
     PrintEnded,
     PrintEvent,
     PrintPlanObserved,
@@ -333,10 +334,13 @@ class TrackPrintJob:
         updated = replace(
             job,
             reported_usage=event.plan,
-            # The file sensor lags the start too, so the name a row opened with may be the
-            # previous print's. A named observation corrects it; an unnamed one leaves the
-            # stored name alone rather than blanking it.
-            name=event.name if event.name else job.name,
+            # The name sensors lag the start too — the downloaded file by ten to twenty
+            # seconds, all of them across a restart — so the row may have opened under
+            # the previous print's name or under `UNKNOWN_JOB_NAME`. A named observation
+            # corrects either. An unnamed one, and one that only knows the sentinel,
+            # leave the stored name alone: neither blanking a name nor replacing it with
+            # the admission that nothing spoke would be a correction.
+            name=(event.name if event.name and event.name != UNKNOWN_JOB_NAME else job.name),
         )
         if updated == job:
             return job.id

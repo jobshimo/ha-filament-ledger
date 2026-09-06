@@ -13,15 +13,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..domain.error import DuplicateTagNotConfirmedError
-from ..domain.event import EventPublisher, SpoolMounted, SpoolUnmounted
+from ..domain.event import (
+    EventPublisher,
+    SpoolMounted,
+    SpoolMountedExternally,
+    SpoolUnmounted,
+)
 from ..domain.model.spool import Spool
 from ..domain.port.clock import Clock
 from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import SpoolId, TagSource, TagUid, TrayRef
-from ..domain.value.location import AmsSlot
+from ..domain.value.identifiers import PrinterSerial, SpoolId, TagSource, TagUid, TrayRef
+from ..domain.value.location import AmsSlot, ExternalSpool
 from ..domain.value.material import Material
 from .errors import SpoolNotFoundError
 
@@ -86,6 +91,41 @@ class MountSpool:
         if displaced is not None:
             await self.events.publish(SpoolUnmounted(spool_id=displaced))
         await self.events.publish(SpoolMounted(spool_id=spool_id, tray=tray))
+
+
+@dataclass(frozen=True, slots=True)
+class MountSpoolExternally:
+    """UC-02 for the printer's direct feed — the spool holder beside the AMS.
+
+    The location has existed since v2.0 (`ExternalSpool`, docs/02 §2.2) and nothing ever
+    put a spool there: no service, no panel surface. So the figure the printer reports
+    for that holder, once the gateway stopped dropping it (v2.8), had no spool to land on
+    and every such print opened a review. This is the other half of that repair.
+
+    The same shape as `MountSpool`, for the same reasons: at most one spool per holder,
+    the occupant displaced to storage first so the partial unique index is never
+    momentarily violated, and the whole sequence inside one unit of work.
+    """
+
+    spools: SpoolRepository
+    events: EventPublisher
+    uow: UnitOfWork
+
+    async def execute(self, spool_id: SpoolId, printer: PrinterSerial) -> None:
+        displaced: SpoolId | None = None
+        async with self.uow:
+            spool = await self.spools.get(spool_id)
+            if spool is None:
+                raise SpoolNotFoundError(spool_id)
+            occupant = await self.spools.find_by_location(ExternalSpool(printer))
+            if occupant is not None and occupant.id != spool.id:
+                await self.spools.save(occupant.unmounted())
+                displaced = occupant.id
+            await self.spools.save(spool.mounted_externally(printer))
+
+        if displaced is not None:
+            await self.events.publish(SpoolUnmounted(spool_id=displaced))
+        await self.events.publish(SpoolMountedExternally(spool_id=spool_id, printer=printer))
 
 
 @dataclass(frozen=True, slots=True)

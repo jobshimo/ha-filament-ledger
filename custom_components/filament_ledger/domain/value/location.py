@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .identifiers import PrinterSerial, TrayRef
+from .identifiers import ExternalFeed, Feed, PrinterSerial, TrayRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,3 +62,23 @@ Location = Storage | AmsSlot | ExternalSpool
 def is_mounted(location: Location) -> bool:
     """True when the spool is loaded into the machine in any way."""
     return not isinstance(location, Storage)
+
+
+def location_of(feed: Feed) -> AmsSlot | ExternalSpool:
+    """The mounted location a consumption position is answered by.
+
+    A figure is keyed by where the printer drew it from; the spool it is deducted from is
+    whichever one the ledger holds *at* that place. Stated once, so UC-04's deduction and
+    UC-05's freeze resolve a tray and the direct feed by the same rule rather than by two
+    `isinstance` ladders that drift apart (docs/02 §2.3).
+    """
+    if isinstance(feed, TrayRef):
+        return AmsSlot(feed)
+    return ExternalSpool(feed.printer)
+
+
+def feed_of(location: AmsSlot | ExternalSpool) -> Feed:
+    """The inverse: the position a mounted spool would be charged through."""
+    if isinstance(location, AmsSlot):
+        return location.tray
+    return ExternalFeed(location.printer)

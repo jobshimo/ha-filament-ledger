@@ -151,6 +151,16 @@ first time a second machine appears.
 Ordered, so that every reader — the deduction loop, the review card, the persisted JSON —
 sees one canonical tray order rather than each imposing its own.
 
+**The direct feed is the other position a print draws from (v2.8).** `ExternalFeed(printer)`
+names the spool holder beside the AMS as a *consumption key*, the way `ExternalSpool(printer)`
+has named it as a *location* since v2.0 (§2.2). `Feed = TrayRef | ExternalFeed` is the key of
+a job's usage and of a review's estimate; `location_of(feed)` is the one rule that resolves a
+key to the place a spool is mounted, so UC-04's deduction and UC-05's freeze cannot drift
+apart. The direct feed sorts after every tray of its own printer, so a mixed mapping still
+reads as one sequence. Until v2.8 the printer's `External Spool` figure had no key and was
+dropped with a warning — every print fed from the holder ended figureless and opened a review
+asking what the machine had already said ([12](12-field-notes.md), 2026-09-06).
+
 **Supported since v2.0.** The gateway resolves every machine the registry describes and keys
 each one's trays under its own serial ([05 §5.8](05-ha-integration.md)); the ledger follows
 all of them. Ordering by printer first is what makes a listing of several machines' trays
@@ -342,7 +352,7 @@ PrinterSerial?   printer         -- which machine ran it; null only before migra
 int?             layer_reached
 int?             total_layers
 Percentage?      progress
-{TrayRef: Grams}    reported_usage    -- per-tray, from the printer
+{Feed: Grams}       reported_usage    -- per position (AMS tray or direct feed), from the printer
 int?             raw_print_error     -- preserved verbatim; see Q1
 str?             raw_gcode_state     -- preserved verbatim; see Q1
 ```
@@ -396,9 +406,11 @@ is no `SpoolId` to key that entry with. Keying by tray and carrying the attribut
 lets the review say the only honest thing available — *"slot 3 used 12 g and I do not know
 which spool was in it"* — and lets the user supply the missing half.
 
-The key is a whole `TrayRef` and not a tray number, because a review may sit in the queue for
-days: a bare number would come back ambiguous the moment a second machine existed to have
-one, and the deduction would land on whichever tray 1 the reader happened to resolve.
+The key is a whole `Feed` — a `TrayRef`, or the printer's `ExternalFeed` — and not a tray
+number, because a review may sit in the queue for days: a bare number would come back
+ambiguous the moment a second machine existed to have one, and the deduction would land on
+whichever tray 1 the reader happened to resolve. A line for the direct feed reads *"the
+external spool used 12 g"* and is attributed exactly as a tray's line is.
 
 **The estimate is per tray; the attribution is per charge.** They are different shapes, and
 conflating them was a real limitation rather than a tidy simplification. The printer reports

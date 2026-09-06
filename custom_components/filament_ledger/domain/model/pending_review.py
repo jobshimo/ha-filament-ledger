@@ -30,7 +30,7 @@ from datetime import datetime
 
 from ..error import InvalidValueError, ReviewAlreadyResolvedError, UnresolvedSlotError
 from ..value.grams import Grams, total
-from ..value.identifiers import PrintJobId, ReviewId, SpoolId, TrayRef, new_review_id
+from ..value.identifiers import Feed, PrintJobId, ReviewId, SpoolId, TrayRef, new_review_id
 from ..value.review import EstimatorKind, ReviewReason, ReviewState
 
 
@@ -60,7 +60,11 @@ class ReviewLine:
     the review opened, and the approval flow is where the user supplies the answer.
     """
 
-    tray: TrayRef
+    # Named `tray` since the day a line was one; since v2.8 it is any position a print
+    # draws from, the printer's direct feed included. The name stays because every
+    # column, wire field and caller reads it, and a rename would be churn without a
+    # second fact behind it.
+    tray: Feed
     estimated: Grams
     charges: tuple[ReviewCharge, ...] = ()
 
@@ -93,7 +97,7 @@ class PendingReview:
     estimator_used: EstimatorKind
     state: ReviewState
     opened_at: datetime
-    confirmed_usage: dict[TrayRef, Grams] | None = None
+    confirmed_usage: dict[Feed, Grams] | None = None
     resolved_at: datetime | None = None
     resolution_note: str | None = None
 
@@ -114,11 +118,11 @@ class PendingReview:
     # -- derived -----------------------------------------------------------------------
 
     @property
-    def estimated_usage(self) -> dict[TrayRef, Grams]:
+    def estimated_usage(self) -> dict[Feed, Grams]:
         return {line.tray: line.estimated for line in self.lines}
 
     @property
-    def charges(self) -> list[tuple[TrayRef, ReviewCharge]]:
+    def charges(self) -> list[tuple[Feed, ReviewCharge]]:
         """Every charge with the tray it belongs to, in tray order and then entry order.
 
         The flat shape the `slot_resolution` column stores, so the repository writes it
@@ -132,7 +136,7 @@ class PendingReview:
         return self.state.is_resolved
 
     @property
-    def confirmed_charges(self) -> list[tuple[TrayRef, Grams, SpoolId]]:
+    def confirmed_charges(self) -> list[tuple[Feed, Grams, SpoolId]]:
         """Every non-zero confirmed charge with the spool it lands on, in tray order.
 
         Empty until approval. Zero amounts never appear — a zero movement records nothing
@@ -163,9 +167,9 @@ class PendingReview:
         self,
         *,
         at: datetime,
-        amounts: Mapping[TrayRef, Grams] | None = None,
-        assignments: Mapping[TrayRef, SpoolId] | None = None,
-        charges: Mapping[TrayRef, tuple[ReviewCharge, ...]] | None = None,
+        amounts: Mapping[Feed, Grams] | None = None,
+        assignments: Mapping[Feed, SpoolId] | None = None,
+        charges: Mapping[Feed, tuple[ReviewCharge, ...]] | None = None,
         note: str | None = None,
     ) -> PendingReview:
         """Steps 2–5 and 7 of UC-06: merge the user's corrections, refuse the unresolvable.
@@ -228,7 +232,7 @@ class PendingReview:
         unbalanced = [line for line in final_lines if line.attributed != final_amounts[line.tray]]
         if unbalanced:
             stated = "; ".join(
-                f"slot {line.tray.slot} confirms {final_amounts[line.tray]} "
+                f"{_position(line.tray)} confirms {final_amounts[line.tray]} "
                 f"and charges {line.attributed}"
                 for line in unbalanced
             )
@@ -258,11 +262,18 @@ class PendingReview:
         return replace(self, state=ReviewState.DISMISSED, resolved_at=at, resolution_note=note)
 
 
+def _position(feed: Feed) -> str:
+    """A position as the sum-invariant message names it: *slot 3*, or *the external spool*."""
+    if isinstance(feed, TrayRef):
+        return f"slot {feed.slot}"
+    return "the external spool"
+
+
 def _attribution(
     line: ReviewLine,
     amount: Grams,
-    assignments: Mapping[TrayRef, SpoolId] | None,
-    charges: Mapping[TrayRef, tuple[ReviewCharge, ...]] | None,
+    assignments: Mapping[Feed, SpoolId] | None,
+    charges: Mapping[Feed, tuple[ReviewCharge, ...]] | None,
 ) -> tuple[ReviewCharge, ...]:
     """One tray's charges as the decision leaves them: restated, assigned, or inherited.
 

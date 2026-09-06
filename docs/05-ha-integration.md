@@ -335,6 +335,7 @@ it is allowed to touch is written down rather than discovered during implementat
 |---|---|
 | Job lifecycle | `bambu_lab_event` on the HA bus, `type` ∈ `event_print_started`, `event_print_finished`, `event_print_canceled`, `event_print_failed`, `event_print_error` |
 | Per-tray consumption | Attributes of the printer's `print_weight` sensor, keyed `AMS <n> Tray <m>` and `External Spool` |
+| Parse edge | The `printable_objects` sensor: cleared to `0` at print start, set to the object count once the job's `.3mf` has been read — the moment the per-tray weights beside it describe this job |
 | Job progress | The `print_progress`, `current_layer` and `total_layers` sensors |
 | Job timing | The `remaining_time` sensor, which declares its own unit — the reference machine speaks decimal hours — and is converted to whole minutes by that declaration; and the `start_time` / `end_time` timestamp sensors |
 | Raw state | The `print_status` sensor (a lowercased `gcode_state`) and the `print_error` sensor |
@@ -361,12 +362,16 @@ an upstream refactor into a corrupted ledger.
   and it first updates about three-quarters of a minute *after* the start event fires. The gateway follows the sensor by state change and keeps the last reading that
   actually carried tray keys, discarding it when a print starts so no job inherits the
   previous one's figures. A shape without tray keys is a non-observation and never
-  overwrites a real one.
+  overwrites a real one. A re-print whose figures equal its predecessor's announces no
+  weight change at all, so the gateway also watches `printable_objects` and reads the weight
+  sensor live the moment that count rises above zero ([12](12-field-notes.md), 2026-09-03).
 - Tray numbering is *ours* to define. `AMS 1 Tray 1` maps to the tray reference for tray 1
-  of AMS 1 **on the machine whose event is being translated**. An `External Spool` figure is
-  still dropped with a warning: a spool on the direct feed now has a location that names its
-  machine ([02 §2.2](02-domain-model.md)), which is a different question from a consumption
-  figure having a tray to be deducted through. The translation lives in the gateway and
+  of AMS 1 **on the machine whose event is being translated**. An `External Spool` figure
+  maps to that machine's direct feed (`ExternalFeed`, [02 §2.3](02-domain-model.md)) and is
+  deducted from whichever spool is mounted there, exactly as a tray's figure is. Until v2.8
+  it was dropped with a warning — usage had no key for the holder beside the AMS — so every
+  print fed from it ended figureless and opened a review asking what the printer had already
+  said ([12](12-field-notes.md), 2026-09-06). The translation lives in the gateway and
   nowhere else.
 - **The printer's serial is read off the job sensors' `unique_id`s**, which upstream writes
   as `<serial>_<translation_key>` — so removing the key that matched leaves the serial. That

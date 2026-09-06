@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from ...domain.model.print_job import PrintJob
 from ...domain.value.grams import Grams
-from ...domain.value.identifiers import PrinterSerial, PrintJobId, TrayRef
+from ...domain.value.identifiers import Feed, PrinterSerial, PrintJobId
 from ...domain.value.percentage import Percentage
 from ...domain.value.print_job_state import PrintJobState
 from .database import Database
@@ -38,7 +38,7 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def usage_to_json(usage: dict[TrayRef, Grams] | None) -> str | None:
+def usage_to_json(usage: dict[Feed, Grams] | None) -> str | None:
     """`None` stays NULL. A missing per-tray figure and an empty report are different
     facts, and collapsing them here would undo the distinction the nullable column and
     the entity both keep (docs/04-use-cases.md UC-04).
@@ -52,7 +52,7 @@ def usage_to_json(usage: dict[TrayRef, Grams] | None) -> str | None:
     )
 
 
-def usage_from_json(text: str | None) -> dict[TrayRef, Grams] | None:
+def usage_from_json(text: str | None) -> dict[Feed, Grams] | None:
     if text is None:
         return None
     return {tray_from(entry): Grams(int(entry["mg"])) for entry in json.loads(text)}
