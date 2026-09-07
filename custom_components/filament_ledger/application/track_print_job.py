@@ -474,12 +474,24 @@ class TrackPrintJob:
             #
             # **The Bambu gateway now knows nothing at the start**, deliberately: its
             # weight sensor is republished after the start event, so a plan captured
-            # there would be the previous job's. That makes this fallback inert for the
-            # only adapter shipped today — kept because the port permits a gateway that
-            # genuinely knows the plan up front, and because a `None` ending must not
-            # erase a figure such a gateway supplied.
+            # there would be the previous job's. Since 2.6.1 the row carries each plan
+            # the machine published during the job (`_plan_observed`), so the fallback
+            # is live again — and an ending must not erase what it holds.
+            #
+            # **An empty plan does not overwrite figures.** No plan can mean *nothing
+            # was consumed* (`PrintPlanObserved`), so an ending that names no position
+            # falls back like one that read nothing whenever the row has something to
+            # fall back to. Three prints from the external spool lost their figures the
+            # other way on 2026-09-06: the holder's figure, rewritten as text after the
+            # parse, translated to an empty plan, and the ending wrote that emptiness
+            # over the 49.59 g the row already held (docs/12-field-notes.md,
+            # 2026-09-07). With nothing on the row, `{}` is kept as the distinct fact
+            # it is — *the printer reported and named no position* — which UC-04
+            # documents as such rather than as a reading that never arrived.
             reported_usage=(
-                event.reported_usage if event.reported_usage is not None else job.reported_usage
+                job.reported_usage
+                if not event.reported_usage and job.reported_usage
+                else event.reported_usage
             ),
             raw_gcode_state=event.raw_gcode_state,
             raw_print_error=event.raw_print_error,

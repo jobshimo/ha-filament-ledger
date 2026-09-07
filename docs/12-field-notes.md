@@ -507,3 +507,30 @@ holder. v2.8 keys usage by `Feed` (a tray or `ExternalFeed`), carries the figure
 like a tray's, deducts it from whichever spool is mounted on the holder, lists the holder
 among a figureless review's placeholders, and gives the AMS view a fifth position to mount
 into.
+
+## 2026-09-07 — The holder's figure is written twice, and the second time as text
+
+Three prints fed from the external spool closed with `reported_usage = []` on 2.8.0 (started
+17:21Z, 22:15Z and 23:29Z on 2026-09-06), each opening an `UNMAPPED_USAGE` review listing the
+loaded AMS trays at 0 g and no line for the holder. The recorder shows the `print_weight`
+sensor written twice at every start: `"External Spool": 49.59` — a number — when the cloud
+task data lands, and `"External Spool": "49.59"` — a string — one to forty-five seconds
+later, right after the FTP thread parses `slice_info.config`, in the same refresh that raises
+`printable_objects` to `1`. Nothing further is written for the rest of the print, so the string
+is the sensor's last word on it.
+
+`_weight` admitted only `int` and `float`, and `_tray_plan` marked a key recognised before
+parsing its value. The string therefore translated to an observation with an *empty* plan — the
+shape reserved for "the printer names no position" — which `_observe` held in place of the
+real reading and `_plan_at_ending` handed to the ending; `_ended` took `{}` for figures and
+wrote it over the 49.59 g the row already carried from the numeric write. AMS trays never hit
+this: upstream's second write carries no tray key at all, which was already silence. The one
+external print that kept its figure (15:42Z) did so by accident — its ending was reconciled
+three seconds after a restart's numeric write and before the string one, through the
+live-read branch.
+
+Repaired three ways, each sufficient on its own: a decimal string is a figure; a recognised key
+with no usable figure is silence, not an empty plan; and an ending with an empty plan falls
+back to the row's figures exactly as an ending with none does. The live database still held no
+spool on the holder, so every external print will keep opening a review — now with the
+holder's line and figure on it — until one is mounted there.
