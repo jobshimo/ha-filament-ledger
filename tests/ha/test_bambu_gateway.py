@@ -1166,6 +1166,50 @@ class TestJobEventTranslation:
         assert isinstance(ended, PrintEnded)
         assert ended.reported_usage == {ExternalFeed(A_PRINTER): Grams.of("49.59")}
 
+    async def test_the_figure_written_as_text_after_the_parse_is_the_same_figure(self) -> None:
+        """The recorder sequence of every print on the reference instance
+        (docs/12-field-notes.md, 2026-09-07): upstream writes the holder's figure as a
+        number, then writes it again as the text it read off the 3MF — and says nothing
+        more for the rest of the print. The text is the same reading, so it is one
+        observation, and the ending is charged with it rather than with the empty plan
+        the text used to translate to."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        fire_weight_change(hass, {"External Spool": 49.59})
+        fire_weight_change(hass, {"External Spool": "49.59"})
+        await hass.drain()
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        observed = [event for event in listener.received if isinstance(event, PrintPlanObserved)]
+        assert [event.plan for event in observed] == [{ExternalFeed(A_PRINTER): Grams.of("49.59")}]
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {ExternalFeed(A_PRINTER): Grams.of("49.59")}
+
+    async def test_a_recognised_key_with_no_usable_figure_is_silence(self) -> None:
+        """A shape that names a position it cannot put a figure on is not the printer
+        naming no position. It is a reading that said nothing usable, and it leaves the
+        held one standing exactly as a shape with no per-tray key does — before this,
+        it replaced the held reading with an empty plan and the ending charged that."""
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+
+        fire_weight_change(hass, {"External Spool": 49.59})
+        fire_weight_change(hass, {"External Spool": "n/a"})
+        await hass.drain()
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.received[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {ExternalFeed(A_PRINTER): Grams.of("49.59")}
+
     async def test_a_republished_external_figure_is_one_observation_not_three(self) -> None:
         """The sensor is republished repeatedly through a print. The same attributes again
         is the same observation, not news — for the direct feed's figure exactly as for
