@@ -1658,15 +1658,25 @@ def _weight(value: object) -> Grams | None:
     """A per-tray figure: a non-negative number, or nothing. Negative consumption and
     non-numeric shapes are upstream noise, not data.
 
+    **A numeric string is a number.** Upstream writes the holder's figure twice at every
+    start: once as a number, and again as the text it read off the 3MF once the FTP parse
+    lands — `"External Spool": 49.59` and then `"49.59"`, one to forty seconds apart, on
+    every print of the reference instance (docs/12-field-notes.md, 2026-09-07). The
+    second write is the last thing the sensor says for the whole print. Refusing it made
+    every such print's final reading a recognised key with no figure, and that stood in
+    for the real one at the ending. `Grams.of` reads a decimal string exactly, so the
+    text is admitted on the same terms as the number and rejected on the same terms as
+    any other shape — `"lots"` and `""` raise where `inf` does.
+
     **Total, including the shapes a type check waves through.** `Grams.of` raises
-    `InvalidOperation` on `inf`, `-inf` and figures too large to quantise, and
-    `ValueError` on `NaN` — all four are floats, so the guard above admits every one of
-    them. That gap was survivable while this ran twice per job, from a coroutine; it is
+    `InvalidOperation` on `inf`, `-inf`, figures too large to quantise and strings that
+    are not decimals, and `ValueError` on `NaN` — the floats among them pass the guard
+    above. That gap was survivable while this ran twice per job, from a coroutine; it is
     not now that it runs on every republish from `_on_weight_state_change`, which is a
     `@callback` promising the event loop it never raises. Caught the same way
     `_reel_weight` catches it, for the same reason.
     """
-    if isinstance(value, bool) or not isinstance(value, int | float):
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
         return None
     try:
         grams = Grams.of(value)
@@ -1702,12 +1712,16 @@ def _tray_plan(printer: PrinterSerial, state: State) -> _WeightObservation | Non
     Total by construction, like `_read`: every malformed shape becomes a skipped key or a
     `None`, so the caller can run bare inside the event loop.
 
-    `None` is **the shape that carries no per-tray key at all** — the other half of each
-    flicker pair, and a sensor that never had a breakdown. That is silence, and the
-    caller's whole job is to leave a real reading standing in its place. A shape that
-    *does* speak the dialect translates to an observation whose plan may be empty, which
-    is the printer naming no position at all and is a different fact from silence
-    (docs/04-use-cases.md UC-04).
+    `None` is **the shape that carries no usable per-tray figure** — the other half of
+    each flicker pair, a sensor that never had a breakdown, and a key whose value no
+    quantity can hold. All of that is silence, and the caller's whole job is to leave a
+    real reading standing in its place. A key is recognised only once its figure is, so
+    a shape that names a position it cannot put a number on does not translate to the
+    printer naming no position: that shape replaced a held real reading with an empty
+    plan, which then stood in for it at the ending (docs/12-field-notes.md,
+    2026-09-07). The one shape that still speaks the dialect with an empty plan names a
+    second AMS and nothing else — a fact worth announcing once, and a different one from
+    silence (docs/04-use-cases.md UC-04).
 
     **The `External Spool` figure is a plan entry, keyed by the machine's direct feed.**
     Until v2.8 it was carried out only to be warned about, because usage had no key for
@@ -1724,19 +1738,19 @@ def _tray_plan(printer: PrinterSerial, state: State) -> _WeightObservation | Non
     recognised = False
     for key, value in state.attributes.items():
         if key == _EXTERNAL_SPOOL_KEY:
-            recognised = True
             grams = _weight(value)
             if grams is None:
                 LOGGER.debug("external-spool figure reads %r; skipped", value)
                 continue
+            recognised = True
             weights[ExternalFeed(printer)] = grams
             continue
         match = _TRAY_WEIGHT_KEY.fullmatch(key)
         if match is None:
             continue
-        recognised = True
         ams, slot = int(match.group(1)), int(match.group(2))
         if ams != TRACKED_AMS.value:
+            recognised = True
             other_ams.append(key)
             continue
         grams = _weight(value)
@@ -1748,6 +1762,7 @@ def _tray_plan(printer: PrinterSerial, state: State) -> _WeightObservation | Non
         except InvalidValueError:
             LOGGER.debug("per-tray key %r names a slot outside 1..4; skipped", key)
             continue
+        recognised = True
         weights[tray] = grams
     if not recognised:
         return None

@@ -1150,6 +1150,23 @@ class TestThePlanIsPersistedWhileTheJobRuns:
         [job] = await stored_jobs(ledger)
         assert job.reported_usage == {TRAY_1: Grams.of(31)}
 
+    async def test_an_ending_with_an_empty_plan_keeps_the_observed_ones(
+        self, ledger: Ledger
+    ) -> None:
+        """An empty plan cannot mean *nothing was consumed* — no plan can
+        (`PrintPlanObserved`) — so an ending that names no position must not erase the
+        figures the machine published during the job. Three prints from the external
+        spool lost theirs exactly this way on 2026-09-06."""
+        await ledger.use_cases.track_print_job.execute(started())
+        await ledger.use_cases.track_print_job.execute(plan_observed({TRAY_1: Grams.of(31)}))
+
+        await ledger.use_cases.track_print_job.execute(
+            ended(PrintJobState.CANCELLED, reported_usage={})
+        )
+
+        [job] = await stored_jobs(ledger)
+        assert job.reported_usage == {TRAY_1: Grams.of(31)}
+
     async def test_the_orphans_review_is_no_longer_empty(self, ledger: Ledger) -> None:
         """**The user-visible point.** A print whose ending nobody saw now reaches the
         queue carrying the machine's own per-tray figures, so the card asks a question the
