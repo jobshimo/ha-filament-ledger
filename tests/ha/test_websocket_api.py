@@ -385,6 +385,7 @@ class TestList:
             "printer": None,
             "ams": None,
             "slot": None,
+            "holder": None,
             "label": "Storage",
         }
         assert payload["movement_count"] == 1
@@ -858,6 +859,7 @@ class TestMountAndUnmount:
             "printer": A_PRINTER.value,
             "ams": 1,
             "slot": 2,
+            "holder": None,
             "label": "AMS slot 2",
         }
 
@@ -868,6 +870,7 @@ class TestMountAndUnmount:
             "printer": None,
             "ams": None,
             "slot": None,
+            "holder": None,
             "label": "Storage",
         }
 
@@ -885,6 +888,7 @@ class TestMountAndUnmount:
             "printer": A_PRINTER.value,
             "ams": None,
             "slot": None,
+            "holder": 1,
             "label": "External spool",
         }
 

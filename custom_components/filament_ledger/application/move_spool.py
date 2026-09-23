@@ -25,7 +25,15 @@ from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import PrinterSerial, SpoolId, TagSource, TagUid, TrayRef
+from ..domain.value.identifiers import (
+    FIRST_HOLDER,
+    HolderIndex,
+    PrinterSerial,
+    SpoolId,
+    TagSource,
+    TagUid,
+    TrayRef,
+)
 from ..domain.value.location import AmsSlot, ExternalSpool
 from ..domain.value.material import Material
 from .errors import SpoolNotFoundError
@@ -105,27 +113,36 @@ class MountSpoolExternally:
     The same shape as `MountSpool`, for the same reasons: at most one spool per holder,
     the occupant displaced to storage first so the partial unique index is never
     momentarily violated, and the whole sequence inside one unit of work.
+
+    **The holder is part of the position, not a variant of it (v2.9).** A dual-nozzle
+    printer carries two, so *displace whoever is on the holder* has to name which one — a
+    mount on the second holder that unmounted the first one's reel would move a spool the
+    user never touched, and would then charge the next print through it.
     """
 
     spools: SpoolRepository
     events: EventPublisher
     uow: UnitOfWork
 
-    async def execute(self, spool_id: SpoolId, printer: PrinterSerial) -> None:
+    async def execute(
+        self, spool_id: SpoolId, printer: PrinterSerial, holder: HolderIndex = FIRST_HOLDER
+    ) -> None:
         displaced: SpoolId | None = None
         async with self.uow:
             spool = await self.spools.get(spool_id)
             if spool is None:
                 raise SpoolNotFoundError(spool_id)
-            occupant = await self.spools.find_by_location(ExternalSpool(printer))
+            occupant = await self.spools.find_by_location(ExternalSpool(printer, holder))
             if occupant is not None and occupant.id != spool.id:
                 await self.spools.save(occupant.unmounted())
                 displaced = occupant.id
-            await self.spools.save(spool.mounted_externally(printer))
+            await self.spools.save(spool.mounted_externally(printer, holder))
 
         if displaced is not None:
             await self.events.publish(SpoolUnmounted(spool_id=displaced))
-        await self.events.publish(SpoolMountedExternally(spool_id=spool_id, printer=printer))
+        await self.events.publish(
+            SpoolMountedExternally(spool_id=spool_id, printer=printer, holder=holder)
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -126,6 +126,9 @@ class TestSpoolSummaryShape:
                 "printer": None,
                 "ams": None,
                 "slot": None,
+                # Non-null for exactly `EXTERNAL_SPOOL` (v2.9): the holder is half of what
+                # identifies a direct feed, and nothing else has one.
+                "holder": None,
                 "label": "Storage",
             },
             "tag_uid": "A1B2C3D4",

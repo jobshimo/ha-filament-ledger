@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from custom_components.filament_ledger.application.query import describe_location
 from custom_components.filament_ledger.application.register_spool import RegisterSpoolCommand
 from custom_components.filament_ledger.application.review_queue import (
     ApproveReviewCommand,
@@ -138,6 +139,64 @@ class TestMountingOnTheDirectFeed:
         assert await location_of_spool(ledger, first) == ExternalSpool(A_PRINTER)
         assert await location_of_spool(ledger, second) == ExternalSpool(ANOTHER_PRINTER)
 
+    async def test_mounting_on_the_second_holder_leaves_the_first_one_alone(
+        self, ledger: Ledger
+    ) -> None:
+        """A dual-nozzle machine holds a reel on each feed at once, so displacement has to
+        name the holder: unmounting the first one's reel would move a spool nobody touched
+        and then charge the next print through it."""
+        first = await a_spool(ledger)
+        second = await a_spool(ledger)
+
+        await ledger.use_cases.mount_spool_externally.execute(first, A_PRINTER)
+        await ledger.use_cases.mount_spool_externally.execute(second, A_PRINTER, SECOND_HOLDER)
+
+        assert await location_of_spool(ledger, first) == ExternalSpool(A_PRINTER)
+        assert await location_of_spool(ledger, second) == ExternalSpool(A_PRINTER, SECOND_HOLDER)
+        assert ledger.events.of(SpoolUnmounted) == []
+        assert ledger.events.of(SpoolMountedExternally) == [
+            SpoolMountedExternally(spool_id=first, printer=A_PRINTER),
+            SpoolMountedExternally(spool_id=second, printer=A_PRINTER, holder=SECOND_HOLDER),
+        ]
+
+    async def test_the_second_holder_takes_one_reel_like_the_first(self, ledger: Ledger) -> None:
+        first = await a_spool(ledger)
+        second = await a_spool(ledger)
+
+        await ledger.use_cases.mount_spool_externally.execute(first, A_PRINTER, SECOND_HOLDER)
+        await ledger.use_cases.mount_spool_externally.execute(second, A_PRINTER, SECOND_HOLDER)
+
+        assert await location_of_spool(ledger, first) == Storage()
+        assert await location_of_spool(ledger, second) == ExternalSpool(A_PRINTER, SECOND_HOLDER)
+        assert ledger.events.of(SpoolUnmounted) == [SpoolUnmounted(spool_id=first)]
+
+    async def test_each_holder_is_described_to_the_wire_by_its_own_number(
+        self, ledger: Ledger
+    ) -> None:
+        """What the panel mounts back through, and the sentence a reader sees beside it."""
+        first = await a_spool(ledger)
+        second = await a_spool(ledger)
+        await ledger.use_cases.mount_spool_externally.execute(first, A_PRINTER)
+        await ledger.use_cases.mount_spool_externally.execute(second, A_PRINTER, SECOND_HOLDER)
+
+        described = {
+            spool_id: describe_location(
+                (await ledger.use_cases.queries.detail(spool_id)).summary.spool.location
+            )
+            for spool_id in (first, second)
+        }
+
+        assert described[first] == {
+            "kind": "EXTERNAL_SPOOL",
+            "printer": A_PRINTER.value,
+            "ams": None,
+            "slot": None,
+            "holder": 1,
+            "label": "External spool",
+        }
+        assert described[second]["holder"] == 2
+        assert described[second]["label"] == "External spool 2"
+
 
 class TestAutomaticDeduction:
     async def test_the_external_figure_is_deducted_from_the_spool_on_the_holder(
@@ -168,6 +227,40 @@ class TestAutomaticDeduction:
             (in_tray, -10000, "Slot 1 of badge.gcode.3mf"),
             (on_holder, -5000, "External spool of badge.gcode.3mf"),
         ]
+
+    async def test_each_holder_is_charged_through_its_own_spool(self, ledger: Ledger) -> None:
+        """The dual-nozzle case. The printer keys the two figures apart — `External Spool`
+        and `External Spool 2` — and so does the deduction: a holder's grams must never
+        reach the reel hanging off the other nozzle."""
+        on_first = await a_spool(ledger)
+        on_second = await a_spool(ledger)
+        await ledger.use_cases.mount_spool_externally.execute(on_first, A_PRINTER)
+        await ledger.use_cases.mount_spool_externally.execute(on_second, A_PRINTER, SECOND_HOLDER)
+
+        await ran_to_completion(ledger, {FEED: Grams.of("12"), SECOND_FEED: Grams.of("7.5")})
+
+        assert await movement_notes(ledger) == [
+            (on_first, -12000, "External spool of badge.gcode.3mf"),
+            (on_second, -7500, "External spool 2 of badge.gcode.3mf"),
+        ]
+
+    async def test_the_second_holders_figure_leaves_the_first_holders_spool_untouched(
+        self, ledger: Ledger
+    ) -> None:
+        """The print drew from the second nozzle only, so the first holder's reel is not a
+        participant — and a figure that landed on it would be silent, permanent theft."""
+        on_first = await a_spool(ledger)
+        on_second = await a_spool(ledger)
+        await ledger.use_cases.mount_spool_externally.execute(on_first, A_PRINTER)
+        await ledger.use_cases.mount_spool_externally.execute(on_second, A_PRINTER, SECOND_HOLDER)
+
+        await ran_to_completion(ledger, {SECOND_FEED: Grams.of("7.5")})
+
+        assert await movement_notes(ledger) == [
+            (on_second, -7500, "External spool 2 of badge.gcode.3mf")
+        ]
+        first = await ledger.use_cases.queries.detail(on_first)
+        assert first.summary.balance == Grams.of(1000)
 
     async def test_an_external_figure_with_nothing_on_the_holder_goes_to_review(
         self, ledger: Ledger
