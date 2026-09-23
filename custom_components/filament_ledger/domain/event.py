@@ -13,6 +13,8 @@ from .service.anomaly_detector import Anomaly
 from .value.confidence import Confidence
 from .value.grams import Grams
 from .value.identifiers import (
+    FIRST_HOLDER,
+    HolderIndex,
     MovementId,
     PrinterSerial,
     PrintJobId,
@@ -49,10 +51,15 @@ class SpoolMountedExternally(DomainEvent):
     Its own event rather than a `SpoolMounted` with no tray: every subscriber of that one
     reads the tray's three parts off it, and a bridge that had to guess whether `tray` was
     a tray would be the kind of reader this vocabulary exists to spare.
+
+    `holder` says *which* of the machine's holders, because a dual-nozzle printer has two
+    and an automation that lit a lamp for the wrong one would be reacting to a spool that
+    did not move. It defaults to the first for the reason `FIRST_HOLDER` states.
     """
 
     spool_id: SpoolId
     printer: PrinterSerial
+    holder: HolderIndex = FIRST_HOLDER
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .identifiers import ExternalFeed, Feed, PrinterSerial, TrayRef
+from .identifiers import FIRST_HOLDER, ExternalFeed, Feed, HolderIndex, PrinterSerial, TrayRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,17 +43,28 @@ class AmsSlot:
 class ExternalSpool:
     """Feeding one printer directly, bypassing that printer's AMS.
 
-    **Named after its machine, for the same reason a tray is.** Each printer has exactly
-    one direct feed, so with several machines an unqualified *external spool* names as many
-    positions as there are printers — and the partial unique index that states *the direct
-    feed holds one spool* (docs/08 §8.1) would have refused the second machine's reel to a
-    ledger that could truthfully hold it. Migration 0008 widened both together.
+    **Named after its machine, for the same reason a tray is.** With several machines an
+    unqualified *external spool* names as many positions as there are printers — and the
+    partial unique index that states *the direct feed holds one spool* (docs/08 §8.1) would
+    have refused the second machine's reel to a ledger that could truthfully hold it.
+    Migration 0008 widened both together.
+
+    **And named after its holder, for the same reason again.** A dual-nozzle printer has two
+    of these bolted on, so *the external spool of machine X* named two positions on one
+    machine and the index refused the second reel exactly as the ledger-wide one had refused
+    the second machine's. Migration 0010 widened both together, one release later, for the
+    release in which the second holder is followed rather than merely physical.
     """
 
     printer: PrinterSerial
+    holder: HolderIndex = FIRST_HOLDER
 
     def __str__(self) -> str:
-        return f"External spool on printer {self.printer}"
+        """The single-holder sentence, verbatim, for holder 1 — `ExternalFeed.__str__`'s
+        rule, applied to the location the same words describe."""
+        if self.holder == FIRST_HOLDER:
+            return f"External spool on printer {self.printer}"
+        return f"External spool {self.holder} on printer {self.printer}"
 
 
 Location = Storage | AmsSlot | ExternalSpool
@@ -74,11 +85,11 @@ def location_of(feed: Feed) -> AmsSlot | ExternalSpool:
     """
     if isinstance(feed, TrayRef):
         return AmsSlot(feed)
-    return ExternalSpool(feed.printer)
+    return ExternalSpool(feed.printer, feed.holder)
 
 
 def feed_of(location: AmsSlot | ExternalSpool) -> Feed:
     """The inverse: the position a mounted spool would be charged through."""
     if isinstance(location, AmsSlot):
         return location.tray
-    return ExternalFeed(location.printer)
+    return ExternalFeed(location.printer, location.holder)
