@@ -145,6 +145,11 @@ const EN = {
   "loc.AMS_SLOT_ON": "AMS slot [[slot]] on [[printer]]",
   "loc.EXTERNAL_SPOOL": "External spool",
   "loc.EXTERNAL_SPOOL_ON": "External spool on [[printer]]",
+  // A dual-nozzle machine has a second holder, and it is a different place from the first.
+  // Only the second is numbered: a machine with one holder has nothing to distinguish, so
+  // every label already on screen for it stays exactly as it was.
+  "loc.EXTERNAL_SPOOL_2": "External spool 2",
+  "loc.EXTERNAL_SPOOL_2_ON": "External spool 2 on [[printer]]",
   "loc.STORAGE": "Storage",
   "state.SEALED": "sealed",
   "state.ACTIVE": "active",
@@ -217,17 +222,29 @@ const EN = {
 
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Slot [[slot]]",
-  // The fifth position on a machine: the holder beside the AMS that feeds the extruder
-  // directly. Named by what it is, because it has no slot number to be named by.
+  // The heading over one AMS unit's four trays, shown only on a machine that has more than
+  // one: with a single unit the number says nothing the reader did not already know.
+  "ams.unit": "AMS [[ams]]",
+  // The holder beside the AMS that feeds the extruder directly. Named by what it is,
+  // because it has no slot number to be named by.
   "ams.external": "External spool",
+  // A dual-nozzle machine has two, and *external spool* then names neither. Left and right
+  // rather than one and two: the user is standing at the machine looking at two holders,
+  // and upstream's own indexes (255 and 254) are no help to them at all.
+  "ams.externalLeft": "External spool (left)",
+  "ams.externalRight": "External spool (right)",
   "ams.empty": "Empty",
+  // A holder the machine reports a reel on while the ledger has none there — the holder's
+  // counterpart of `ams.chipless`, and the same invitation: the Mount button beside it is
+  // how the user says which spool it is.
+  "ams.occupied": "The printer reports a spool here",
   // A tray the machine reports occupied by a reel with no readable chip — third-party
   // filament. The ledger cannot identify it on its own; the Mount button beside it is
   // how the user says which spool it is.
   "ams.chipless": "Holding a spool with no chip",
   "ams.note":
-    "No printer is connected yet. Slots are assigned by hand — mounting records no " +
-    "movement, because moving a spool consumes no filament.",
+    "Positions are assigned by hand — mounting records no movement, because moving a " +
+    "spool consumes no filament.",
   // The heading over a tray space whose machine the ledger never recorded a name for — a
   // ledger migrated from single-printer days, before a second machine appeared. The spools
   // are real and they are where the ledger last saw them; only the machine is nameless.
@@ -378,6 +395,8 @@ const EN = {
   "review.slotWord": "slot [[slot]]",
   // Mid-sentence beside `review.slotWord`: the position with no slot number.
   "review.externalWord": "the external spool",
+  // And the second holder of a dual-nozzle machine, which is a different position.
+  "review.externalWord2": "the second external spool",
   "review.blockedHint": "Approve is disabled until [[slots]] has a spool, or its amount is 0.",
   "review.invalidAmounts": "Amounts must be zero or positive numbers.",
 
@@ -648,7 +667,10 @@ const EN = {
   "printer.layerOf": "[[current]] of [[total]]",
   "printer.online": "Online",
   "printer.connection": "Connection",
-  "printer.activeTray": "Active tray",
+  // *Position* rather than *tray*: a machine can be drawing through one of its holders,
+  // and calling that a tray would be wrong on the one screen a user checks it from.
+  "printer.activeFeed": "Active position",
+  "printer.activeFeedAms": "AMS [[ams]] · [[slot]]",
   "printer.yes": "yes",
   "printer.no": "no",
   "printer.errorHeading": "Printer error",
@@ -670,10 +692,6 @@ const EN = {
   "printer.trayLedger": "ledger: [[spool]]",
   "printer.trayLedgerEmpty": "ledger: nothing mounted",
   "printer.noTrays": "The printer reported no usable trays right now.",
-  "printer.pendingSensors":
-    "Online, connection mode and active tray are not read yet. Their upstream sensor keys " +
-    "have to be confirmed on a real printer before this panel claims to know them — a key " +
-    "nobody verified is a key that breaks in another language.",
   "printer.readOnly":
     "Read-only, and refreshed only when you ask. Opening this tab and pressing Refresh " +
     "change nothing in the ledger — the Sync button on Inventory is the one that does.",
@@ -775,6 +793,8 @@ const ES = {
   "loc.AMS_SLOT_ON": "Bandeja [[slot]] del AMS en [[printer]]",
   "loc.EXTERNAL_SPOOL": "Bobina externa",
   "loc.EXTERNAL_SPOOL_ON": "Bobina externa en [[printer]]",
+  "loc.EXTERNAL_SPOOL_2": "Bobina externa 2",
+  "loc.EXTERNAL_SPOOL_2_ON": "Bobina externa 2 en [[printer]]",
   "loc.STORAGE": "Almacenamiento",
   "state.SEALED": "sellada",
   "state.ACTIVE": "activa",
@@ -849,12 +869,16 @@ const ES = {
 
   // -- AMS ---------------------------------------------------------------------------
   "ams.slot": "Bandeja [[slot]]",
+  "ams.unit": "AMS [[ams]]",
   "ams.external": "Bobina externa",
+  "ams.externalLeft": "Bobina externa (izquierda)",
+  "ams.externalRight": "Bobina externa (derecha)",
   "ams.empty": "Vacía",
+  "ams.occupied": "La impresora informa de una bobina aquí",
   "ams.chipless": "Hay una bobina sin chip",
   "ams.note":
-    "Todavía no hay impresora conectada. Las bandejas se asignan a mano: montar no " +
-    "registra ningún movimiento, porque mover una bobina no consume filamento.",
+    "Las posiciones se asignan a mano: montar no registra ningún movimiento, porque " +
+    "mover una bobina no consume filamento.",
   "ams.machineUnnamed": "Impresora sin identificar",
   "ams.machineStale":
     "Estas bobinas están registradas en una máquina que este registro no sigue ahora " +
@@ -1006,6 +1030,7 @@ const ES = {
     "Aprobar está desactivado hasta que cada gramo de [[slots]] esté cargado a una bobina.",
   "review.slotWord": "la bandeja [[slot]]",
   "review.externalWord": "la bobina externa",
+  "review.externalWord2": "la segunda bobina externa",
   "review.blockedHint":
     "Aprobar está desactivado hasta que [[slots]] tenga una bobina, o su cantidad sea 0.",
   "review.invalidAmounts": "Las cantidades deben ser números cero o positivos.",
@@ -1267,7 +1292,8 @@ const ES = {
   "printer.layerOf": "[[current]] de [[total]]",
   "printer.online": "En línea",
   "printer.connection": "Conexión",
-  "printer.activeTray": "Bandeja activa",
+  "printer.activeFeed": "Posición activa",
+  "printer.activeFeedAms": "AMS [[ams]] · [[slot]]",
   "printer.yes": "sí",
   "printer.no": "no",
   "printer.errorHeading": "Error de la impresora",
@@ -1290,11 +1316,6 @@ const ES = {
   "printer.trayLedger": "registro: [[spool]]",
   "printer.trayLedgerEmpty": "registro: nada montado",
   "printer.noTrays": "La impresora no informó de ninguna bandeja utilizable ahora mismo.",
-  "printer.pendingSensors":
-    "Todavía no se leen el estado en línea, el modo de conexión ni la bandeja activa. Sus " +
-    "claves de sensor deben confirmarse en una impresora real antes de que este panel " +
-    "afirme conocerlas: una clave que nadie ha verificado es una clave que falla en otro " +
-    "idioma.",
   "printer.readOnly":
     "Solo lectura, y se actualiza únicamente cuando usted lo pide. Abrir esta pestaña y " +
     "pulsar Actualizar no cambian nada del registro: el botón Sincronizar del Inventario " +

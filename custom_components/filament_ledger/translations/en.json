@@ -85,12 +85,14 @@
     },
     "mount_spool": {
       "name": "Mount spool",
-      "description": "Put a spool in an AMS slot. Records no movement — moving a spool consumes no filament.",
+      "description": "Put a spool in an AMS slot, or on the printer's own spool holder. Records no movement — moving a spool consumes no filament.",
       "fields": {
         "spool_id": { "name": "Spool", "description": "Which spool." },
         "printer": { "name": "Printer", "description": "The machine's serial. Leave empty while this ledger follows one printer; name it once it follows several, because a slot number alone no longer says which machine." },
         "ams": { "name": "AMS unit", "description": "Which AMS on that printer, numbered as the printer numbers it. Leave empty for the first." },
-        "slot": { "name": "Slot", "description": "AMS tray, 1 to 4." }
+        "external": { "name": "Direct feed", "description": "Turn on to mount on the printer's own spool holder instead of in a tray. Leave the slot empty when you do — the holder has none." },
+        "holder": { "name": "Holder", "description": "Which spool holder, 1 or 2. A dual-nozzle printer has two; leave empty for the first, which is what every other machine has." },
+        "slot": { "name": "Slot", "description": "AMS tray, 1 to 4. Name a slot or turn on the direct feed — never neither." }
       }
     },
     "unmount_spool": {
