@@ -40,6 +40,7 @@ from custom_components.filament_ledger.domain.service.anomaly_detector import (
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    HolderIndex,
     MovementId,
     PrintJobId,
     ReviewId,
@@ -78,8 +79,24 @@ class TestTranslation:
             pytest.param(
                 SpoolMountedExternally(spool_id=SPOOL, printer=A_PRINTER),
                 "filament_ledger_spool_mounted",
-                {"spool_id": "spool-1", "printer": "00000000TESTSER", "external": True},
+                {
+                    "spool_id": "spool-1",
+                    "printer": "00000000TESTSER",
+                    "external": True,
+                    "holder": 1,
+                },
                 id="a-spool-is-mounted-on-the-direct-feed",
+            ),
+            pytest.param(
+                SpoolMountedExternally(spool_id=SPOOL, printer=A_PRINTER, holder=HolderIndex(2)),
+                "filament_ledger_spool_mounted",
+                {
+                    "spool_id": "spool-1",
+                    "printer": "00000000TESTSER",
+                    "external": True,
+                    "holder": 2,
+                },
+                id="a-spool-is-mounted-on-the-second-holder",
             ),
             pytest.param(
                 SpoolUnmounted(spool_id=SPOOL),

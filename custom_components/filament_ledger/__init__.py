@@ -40,6 +40,7 @@ SCAN_INTERVAL = timedelta(minutes=15)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bool:
+    from homeassistant.core import callback
     from homeassistant.helpers.start import async_at_started
     from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -284,8 +285,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         # snapshot as the spools — so a job event is a mutation path too.
         await coordinator.async_request_refresh()
 
+    @callback
+    def _printers_changed() -> None:
+        """A machine appeared or went away after this entry loaded (v2.9).
+
+        Two things the composition root did once at startup have to happen again for a
+        machine discovery has only just seen, and both are idempotent — which is why they
+        can be re-run rather than conditionally applied:
+
+        - **Adoption**, because rows carrying the `UNIDENTIFIED` placeholder can only learn
+          a real serial once exactly one machine is discovered, and the machine that makes
+          that true may be the one that just appeared.
+        - **The reconciliation pass**, because the port's contract is that a printer does
+          not replay what happened while nothing was listening, and nothing was listening
+          to this machine until a moment ago.
+
+        Scheduled rather than awaited: this runs inside the gateway's debounced callback,
+        which is inside the event loop, and adoption plus a whole tray pass is database work.
+        """
+
+        async def _adopt_and_sync() -> None:
+            await adopt_unidentified_trays(database, gateway.printers)
+            await sync_trays.execute()
+            await coordinator.async_request_refresh()
+
+        hass.async_create_background_task(
+            _adopt_and_sync(), name="filament_ledger discovery changed"
+        )
+
     gateway.subscribe(_tray_changed)
     gateway.subscribe_jobs(_print_event)
+    entry.async_on_unload(gateway.subscribe_discovery(_printers_changed))
     # The safety net for setup-failure paths: an exception below this line still detaches.
     # A clean unload detaches earlier — see `async_unload_entry` — and `detach` is
     # idempotent, so this registration running afterwards is a no-op.

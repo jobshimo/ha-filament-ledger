@@ -37,7 +37,12 @@ if TYPE_CHECKING:
     # application test suite imports this module on machines without it. The functions
     # below only read attributes, so the types can stay annotations that never execute.
     from .bambu_gateway import JobStatus
-    from .printer_state import MachineSnapshot, PrinterSnapshot, PrinterTracking
+    from .printer_state import (
+        HolderSnapshot,
+        MachineSnapshot,
+        PrinterSnapshot,
+        PrinterTracking,
+    )
     from .tray_sync import SlotSyncOutcome, TraySyncResult
 
 
@@ -442,6 +447,10 @@ def _machine(machine: MachineSnapshot) -> dict[str, Any]:
     job = machine.job
     return {
         "printer": machine.printer.value,
+        # What the machine calls itself. Null when neither its own name sensor nor the
+        # device registry said, and the panel then shows the serial alone — the serial is
+        # the identity either way, and the name is a label on top of it.
+        "printer_name": machine.printer_name,
         "status": job.status,
         "progress_pct": job.progress.rounded if job.progress is not None else None,
         "current_layer": job.current_layer,
@@ -460,22 +469,48 @@ def _machine(machine: MachineSnapshot) -> dict[str, Any]:
         # serialises as null, never as an invented value — the gateway's standing policy.
         "online": machine.online,
         "connection_mode": machine.connection_mode,
-        "active_tray": machine.active_tray,
+        # Where the machine is drawing from right now, as a *position* rather than as a
+        # number: an AMS tray carries its three parts, a holder carries which holder, and
+        # null is the printer not saying. It replaced `active_tray: int` in v2.9 — that
+        # field had rendered a dash for every user since it was added, because the sensor's
+        # state is a filament name and the position rides on its attributes.
+        "active_feed": _feed_fields(machine.active_feed) if machine.active_feed else None,
+        # Every AMS unit this machine has, by its own numbering, so the view can render a
+        # block each without deriving the set from tray keys that may all be unavailable.
+        "ams_units": [ams.value for ams in machine.ams_units],
+        "holders": [_holder(holder) for holder in machine.holders],
         "trays": [_slot_sync(outcome) for outcome in machine.trays],
     }
 
 
+def _holder(holder: HolderSnapshot) -> dict[str, Any]:
+    """One direct feed as the AMS view's card reads it.
+
+    `empty` is three-way and null is *the printer did not say* — never rendered as a spool
+    and never as an empty holder, for the reason every nullable figure here is rendered as
+    a dash rather than as a zero.
+    """
+    return {
+        "holder": holder.holder.value,
+        "empty": holder.empty,
+        "name_hint": holder.name_hint,
+    }
+
+
 def _tracking(tracking: PrinterTracking) -> dict[str, Any]:
-    """Which machines the ledger follows, which AMS ordinal, and how many it could not name.
+    """Which machines the ledger follows, and how many it could not name.
 
     `printers` is **empty** when discovery named nobody, and empty is not a name: the panel
     renders the teaching empty state and the mount command resolves the absence server-side.
     `unnamed` counts machines whose job sensors resolved but whose serial did not — the one
     thing left to report now that every nameable machine is followed.
+
+    **`ams` left in v2.9.** It named the single ordinal the ledger followed, ledger-wide;
+    each machine now states its own units, and one number beside the printer list could
+    only have contradicted them.
     """
     return {
         "printers": [serial.value for serial in tracking.printers],
-        "ams": tracking.ams.value,
         "unnamed": tracking.unnamed,
     }
 
@@ -577,11 +612,24 @@ def pending_review(detail: PendingReviewDetail) -> dict[str, Any]:
 
 
 def _feed_fields(feed: Feed) -> dict[str, Any]:
+    """One consumption position, in the four fields every payload names it by.
+
+    `holder` is non-null for exactly the direct feed, the mirror of `ams`/`slot` being
+    non-null for exactly a tray — so a reader can tell the two apart by the fields alone,
+    without trusting `feed` to have been sent.
+    """
     if isinstance(feed, TrayRef):
         return {
             "printer": feed.printer.value,
             "feed": "ams",
             "ams": feed.ams.value,
             "slot": feed.slot.value,
+            "holder": None,
         }
-    return {"printer": feed.printer.value, "feed": "external", "ams": None, "slot": None}
+    return {
+        "printer": feed.printer.value,
+        "feed": "external",
+        "ams": None,
+        "slot": None,
+        "holder": feed.holder.value,
+    }
