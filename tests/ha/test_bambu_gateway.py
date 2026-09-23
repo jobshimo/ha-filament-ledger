@@ -27,8 +27,14 @@ from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import State
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from custom_components.filament_ledger import async_unload_entry
+from custom_components.filament_ledger import (
+    _adopt_and_sync,
+    _schedule_adopt_and_sync,
+    async_unload_entry,
+)
+from custom_components.filament_ledger.application.query import LedgerSnapshot
 from custom_components.filament_ledger.domain.event import (
     ReviewOpened,
     SpoolMounted,
@@ -48,6 +54,7 @@ from custom_components.filament_ledger.domain.value.identifiers import (
     ReelUid,
     SpoolId,
     TagUid,
+    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location
 from custom_components.filament_ledger.domain.value.percentage import Percentage
@@ -65,11 +72,18 @@ from custom_components.filament_ledger.infrastructure.ha import bambu_gateway
 from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
 from custom_components.filament_ledger.infrastructure.ha.job_sync import JobSync
 from custom_components.filament_ledger.infrastructure.ha.runtime import LedgerConfigEntry
+from custom_components.filament_ledger.infrastructure.ha.tray_sync import (
+    TraySync,
+)
+from custom_components.filament_ledger.infrastructure.persistence import printer_adoption
 from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
     SqlitePrintJobRepository,
 )
 from custom_components.filament_ledger.infrastructure.persistence.review_repository import (
     SqliteReviewRepository,
+)
+from custom_components.filament_ledger.infrastructure.persistence.spool_repository import (
+    SqliteSpoolRepository,
 )
 
 from ..application.conftest import A_PRINTER, ANOTHER_PRINTER, Ledger, a_tray
@@ -2918,6 +2932,124 @@ class TestJobSync:
 
         [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
         assert job.state is PrintJobState.RUNNING
+
+
+class TestTheRediscoveryPass:
+    """What the composition root re-runs for a machine that appeared after setup (v2.9).
+
+    The gateway's discovery listener cannot do the work inline — it fires inside the event
+    loop — so the pass goes on a task, and a task is where two failures hide: an exception
+    that surfaces only as an unretrieved traceback, and a task that outlives the entry that
+    created it and runs against a closed database.
+    """
+
+    def wired(self, harness: Harness) -> tuple[BambuLabGateway, TraySync]:
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        gateway = BambuLabGateway(as_hass(harness.hass))
+        return gateway, TraySync(
+            gateway=gateway,
+            detect_spool=harness.ledger.use_cases.detect_spool,
+            spools=SqliteSpoolRepository(harness.ledger.database),
+        )
+
+    async def test_the_task_belongs_to_the_config_entry(self, harness: Harness) -> None:
+        """Home Assistant cancels an entry's background tasks when it unloads the entry.
+
+        A task created on `hass` instead outlives it, so a machine appearing at the moment
+        of a reload would leave one holding this entry's database, gateway and coordinator
+        — running adoption against the connection `async_close` has just shut.
+        """
+        gateway, sync_trays = self.wired(harness)
+
+        _schedule_adopt_and_sync(
+            as_hass(harness.hass),
+            cast(LedgerConfigEntry, harness.entry),
+            harness.ledger.database,
+            gateway,
+            sync_trays,
+            cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+        )
+
+        assert len(harness.entry.background_tasks) == 1
+        await harness.hass.drain()
+
+    async def test_a_failed_adoption_is_logged_and_the_reconciliation_still_runs(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The pass is what mounts the spools this machine is actually holding, so an
+        adoption that fails must not take it down — the AMS view would otherwise show empty
+        trays over a full printer because a rename went wrong. And nothing propagates: on a
+        detached task an exception is a traceback with no sentence and no remedy."""
+        gateway, sync_trays = self.wired(harness)
+        await a_spool(harness.ledger, tag_uid=TRAY_1_TAG)
+
+        async def explode(*_args: object, **_kwargs: object) -> None:
+            msg = "the registry moved under us"
+            raise RuntimeError(msg)
+
+        # `_adopt_and_sync` imports the function inside its own body, so the module it
+        # imports *from* is the only seam — and the one production actually resolves.
+        monkeypatch.setattr(printer_adoption, "adopt_unidentified_trays", explode)
+
+        with caplog.at_level(logging.ERROR):
+            await _adopt_and_sync(
+                harness.ledger.database,
+                gateway,
+                sync_trays,
+                cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+            )
+
+        assert "adopting the rows of a machine that just appeared failed" in caplog.text
+        assert "the registry moved under us" in caplog.text
+        # The pass ran anyway: tray 1's spool is mounted where the printer says it is.
+        (summary,) = await harness.ledger.use_cases.queries.overview()
+        assert summary.spool.location == AmsSlot(a_tray(1))
+
+    async def test_a_failed_reconciliation_is_logged_rather_than_raised(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        gateway, sync_trays = self.wired(harness)
+
+        # The realistic cause, not a stubbed method: `TraySync` guards each *tray* itself,
+        # so what reaches this guard is the read that finds the trays at all.
+        async def explode() -> dict[TrayRef, TrayReading]:
+            msg = "the printer went away mid-pass"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(gateway, "current_trays", explode)
+
+        with caplog.at_level(logging.ERROR):
+            await _adopt_and_sync(
+                harness.ledger.database,
+                gateway,
+                sync_trays,
+                cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+            )
+
+        assert "reconciling the trays of a machine that just appeared failed" in caplog.text
+
+    async def test_cancellation_is_never_swallowed(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`asyncio.CancelledError` is a `BaseException`, so `except Exception` lets it
+        through — which is what makes the entry's cancellation on unload actually stop the
+        work rather than merely ask it to."""
+        gateway, sync_trays = self.wired(harness)
+
+        async def cancelled(*_args: object, **_kwargs: object) -> None:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(printer_adoption, "adopt_unidentified_trays", cancelled)
+
+        with pytest.raises(asyncio.CancelledError):
+            await _adopt_and_sync(
+                harness.ledger.database,
+                gateway,
+                sync_trays,
+                cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+            )
 
 
 class TestUnload:

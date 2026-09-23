@@ -135,10 +135,28 @@ class FakeConfigEntry:
     options: dict[str, object] = field(default_factory=dict)
     runtime_data: LedgerRuntime | None = None
     unload_callbacks: list[Callable[[], None]] = field(default_factory=list)
+    background_tasks: list[asyncio.Task[None]] = field(default_factory=list)
 
     def async_on_unload(self, func: Callable[[], None]) -> Callable[[], None]:
         self.unload_callbacks.append(func)
         return func
+
+    def async_create_background_task(
+        self,
+        hass: FakeHass,
+        target: Coroutine[object, object, None],
+        name: str,
+        eager_start: bool = True,
+    ) -> asyncio.Task[None]:
+        """A task Home Assistant cancels when it unloads this entry.
+
+        Delegates to `hass` and then records it, exactly as the real
+        `ConfigEntry.async_create_background_task` does — so a caller that went straight to
+        `hass` instead leaves this list empty, which is the difference the tests assert on.
+        """
+        task = hass.async_create_background_task(target, name, eager_start)
+        self.background_tasks.append(task)
+        return task
 
 
 class FakeFlowProgress:
