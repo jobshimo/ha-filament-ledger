@@ -540,6 +540,65 @@ leaves the panel names its tray in full. The panel never sends a bare slot, whic
 adapter's refusal of one ([05 §5.4](05-ha-integration.md)) is a statement about automations
 rather than about this view.
 
+**The heading names the machine and shows its serial beside it (v2.9)** — never instead of
+it. A printer that reports a name answers to it, and a household with two machines reads
+*Workshop A1* far faster than a fifteen-character serial; but the serial is what every row,
+tray reference and mount is keyed by, so a heading showing only a friendly name would leave
+a reader with two sections and no way to tell which machine either of them is.
+
+### More than one AMS unit, and both holders (v2.9)
+
+A section is now **a block per AMS unit, then a card per direct feed**:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Workshop X2D   20P5BJ661800330                                      │
+│                                                                      │
+│  AMS 1                                                               │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                │
+│  │  SLOT 1  │ │  SLOT 2  │ │  SLOT 3  │ │  SLOT 4  │                │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                │
+│                                                                      │
+│  AMS 2                                                               │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                │
+│  │  SLOT 1  │ │  SLOT 2  │ │  SLOT 3  │ │  SLOT 4  │                │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                │
+│                                                                      │
+│  ┌────────────────────────┐ ┌────────────────────────┐              │
+│  │ EXTERNAL SPOOL (LEFT)  │ │ EXTERNAL SPOOL (RIGHT) │              │
+│  └────────────────────────┘ └────────────────────────┘              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**The unit heading appears only once a machine has more than one**, exactly as the machine
+heading appears only once there is more than one machine: with a single AMS the number says
+nothing the reader did not already know, and a household with one unit sees the tab it has
+always seen.
+
+**Which positions are drawn is a union, not a report.** For units: what the printer says it
+has, plus every ordinal the ledger holds a spool on, plus AMS 1 as the floor. For holders:
+what the printer says it has, plus every holder the ledger holds a spool on, plus the first
+as the floor. The floors are this view's judgement rather than the backend's — a machine has
+an AMS 1 and a holder whether or not upstream published a sensor for either, and the backend
+deliberately reports *nothing said* rather than inventing one ([05 §5.8](05-ha-integration.md)).
+The ledger half of each union is the same rule the machine list follows: a unit the current
+glance does not mention may still hold a reel the ledger recorded, and a view that listed
+only what discovery currently reports would hide it.
+
+**Two holders are told apart as left and right, not as one and two.** The reader is standing
+at the machine looking at two holders; upstream's own indexes (255 and 254) would mean
+nothing to them. With one holder the card reads *External spool*, exactly as it always has —
+a machine with one has no second position to be told apart from, which is the same rule the
+movement note and the location label follow.
+
+**An empty holder card can say the printer disagrees.** Where the machine reports a reel on a
+holder the ledger has no row for, the card reads *The printer reports a spool here* instead of
+*Empty*, and the **[ Mount ]** button beside it is how the owner says which spool it is. That
+is the holder's form of the chipless-tray card above, and for its reason: consumption charges
+by position, not by tag, so a figure will land there whether or not the ledger knows what is
+on it. A holder the printer said *nothing* about reads as the ledger's own *Empty*, never as
+an occupied one.
+
 ---
 
 ## 6.5 View 4 — Spool detail & history
