@@ -4039,19 +4039,6 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   /**
-   * What this ledger is following, and what it found and could not follow.
-   *
-   * **Rendered only when there is something to say.** One machine, cleanly named, produces
-   * nothing here — the section heading above its own facts already names it, and a card
-   * repeating that would be chrome. Two or more get the list, because *which machines am I
-   * tracking?* stops being obvious the moment the answer is longer than one.
-   *
-   * `unnamed` is what is left of v1.4's `ignored`: every machine with a readable serial is
-   * followed now, so the only thing this ledger passes over is a machine it could not tell
-   * apart from another. That is rare enough to be a bug report, which is precisely why it
-   * is on a screen rather than in a log.
-   */
-  /**
    * The followed machines, as prose: *Workshop A1 (00000000TESTSER)*, or the serial alone.
    *
    * The name is a label and the serial is the identity, so a list that dropped the serial
@@ -4067,6 +4054,19 @@ class FilamentLedgerPanel extends HTMLElement {
       .join(", ");
   }
 
+  /**
+   * What this ledger is following, and what it found and could not follow.
+   *
+   * **Rendered only when there is something to say.** One machine, cleanly named, produces
+   * nothing here — the section heading above its own facts already names it, and a card
+   * repeating that would be chrome. Two or more get the list, because *which machines am I
+   * tracking?* stops being obvious the moment the answer is longer than one.
+   *
+   * `unnamed` is what is left of v1.4's `ignored`: every machine with a readable serial is
+   * followed now, so the only thing this ledger passes over is a machine it could not tell
+   * apart from another. That is rare enough to be a bug report, which is precisely why it
+   * is on a screen rather than in a log.
+   */
   printerTracking(tracking) {
     const t = this._t;
     const printers = tracking?.printers ?? [];
