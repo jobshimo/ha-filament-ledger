@@ -32,6 +32,7 @@ from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
     ExternalFeed,
     Feed,
+    HolderIndex,
     SpoolId,
     new_print_job_id,
 )
@@ -52,6 +53,11 @@ from .conftest import A_PRINTER, ANOTHER_PRINTER, EPOCH, Ledger, a_tray
 
 TRAY_1 = a_tray(1)
 FEED = ExternalFeed(A_PRINTER)
+
+#: The other holder of the same machine (v2.9). A dual-nozzle printer has two, and the live
+#: X2D reports this one's consumption under `External Spool 2` (docs/12, 2026-09-23).
+SECOND_HOLDER = HolderIndex(2)
+SECOND_FEED = ExternalFeed(A_PRINTER, SECOND_HOLDER)
 
 
 async def a_spool(ledger: Ledger, **overrides: object) -> SpoolId:
@@ -289,6 +295,59 @@ class TestStoredDocuments:
             '[{"printer": "00000000TESTSER", "ams": 1, "slot": 1, "mg": 28400}, '
             '{"printer": "00000000TESTSER", "external": true, "mg": 1200}]'
         )
+
+    async def test_the_second_holder_writes_its_number_and_the_first_writes_none(
+        self, ledger: Ledger
+    ) -> None:
+        """One spelling per fact: absence *is* the first holder, so writing `holder: 1`
+        would put two spellings of it in one column for ever (docs/08 §8.2)."""
+        repository = SqlitePrintJobRepository(ledger.database)
+        job = PrintJob(
+            id=new_print_job_id(),
+            name="both.gcode.3mf",
+            state=PrintJobState.FINISHED,
+            started_at=EPOCH,
+            printer=A_PRINTER,
+            reported_usage={FEED: Grams.of("1.2"), SECOND_FEED: Grams.of("3.4")},
+        )
+        async with ledger.database:
+            await repository.save(job)
+
+        stored = await repository.get(job.id)
+        assert stored is not None
+        assert stored.reported_usage == {FEED: Grams.of("1.2"), SECOND_FEED: Grams.of("3.4")}
+        [row] = await ledger.database.fetch_all(
+            "SELECT reported_usage FROM print_job WHERE id = ?", (job.id,)
+        )
+        assert row["reported_usage"] == (
+            '[{"printer": "00000000TESTSER", "external": true, "mg": 1200}, '
+            '{"printer": "00000000TESTSER", "external": true, "holder": 2, "mg": 3400}]'
+        )
+
+    async def test_a_document_written_before_the_second_holder_reads_as_the_first(
+        self, ledger: Ledger
+    ) -> None:
+        """No migration accompanies the second holder either: an entry that names no holder
+        was written while a machine could hold one reel directly, so that is the holder it
+        means."""
+        repository = SqlitePrintJobRepository(ledger.database)
+        job = PrintJob(
+            id=new_print_job_id(),
+            name="old-feed.gcode.3mf",
+            state=PrintJobState.FINISHED,
+            started_at=EPOCH,
+            printer=A_PRINTER,
+        )
+        async with ledger.database:
+            await repository.save(job)
+            await ledger.database.execute(
+                "UPDATE print_job SET reported_usage = ? WHERE id = ?",
+                ('[{"printer": "00000000TESTSER", "external": true, "mg": 49590}]', job.id),
+            )
+
+        stored = await repository.get(job.id)
+        assert stored is not None
+        assert stored.reported_usage == {FEED: Grams.of("49.59")}
 
     async def test_a_document_written_before_the_direct_feed_still_reads_as_trays(
         self, ledger: Ledger
