@@ -62,7 +62,7 @@
 </main>
 
 <footer class="page">
-  <p>This page imports <code>STYLES</code> from <code>filament-ledger-panel.js</code> and adopts that
+  <p>This page imports <code>STYLES</code> from <code>panel/styles.js</code> and adopts that
   exact stylesheet into each specimen's shadow root, then asks a real, unmounted
   <code>&lt;filament-ledger-panel&gt;</code> instance to render each view from fixtures. There is no second
   copy of the markup and no second copy of the CSS, so this catalogue cannot drift away from the panel.</p>
@@ -71,7 +71,10 @@
 </footer>
 
 <script type="module">
-import { STYLES } from "./filament-ledger-panel.js";
+// Imported for its side effect: it defines <filament-ledger-panel>, which every specimen below
+// creates. Explicit, because the sheet no longer comes from that module.
+import "./filament-ledger-panel.js";
+import { STYLES } from "./panel/styles.js";
 import { translator } from "./i18n.js";
 
 // ---------------------------------------------------------------------------------------
