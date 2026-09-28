@@ -1440,7 +1440,7 @@ class TestCurrentTrays:
         ],
     )
     async def test_an_unusable_weight_is_dropped_never_fabricated(self, unusable: object) -> None:
-        """The reading stays whole and the figure goes missing: `_read` is total by
+        """The reading stays whole and the figure goes missing: `read_tray` is total by
         construction, and the domain refuses a non-positive opening weight anyway."""
         hass = bambu_hass()
         hass.states.by_entity_id[TRAY_2] = tray_state(

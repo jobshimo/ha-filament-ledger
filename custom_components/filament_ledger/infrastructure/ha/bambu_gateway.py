@@ -93,10 +93,8 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from ...domain.error import InvalidValueError
 from ...domain.port.printer_gateway import PrintListener, TrayListener
-from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
-    ABSENT_TAG_SENTINEL,
     FIRST_HOLDER,
     MAX_EXTERNAL_HOLDER,
     MIN_EXTERNAL_HOLDER,
@@ -106,9 +104,7 @@ from ...domain.value.identifiers import (
     Feed,
     HolderIndex,
     PrinterSerial,
-    ReelUid,
     SlotIndex,
-    TagUid,
     TrayRef,
 )
 from ...domain.value.percentage import Percentage
@@ -121,6 +117,13 @@ from ...domain.value.print_event import (
 )
 from ...domain.value.print_job_state import PrintJobState
 from ...domain.value.tray_reading import TrayReading
+from .bambu_readings import (
+    WeightObservation,
+    attribute_index,
+    non_blank_text,
+    read_tray,
+    tray_plan,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import CALLBACK_TYPE
@@ -325,20 +328,6 @@ _DERIVED_OUTCOMES = {
     "failed": PrintJobState.FAILED,
 }
 
-# The per-tray attribute keys on the weight sensor, as upstream writes them. Strings in
-# an attribute dictionary with no schema and no version (docs/05 §5.8) — which is why
-# the translation is fixture-tested rather than believed.
-#
-# `get_print_weights` writes exactly these: `External Spool` when the first holder is
-# active, `External Spool 2` when the second is, and otherwise `AMS <i//4+1> Tray <i%4+1>`
-# for sixteen slots. The holder keys and the AMS keys are mutually exclusive — upstream
-# branches between them — which is why a reading naming neither is silence rather than a
-# claim that nothing was drawn (`_tray_plan`).
-_TRAY_WEIGHT_KEY = re.compile(r"AMS (\d+) Tray (\d+)")
-_EXTERNAL_SPOOL_KEYS = {
-    "External Spool": FIRST_HOLDER,
-    "External Spool 2": HolderIndex(MAX_EXTERNAL_HOLDER),
-}
 
 # What the `active_tray` sensor's `ams_index` attribute means when it is not an AMS unit's
 # zero-based ordinal: upstream's `active_tray` property indexes `external_spool[255 - i]`,
@@ -438,7 +427,7 @@ class BambuLabGateway:
         # `_on_weight_state_change` for the measurements that forced this. Keyed by
         # serial, so two machines printing at once can never read each other's figures,
         # and emptied both by `detach` and by each machine's own print starting.
-        self._observations: dict[PrinterSerial, _WeightObservation] = {}
+        self._observations: dict[PrinterSerial, WeightObservation] = {}
         # Which machines this gateway watched *start* the job they are now running. It is
         # the difference between "nothing was published during this job" and "this
         # gateway was not alive when the job began", and `_plan_at_ending` says why those
@@ -819,8 +808,8 @@ class BambuLabGateway:
         state = self._sensor_state(printer, "active_tray")
         if state is None:
             return None
-        ams = _attribute_index(state, "ams_index")
-        tray = _attribute_index(state, "tray_index")
+        ams = attribute_index(state, "ams_index")
+        tray = attribute_index(state, "tray_index")
         if ams is None or tray is None or tray == _NOTHING_LOADED:
             return None
         holder = _HOLDER_BY_ACTIVE_INDEX.get(ams)
@@ -904,7 +893,7 @@ class BambuLabGateway:
         is whatever the user told the printer the spool was. It rides to the panel so a card
         for an occupied holder can say what is on it.
 
-        **An empty holder describes no spool**, which is `_read`'s rule for an emptied tray
+        **An empty holder describes no spool**, which is `read_tray`'s rule for an emptied tray
         applied one position over: whatever name the attributes still carry is a leftover of
         the previous occupant, not an observation. The live X2D's free holder reads `?` —
         upstream's placeholder — and putting that on a card would be rendering a
@@ -913,7 +902,7 @@ class BambuLabGateway:
         state = self._holder_state(printer, holder)
         if state is None or state.attributes.get("empty") is not False:
             return None
-        return _text(state.attributes.get("name"))
+        return non_blank_text(state.attributes.get("name"))
 
     def _holder_state(self, printer: PrinterSerial, holder: HolderIndex) -> State | None:
         discovered = self._printers.get(printer)
@@ -975,7 +964,7 @@ class BambuLabGateway:
         """
         readings: dict[TrayRef, TrayReading] = {}
         for tray, entity_id in sorted(self._entity_by_tray.items()):
-            reading = _read(tray, self._hass.states.get(entity_id))
+            reading = read_tray(tray, self._hass.states.get(entity_id))
             if reading is not None:
                 readings[tray] = reading
         return readings
@@ -1029,14 +1018,14 @@ class BambuLabGateway:
     def _on_tray_state_change(self, event: Event[EventStateChangedData]) -> None:
         """Runs inside Home Assistant's event loop, so it must never raise.
 
-        `_read` is total — every malformed shape becomes `None` — and delivery happens in
+        `read_tray` is total — every malformed shape becomes `None` — and delivery happens in
         a background task, where a failing use case is logged instead of unwinding the
         bus dispatch.
         """
         tray = self._tray_by_entity.get(event.data["entity_id"])
         if tray is None:  # unreachable: the tracker watches only resolved entities
             return
-        reading = _read(tray, event.data["new_state"])
+        reading = read_tray(tray, event.data["new_state"])
         if reading is None:
             return
         self._hass.async_create_background_task(
@@ -1122,14 +1111,14 @@ class BambuLabGateway:
         state = self._sensor_state(printer, "print_weight")
         if state is None:
             return None
-        observation = _tray_plan(printer, state)
+        observation = tray_plan(printer, state)
         return observation.plan if observation is not None else None
 
     @callback
     def _on_weight_state_change(self, event: Event[EventStateChangedData]) -> None:
         """Keep the last per-tray breakdown this machine actually published.
 
-        Runs inside Home Assistant's event loop, so it must never raise: `_tray_plan` is
+        Runs inside Home Assistant's event loop, so it must never raise: `tray_plan` is
         total, and nothing here awaits or writes.
 
         **This exists because the sensor cannot be read at an instant.** Measured on the
@@ -1214,13 +1203,13 @@ class BambuLabGateway:
         """Hold, forward and announce one weight-sensor reading, whichever path obtained it.
 
         **The dedupe key is the whole observation.** The plan now carries the direct
-        feed's figure beside the trays' (`_tray_plan`), so a reading whose trays stand
+        feed's figure beside the trays' (`tray_plan`), so a reading whose trays stand
         still while the external spool moves is a new observation by the same comparison
         that catches a tray moving. The same comparison is what lets the two paths overlap
         safely: a weight change and a parse edge reading the same sensor moments apart
         hold and forward it once.
         """
-        observation = _tray_plan(printer, state)
+        observation = tray_plan(printer, state)
         if observation is None or self._observations.get(printer) == observation:
             return
         self._observations[printer] = observation
@@ -1829,19 +1818,6 @@ def _holder_of(value: str | None) -> HolderIndex | None:
         return None
 
 
-def _attribute_index(state: State, key: str) -> int | None:
-    """One integer attribute, or `None` — never parsed out of a string.
-
-    `bool` is refused before `int` because it is one in Python, and `True` reading as
-    position 1 would be a position invented out of a flag.
-    """
-    value = state.attributes.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        LOGGER.debug("%s reads %r, which is not a position index", key, value)
-        return None
-    return value
-
-
 def _discover(hass: HomeAssistant) -> PrinterDiscovery:
     """Read both registries once and assemble the machines out of them.
 
@@ -2225,246 +2201,3 @@ def _serial_of(unique_id: str, translation_key: str) -> PrinterSerial | None:
     if not serial.strip():
         return None
     return PrinterSerial(serial)
-
-
-def _read(tray: TrayRef, state: State | None) -> TrayReading | None:
-    """Translate one tray sensor into a reading, or `None` when it cannot be trusted.
-
-    Total by construction: every guard below covers a constructor precondition of the
-    value objects, so nothing in here can raise into the caller — which is what lets
-    `_on_tray_state_change` run bare inside the event loop.
-    """
-    if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-        return None
-    attributes = state.attributes
-    empty = attributes.get("empty")
-    if not isinstance(empty, bool):
-        LOGGER.debug("%s reports no usable 'empty' flag (%r); reading skipped", tray, empty)
-        return None
-    if empty:
-        # An emptied tray describes no spool. Whatever name or colour the attributes
-        # still carry is a leftover of the previous occupant, not an observation.
-        return TrayReading(tray=tray, tag=None, empty=True)
-    return TrayReading(
-        tray=tray,
-        tag=_tag(attributes.get("tag_uid")),
-        empty=False,
-        # The field that says *which reel*, read at last. `tag_uid` names the chip the AMS
-        # reached, and which chip that is follows the tray's parity — so a ledger keyed on
-        # it lost a reel every time the reel changed side of the machine. `tray_uuid` is
-        # what Bambu Studio shows as the reel's SN and it does not move (docs/12).
-        reel=_reel(attributes.get("tray_uuid")),
-        name=_text(attributes.get("name")),
-        material=_text(attributes.get("type")),
-        colour=_colour(attributes.get("color")),
-        weight=_reel_weight(attributes.get("tray_weight")),
-    )
-
-
-def _tag(value: object) -> TagUid | None:
-    """Sixteen zeros means nothing was read — absence, never an identity (docs/12).
-
-    Translating the sentinel to `None` is this boundary's job; `TagUid` refusing the same
-    string is the domain's backstop, not the translation.
-    """
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text or text == ABSENT_TAG_SENTINEL:
-        return None
-    return TagUid(text)
-
-
-def _reel(value: object) -> ReelUid | None:
-    """Thirty-two zeros means the reel was not identified — absence, never an identity.
-
-    The same translation `_tag` performs one field over, and it has to be performed here
-    for the same reason: `ReelUid` refuses the sentinel, so a boundary that passed it
-    through would raise inside a `@callback` that promised the event loop it never would.
-
-    Any all-zero string is treated as the sentinel rather than only the exact
-    thirty-two-character one. The width is firmware's to choose, absence is not, and a
-    reading padded to a different length must not become an identity that merges every
-    unidentifiable reel in the ledger into one.
-    """
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text or set(text) == {"0"}:
-        return None
-    return ReelUid(text)
-
-
-def _text(value: object) -> str | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return value
-
-
-def _colour(value: object) -> Colour | None:
-    """The printer speaks `#RRGGBBAA`; a hint that fails to parse is dropped, not fatal."""
-    if not isinstance(value, str):
-        return None
-    try:
-        return Colour.parse(value)
-    except InvalidValueError:
-        LOGGER.debug("unparseable colour hint %r ignored", value)
-        return None
-
-
-def _weight(value: object) -> Grams | None:
-    """A per-tray figure: a non-negative number, or nothing. Negative consumption and
-    non-numeric shapes are upstream noise, not data.
-
-    **A numeric string is a number.** Upstream writes the holder's figure twice at every
-    start: once as a number, and again as the text it read off the 3MF once the FTP parse
-    lands — `"External Spool": 49.59` and then `"49.59"`, one to forty seconds apart, on
-    every print of the reference instance (docs/12-field-notes.md, 2026-09-07). The
-    second write is the last thing the sensor says for the whole print. Refusing it made
-    every such print's final reading a recognised key with no figure, and that stood in
-    for the real one at the ending. `Grams.of` reads a decimal string exactly, so the
-    text is admitted on the same terms as the number and rejected on the same terms as
-    any other shape — `"lots"` and `""` raise where `inf` does.
-
-    **Total, including the shapes a type check waves through.** `Grams.of` raises
-    `InvalidValueError` on `NaN`, `inf`, `-inf`, figures too large to quantise and strings
-    that are not decimals — the floats among them pass the guard above. That gap was
-    survivable while this ran twice per job, from a coroutine; it is not now that it runs
-    on every republish from `_on_weight_state_change`, which is a `@callback` promising
-    the event loop it never raises. Caught the same way `_reel_weight` catches it, for
-    the same reason.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float | str):
-        return None
-    try:
-        grams = Grams.of(value)
-    except InvalidValueError:
-        LOGGER.debug("per-tray figure %r is not a usable quantity; skipped", value)
-        return None
-    return None if grams.is_negative else grams
-
-
-@dataclass(frozen=True, slots=True)
-class _WeightObservation:
-    """One weight-sensor reading, whole — the unit the gateway holds and compares.
-
-    Everything the reading said, not merely the part that is consumed: `plan` is what a
-    job is charged with, and `unknown_positions` is what has to be *announced* about it.
-    They travel together because they are deduped together, so the announcement fires once
-    per new reading rather than once per republish.
-
-    The external-spool figure used to be a third member, carried only to be warned about.
-    Since v2.8 it is a plan entry like any tray's, keyed by `ExternalFeed`, so a reading
-    whose trays stand still while the direct feed's figure moves is a new observation by
-    the same comparison that catches a tray moving. Since v2.9 the second holder's figure
-    is one too, and so is every AMS ordinal the printer names.
-    """
-
-    plan: dict[Feed, Grams]
-    #: Keys that look like a position and resolved to none, verbatim, in reading order.
-    #: This used to be `other_ams` and it used to be the ordinary case — every ordinal but
-    #: the first landed in it. It is now the surprising case, which is what makes it worth
-    #: announcing: a shape nobody here has seen, from a machine somebody actually owns.
-    unknown_positions: tuple[str, ...] = ()
-
-
-def _tray_plan(printer: PrinterSerial, state: State) -> _WeightObservation | None:
-    """One weight-sensor reading, translated — or `None` when it said nothing.
-
-    Total by construction, like `_read`: every malformed shape becomes a skipped key or a
-    `None`, so the caller can run bare inside the event loop.
-
-    `None` is **the shape that carries no usable per-tray figure** — the other half of
-    each flicker pair, a sensor that never had a breakdown, and a key whose value no
-    quantity can hold. All of that is silence, and the caller's whole job is to leave a
-    real reading standing in its place. A key is recognised only once its figure is, so
-    a shape that names a position it cannot put a number on does not translate to the
-    printer naming no position: that shape replaced a held real reading with an empty
-    plan, which then stood in for it at the ending (docs/12-field-notes.md,
-    2026-09-07). The one shape that still speaks the dialect with an empty plan names a
-    position this reader cannot resolve — a fact worth announcing once, and a different one
-    from silence (docs/04-use-cases.md UC-04).
-
-    **Every ordinal the printer names is charged, since v2.9.** Until then only `AMS 1`
-    was: a figure keyed `AMS 2 Tray 1` was dropped with a warning, because the gateway
-    followed one unit per machine and had no tray to land it on. It now builds the
-    reference the key states, whether or not that unit was discovered — a figure that finds
-    no spool opens the review line that exists for exactly this, where a dropped figure is
-    grams nobody is ever told about.
-
-    **The holder figures are plan entries too**, keyed by which holder the key names
-    (`_EXTERNAL_SPOOL_KEYS`). Until v2.8 the first was carried out only to be warned about,
-    because usage had no key for the holder beside the AMS; a print fed from it then ended
-    with no figure and opened a review asking what the printer had already said
-    (docs/12-field-notes.md, 2026-09-06). They are parsed by the same rule as a tray's
-    figure and skipped on the same terms.
-
-    Nothing here warns. The one thing worth saying out loud — a key that names a position
-    and resolves to none — rides out on the observation instead, so the caller can say it
-    once per new reading rather than once per republish.
-    """
-    weights: dict[Feed, Grams] = {}
-    unknown: list[str] = []
-    recognised = False
-    for key, value in state.attributes.items():
-        holder = _EXTERNAL_SPOOL_KEYS.get(key)
-        if holder is not None:
-            grams = _weight(value)
-            if grams is None:
-                LOGGER.debug("external-spool figure for %r reads %r; skipped", key, value)
-                continue
-            recognised = True
-            weights[ExternalFeed(printer, holder)] = grams
-            continue
-        match = _TRAY_WEIGHT_KEY.fullmatch(key)
-        if match is None:
-            continue
-        grams = _weight(value)
-        if grams is None:
-            LOGGER.debug("per-tray figure for %r reads %r; skipped", key, value)
-            continue
-        try:
-            tray = TrayRef(
-                printer=printer,
-                ams=AmsIndex(int(match.group(1))),
-                slot=SlotIndex(int(match.group(2))),
-            )
-        except InvalidValueError:
-            # The key looks like a position and names none — an ordinal of zero, a fifth
-            # tray. Kept verbatim rather than dropped, because the shape is evidence and
-            # the machine reporting it belongs to somebody who can be asked about it.
-            recognised = True
-            unknown.append(key)
-            continue
-        recognised = True
-        weights[tray] = grams
-    if not recognised:
-        return None
-    return _WeightObservation(plan=weights, unknown_positions=tuple(unknown))
-
-
-def _reel_weight(value: object) -> Grams | None:
-    """The RFID's nominal spool weight — `tray_weight`, which the tag carries in grams.
-
-    Deliberately *not* `_weight` above, on two counts that are policy rather than
-    plumbing. The dialect differs: this field arrives as a **string** (`"1000"`), while
-    the consumption figures arrive as numbers. And zero means the opposite thing: a tray
-    that consumed nothing is a real figure of zero, whereas `tray_weight: "0"` is the tag
-    declining to say — the reference machine writes it for the untagged third-party reel
-    in tray 3 (docs/12-field-notes.md). Folding the two policies into one helper would
-    make one of the two call sites wrong.
-
-    Non-positive and unparseable both become `None`, never a fabricated number: the
-    domain refuses an opening weight of nothing, and the register path reads absence as
-    *fall back to the configured default* rather than as a figure.
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float | str):
-        return None
-    try:
-        grams = Grams.of(value.strip() if isinstance(value, str) else value)
-    except InvalidValueError:
-        # `Grams.of` refuses the shapes an attribute dictionary can still hold — "", "n/a",
-        # "NaN". Caught here so `_read` stays total, as its own docstring promises.
-        LOGGER.debug("unusable tray_weight %r ignored", value)
-        return None
-    return grams if grams.is_positive else None
