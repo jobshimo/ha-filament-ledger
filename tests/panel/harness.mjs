@@ -3,10 +3,16 @@
 // The panel renders by returning HTML strings from plain methods, so a test needs no real
 // DOM: only the three globals the module touches while it is being *imported* — the base
 // class, the custom-element registry, and the `document` its font installer writes one
-// <style> into. A view method is then called on an instance built without its constructor,
-// with exactly the state the test gives it.
+// <style> into — plus the shadow root its constructor attaches. A view method is then called
+// on a real instance, starting from the constructor's own defaults, with the state the test
+// adds on top.
 
-globalThis.HTMLElement ??= class {};
+globalThis.HTMLElement ??= class {
+  attachShadow() {
+    this.shadowRoot = { innerHTML: "", addEventListener() {}, querySelector: () => null };
+    return this.shadowRoot;
+  }
+};
 
 const registry = new Map();
 globalThis.customElements ??= {
@@ -29,8 +35,8 @@ export const Panel = customElements.get("filament-ledger-panel");
 
 /** A panel instance holding `state`, speaking `language`, never connected to anything. */
 export function panelWith(state = {}, language = "en") {
-  const panel = Object.create(Panel.prototype);
-  return Object.assign(panel, { _t: translator(language), _spools: [], _printer: null }, state);
+  const panel = new Panel();
+  return Object.assign(panel, { _t: translator(language) }, state);
 }
 
 /** What a reader sees: the markup with its tags removed and its whitespace collapsed. */
