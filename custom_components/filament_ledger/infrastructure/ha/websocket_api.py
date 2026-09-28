@@ -74,7 +74,8 @@ from ...domain.value.identifiers import (
     TrayRef,
 )
 from ...domain.value.material import Material, MaterialKind
-from .bambu_gateway import FIRST_AMS, BambuLabGateway
+from .bambu_discovery import FIRST_AMS
+from .bambu_gateway import BambuLabGateway
 from .event_bridge import LEDGER_EVENTS
 from .printer_state import PrinterSnapshot
 from .runtime import LedgerConfigEntry, LedgerRuntime, loaded_entries, runtimes

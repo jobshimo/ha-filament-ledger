@@ -65,7 +65,7 @@ from ...domain.value.identifiers import (
     TrayRef,
 )
 from ...domain.value.material import Material, MaterialKind
-from .bambu_gateway import FIRST_AMS
+from .bambu_discovery import FIRST_AMS
 from .runtime import LedgerRuntime, runtimes
 
 # A tray as it arrives in service data — the three parts of `TrayRef`. YAML gives integers,
