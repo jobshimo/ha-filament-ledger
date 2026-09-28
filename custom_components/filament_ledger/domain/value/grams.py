@@ -7,7 +7,7 @@ movements drifts, and a ledger that drifts is a ledger nobody trusts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
 from typing import Self
 
 from ..error import InvalidValueError
@@ -59,7 +59,10 @@ class Grams:
             milligrams = (decimal_grams * MILLIGRAMS_PER_GRAM).quantize(
                 Decimal(1), rounding=ROUND_HALF_UP
             )
-        except InvalidOperation:
+        except DecimalException:
+            # The base of every signal `decimal` traps — `InvalidOperation`, but also
+            # `Overflow`, which a finite figure raises once scaled past the context's
+            # exponent limit (`"1e999999"`).
             msg = f"{grams!r} is not a quantity of filament"
             raise InvalidValueError(msg) from None
         return cls(int(milligrams))

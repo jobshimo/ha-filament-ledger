@@ -57,6 +57,10 @@ class TestConstruction:
             pytest.param("nan", id="not-a-number-as-text"),
             pytest.param("1e400", id="infinity-as-text"),
             pytest.param(1e30, id="too-large-to-quantise"),
+            # Finite, but past the decimal context's exponent limit once scaled to
+            # milligrams: that raises `decimal.Overflow`, which is not an
+            # `InvalidOperation` and escaped until it was caught by name.
+            pytest.param("1e999999", id="overflows-when-scaled"),
             pytest.param("lots", id="not-a-decimal"),
             pytest.param("", id="empty-text"),
         ],

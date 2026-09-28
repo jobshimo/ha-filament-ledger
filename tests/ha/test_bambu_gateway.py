@@ -1837,14 +1837,15 @@ class TestJobEventTranslation:
             pytest.param(float("-inf"), id="negative-infinity"),
             pytest.param(1e30, id="a-figure-too-large-to-quantise"),
             pytest.param(float("nan"), id="not-a-number"),
+            pytest.param("1e999999", id="text-that-overflows-when-scaled"),
         ],
     )
     async def test_a_figure_no_quantity_can_hold_is_skipped_not_raised(
-        self, unusable: float
+        self, unusable: float | str
     ) -> None:
-        """All four are floats, so a type check waves them through and `Grams.of` raises
-        `InvalidValueError` for every one of them. This runs on
-        every republish now, from a callback that promised the event loop it never
+        """Every one passes the type check — four floats and a decimal string, which
+        upstream writes too — and `Grams.of` raises `InvalidValueError` for each. This runs
+        on every republish now, from a callback that promised the event loop it never
         raises, so the guard is the difference between a skipped key and an exception
         unwinding the bus dispatch."""
         hass = bambu_hass()
