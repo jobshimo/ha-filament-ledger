@@ -30,6 +30,17 @@ import {
   translator,
   writeLanguageOverride,
 } from "./i18n.js";
+import {
+  UNIDENTIFIED_PRINTER,
+  fill,
+  grams,
+  holderWord,
+  hms,
+  round1,
+  signed,
+  typedGrams,
+} from "./panel/format.js";
+import { spoolRing } from "./panel/spool-ring.js";
 import { STYLES } from "./panel/styles.js";
 
 /** The CSS class per confidence level; the words themselves come from the table. */
@@ -70,18 +81,6 @@ const NOT_VOIDABLE = new Set(["OPENING_BALANCE", "VOID_REVERSAL"]);
  * the other is exactly the optimistic lie this project exists to prevent.
  */
 const DASH = "—";
-
-/**
- * The reserved serial a location carries when the ledger never recorded which machine it
- * meant (`domain/value/identifiers.py`).
- *
- * Mirrored here because the panel has to *label* it — a heading reading `UNIDENTIFIED` over
- * somebody's spools is a code constant leaking onto a screen, and the sentence that belongs
- * there instead is in `i18n.js` like every other. Nothing is ever *sent* as this value: an
- * absent printer travels as an absent field, and the backend resolves it in the one place
- * that owns the sentinel.
- */
-const UNIDENTIFIED_PRINTER = "UNIDENTIFIED";
 
 /**
  * The empty filter set, and therefore the whole history (docs/06 §6.6).
@@ -203,24 +202,6 @@ function installFonts() {
   document.head.appendChild(style);
 }
 
-const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
-const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
-
-/**
- * Round to the tenth, which is the precision a single movement is known to.
- *
- * Every gram figure the review card compares goes through this first. Binary floating
- * point makes 300 − 10 − 289.9 a hair away from 0.1, and a remainder that reads `0.0 g`
- * while the Approve button stays disabled is a card calling the user a liar.
- */
-const round1 = (value) => Math.round(value * 10) / 10;
-
-/** A typed gram field as a number, or `null` when it is not one. Blank reads as zero. */
-const typedGrams = (raw) => {
-  const value = raw === "" ? 0 : Number(raw);
-  return Number.isFinite(value) && value >= 0 ? value : null;
-};
-
 /**
  * The tray one review row is about, read back off the element that rendered it.
  *
@@ -239,23 +220,6 @@ const typedGrams = (raw) => {
  * empty strings, and `Number("")` is 0 — a slot that does not exist — which is why the
  * branch is on the feed and not on the strings.
  */
-/**
- * Which string names one direct feed, given how many the machine has.
- *
- * With one holder the answer is *External spool*, exactly what every card and every
- * label has said since v2.8 — a machine with one holder has no second position to be
- * told apart from. With two, that phrase names neither, so they become left and right:
- * the reader is standing at the machine looking at two holders, and upstream's own
- * indexes (255 and 254) would mean nothing to them.
- *
- * Stated once because three surfaces ask it — the AMS card, the Printer tab's active
- * position, and the review card's row — and three copies is three chances to disagree.
- */
-const holderWord = (holder, holderCount) => {
-  if (holderCount < 2) return "ams.external";
-  return holder === 2 ? "ams.externalRight" : "ams.externalLeft";
-};
-
 const trayRef = (element) => {
   const feed = element.dataset.feed === "external" ? "external" : "ams";
   return feed === "external"
@@ -302,48 +266,6 @@ function dayBound(value, end = false) {
 }
 
 /**
- * Put an **already-safe** fragment into a `[[token]]` slot of a translated string.
- *
- * `t()` escapes every parameter it substitutes, which is exactly right for raw wire data
- * and exactly wrong for a value that has already been escaped or is deliberately markup —
- * a second pass would print `&amp;` inside somebody's spool name. This is the other door.
- *
- * The replacement is a *function* on purpose: `String.replace` reads `$&`, `` $` `` and
- * friends in a replacement **string** as back-references, and a backtick is not one of
- * the characters `esc()` neutralises. A replacer function has no such syntax.
- *
- * Global, like `t`'s own substitution: a template may name the same value twice, and
- * filling only the first would leave a visible `[[token]]` behind.
- */
-const fill = (template, token, value) =>
-  template.replace(new RegExp(`\\[\\[${token}\\]\\]`, "g"), () => value);
-
-/**
- * The verbatim `print_error` as the searchable HMS quad — AABB-CCDD-EEFF-GGHH, sixteen
- * hex digits zero-padded from the 64-bit value. HMS codes are searchable; the user
- * diagnosing a failure needs the real string (docs/06 §6.3). The code arrives as a
- * DECIMAL STRING: HMS codes are 64-bit, a JSON number lands in JS as a double, and any
- * value past 2^53 would already be corrupted before BigInt could see it — BigInt(string)
- * is exact at any magnitude. Formatting is display work: the exact decimal string stays
- * untouched in a title attribute. Anything that is not a plain decimal string within 64
- * bits renders as-is — never reformatted, never invented.
- */
-function hms(code) {
-  if (typeof code !== "string" || !/^[0-9]+$/.test(code)) return String(code);
-  const hex = BigInt(code).toString(16).toUpperCase();
-  if (hex.length > 16) return code;
-  const quad = hex.padStart(16, "0");
-  return `HMS ${quad.slice(0, 4)}-${quad.slice(4, 8)}-${quad.slice(8, 12)}-${quad.slice(12, 16)}`;
-}
-
-/**
- * The three sizes the coil is drawn at, and the one place their geometry is written down.
- *
- * `box` is the SVG's own coordinate space and the element's rendered size in CSS pixels —
- * the charts already work this way (`STATS_BAR_ROW`), and a viewBox that matches the pixel
- * box means a stroke width is a real width rather than a number to be scaled in the head.
- */
-/**
  * Eight motes of filament colour drifting up behind everything.
  *
  * Written out as data rather than eight hand-tuned divs: position, size, colour and the
@@ -386,44 +308,6 @@ const AMBIENT = `<div class="ambient" aria-hidden="true">${MOTES.map(
  * to drift out of step with the bridge.
  */
 const SUBSCRIBE = "filament_ledger/subscribe";
-
-const RING_SIZES = {
-  card: { box: 106, r: 46, w: 11 },
-  slot: { box: 130, r: 62, w: 5 },
-  hero: { box: 178, r: 85, w: 6 },
-};
-
-/**
- * How much filament is left, drawn as an arc.
- *
- * Hand-rolled SVG, like every other chart in this panel ([ADR-0006](adr/0006-vanilla-panel.md)
- * admits no library). Two circles: the track, and an arc whose `stroke-dashoffset` is the
- * share of the circumference *not* filled. The arc carries the filament's own colour,
- * because colour is the primary identifier ([06 §6.8](../../../docs/06-ui-spec.md)) and the
- * ring is the largest surface on the card for it to occupy.
- *
- * **This is not the Ring/Profile/3D switcher** ([16 §16.6](../../../docs/16-visual-system.md)
- * scopes that out as a new capability). It is how a spool is drawn, from percentage and
- * colour — two values the ledger already holds.
- *
- * `aria-hidden`, deliberately: the percentage sits beside it as text, and a screen reader
- * reading the same figure twice is worse than one that never saw the decoration.
- */
-function spoolRing(size, percentage, colour) {
-  const { box, r, w } = RING_SIZES[size];
-  const mid = box / 2;
-  const circumference = Math.round(2 * Math.PI * r);
-  const filled = Math.max(0, Math.min(100, Number(percentage) || 0));
-  const offset = Math.round(circumference * (1 - filled / 100));
-  // `color` as well as `stroke`, so the glow can be `currentColor` and the two can never
-  // drift apart into a ring that shines a colour it is not drawn in.
-  return `<svg class="ring" viewBox="0 0 ${box} ${box}" aria-hidden="true"
-      style="--ring-circ:${circumference};color:${esc(colour)}">
-      <circle class="ring-track" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"></circle>
-      <circle class="ring-arc" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"
-        stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
-    </svg>`;
-}
 
 class FilamentLedgerPanel extends HTMLElement {
   constructor() {
@@ -4947,7 +4831,6 @@ class FilamentLedgerPanel extends HTMLElement {
     </div>`;
   }
 }
-
 
 // Before the element is defined, not from `connectedCallback`: the faces belong to the document
 // and the browser can start fetching them while Home Assistant is still deciding to mount a
