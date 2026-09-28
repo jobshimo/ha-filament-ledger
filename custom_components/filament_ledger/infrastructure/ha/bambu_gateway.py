@@ -2327,18 +2327,18 @@ def _weight(value: object) -> Grams | None:
     any other shape — `"lots"` and `""` raise where `inf` does.
 
     **Total, including the shapes a type check waves through.** `Grams.of` raises
-    `InvalidOperation` on `inf`, `-inf`, figures too large to quantise and strings that
-    are not decimals, and `ValueError` on `NaN` — the floats among them pass the guard
-    above. That gap was survivable while this ran twice per job, from a coroutine; it is
-    not now that it runs on every republish from `_on_weight_state_change`, which is a
-    `@callback` promising the event loop it never raises. Caught the same way
-    `_reel_weight` catches it, for the same reason.
+    `InvalidValueError` on `NaN`, `inf`, `-inf`, figures too large to quantise and strings
+    that are not decimals — the floats among them pass the guard above. That gap was
+    survivable while this ran twice per job, from a coroutine; it is not now that it runs
+    on every republish from `_on_weight_state_change`, which is a `@callback` promising
+    the event loop it never raises. Caught the same way `_reel_weight` catches it, for
+    the same reason.
     """
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         return None
     try:
         grams = Grams.of(value)
-    except ArithmeticError, ValueError:
+    except InvalidValueError:
         LOGGER.debug("per-tray figure %r is not a usable quantity; skipped", value)
         return None
     return None if grams.is_negative else grams
@@ -2462,8 +2462,8 @@ def _reel_weight(value: object) -> Grams | None:
         return None
     try:
         grams = Grams.of(value.strip() if isinstance(value, str) else value)
-    except ArithmeticError, ValueError:
-        # `Decimal` refuses the shapes an attribute dictionary can still hold — "", "n/a",
+    except InvalidValueError:
+        # `Grams.of` refuses the shapes an attribute dictionary can still hold — "", "n/a",
         # "NaN". Caught here so `_read` stays total, as its own docstring promises.
         LOGGER.debug("unusable tray_weight %r ignored", value)
         return None

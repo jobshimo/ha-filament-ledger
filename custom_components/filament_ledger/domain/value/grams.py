@@ -7,8 +7,10 @@ movements drifts, and a ledger that drifts is a ledger nobody trusts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Self
+
+from ..error import InvalidValueError
 
 MILLIGRAMS_PER_GRAM = 1000
 
@@ -41,14 +43,25 @@ class Grams:
 
         Conversion goes through `Decimal` rather than `float` arithmetic so that
         `Grams.of(24.5)` is exactly 24 500 mg and not 24 499 or 24 501.
+
+        A figure no quantity can hold — NaN, an infinity, text that is not a decimal, a
+        number too large to quantise — raises `InvalidValueError`, never the bare
+        `ValueError` or `decimal.InvalidOperation` the conversion would throw: every edge
+        that forwards a figure catches `DomainError`, and nothing else.
         """
         if isinstance(grams, bool):
             msg = "Grams.of() does not accept a bool"
             raise TypeError(msg)
-        decimal_grams = Decimal(str(grams)) if isinstance(grams, float) else Decimal(grams)
-        milligrams = (decimal_grams * MILLIGRAMS_PER_GRAM).quantize(
-            Decimal(1), rounding=ROUND_HALF_UP
-        )
+        try:
+            decimal_grams = Decimal(str(grams)) if isinstance(grams, float) else Decimal(grams)
+            if not decimal_grams.is_finite():
+                raise InvalidOperation
+            milligrams = (decimal_grams * MILLIGRAMS_PER_GRAM).quantize(
+                Decimal(1), rounding=ROUND_HALF_UP
+            )
+        except InvalidOperation:
+            msg = f"{grams!r} is not a quantity of filament"
+            raise InvalidValueError(msg) from None
         return cls(int(milligrams))
 
     @classmethod

@@ -1843,7 +1843,7 @@ class TestJobEventTranslation:
         self, unusable: float
     ) -> None:
         """All four are floats, so a type check waves them through and `Grams.of` raises
-        — `InvalidOperation` for the first three, `ValueError` for the last. This runs on
+        `InvalidValueError` for every one of them. This runs on
         every republish now, from a callback that promised the event loop it never
         raises, so the guard is the difference between a skipped key and an exception
         unwinding the bus dispatch."""
