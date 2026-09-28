@@ -18,6 +18,8 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.filament_ledger.application.review_queue import OpenPendingReviewCommand
 from custom_components.filament_ledger.const import (
     DOMAIN,
+    MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
     SERVICE_ADJUST_SPOOL,
     SERVICE_APPROVE_REVIEW,
     SERVICE_DISCARD_FILAMENT,
@@ -213,6 +215,72 @@ class TestSchemas:
         reconciled = services.parse(SERVICE_RECONCILE_SPOOL, {"spool_id": "s", "measured_g": 100})
         # A kitchen scale weighs the whole spool, so that is the default reading.
         assert reconciled["includes_core"] is True
+
+
+_REGISTER_BASE = {"material": "PLA", "colour": "000000", "opening_weight": 1000}
+
+_FREE_TEXT_FIELDS = [
+    pytest.param(SERVICE_REGISTER_SPOOL, _REGISTER_BASE, "label", MAX_NAME_LENGTH, id="label"),
+    pytest.param(SERVICE_REGISTER_SPOOL, _REGISTER_BASE, "vendor", MAX_NAME_LENGTH, id="vendor"),
+    pytest.param(
+        SERVICE_REGISTER_SPOOL,
+        _REGISTER_BASE,
+        "material_other",
+        MAX_NAME_LENGTH,
+        id="material-other",
+    ),
+    pytest.param(
+        SERVICE_RECONCILE_SPOOL,
+        {"spool_id": "s", "measured_g": 900},
+        "note",
+        MAX_NOTE_LENGTH,
+        id="reconcile",
+    ),
+    pytest.param(
+        SERVICE_DISCARD_FILAMENT,
+        {"spool_id": "s", "mode": "whole_spool"},
+        "reason",
+        MAX_NOTE_LENGTH,
+        id="discard",
+    ),
+    pytest.param(
+        SERVICE_ADJUST_SPOOL,
+        {"spool_id": "s", "amount_g": 5},
+        "reason",
+        MAX_NOTE_LENGTH,
+        id="adjust",
+    ),
+    pytest.param(SERVICE_APPROVE_REVIEW, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="approve"),
+    pytest.param(SERVICE_DISMISS_REVIEW, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="dismiss"),
+]
+
+
+class TestFreeTextIsBounded:
+    """The same caps the websocket applies: two doors into one ledger, one rule."""
+
+    @pytest.mark.parametrize(("service", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_at_the_limit_is_accepted(
+        self,
+        services: ServiceGateway,
+        service: str,
+        base: dict[str, object],
+        field_name: str,
+        limit: int,
+    ) -> None:
+        parsed = services.parse(service, {**base, field_name: "x" * limit})
+        assert parsed[field_name] == "x" * limit
+
+    @pytest.mark.parametrize(("service", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_beyond_the_limit_never_reaches_a_use_case(
+        self,
+        services: ServiceGateway,
+        service: str,
+        base: dict[str, object],
+        field_name: str,
+        limit: int,
+    ) -> None:
+        with pytest.raises(vol.Invalid):
+            services.parse(service, {**base, field_name: "x" * (limit + 1)})
 
 
 class TestEachServiceReachesTheLedger:

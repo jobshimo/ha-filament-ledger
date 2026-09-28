@@ -45,6 +45,8 @@ from ...const import (
     DEFAULT_CORE_WEIGHT_G,
     DEFAULT_OPENING_WEIGHT_G,
     DOMAIN,
+    MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
 )
 from ...domain.error import DomainError, InvalidValueError
 from ...domain.model.pending_review import ReviewCharge
@@ -88,6 +90,10 @@ from .serialisers import (
     whole_grams,
 )
 from .tray_sync import TraySyncResult
+
+#: Free text is bounded at the schema (see `MAX_NAME_LENGTH`): a name, and a note or reason.
+_NAME = vol.All(str, vol.Length(max=MAX_NAME_LENGTH))
+_NOTE = vol.All(str, vol.Length(max=MAX_NOTE_LENGTH))
 
 #: A tray as it crosses the wire — the three parts of `TrayRef`, bounded here as well as
 #: in the domain for the reason every adapter input is: the value objects raise on garbage,
@@ -449,9 +455,9 @@ async def handle_stock(
         vol.Required("colour"): str,
         vol.Required("opening_weight_g"): vol.Coerce(float),
         vol.Optional("core_weight_g"): vol.Coerce(float),
-        vol.Optional("material_other"): str,
-        vol.Optional("vendor"): vol.Any(str, None),
-        vol.Optional("label"): vol.Any(str, None),
+        vol.Optional("material_other"): _NAME,
+        vol.Optional("vendor"): vol.Any(_NAME, None),
+        vol.Optional("label"): vol.Any(_NAME, None),
         vol.Optional("tag_uid"): vol.Any(str, None),
         # Who attached the tag. The register form omits it and gets MANUAL; only the
         # register-from-sync path says DETECTED, because the serial it forwards came off
@@ -493,11 +499,11 @@ async def handle_create(
         # Metadata only — **never the balance**. The schema is the surface of
         # `EditSpoolDetails`, which replaces fields and cannot clear them: absent and
         # null both mean "leave unchanged".
-        vol.Optional("label"): vol.Any(str, None),
-        vol.Optional("vendor"): vol.Any(str, None),
+        vol.Optional("label"): vol.Any(_NAME, None),
+        vol.Optional("vendor"): vol.Any(_NAME, None),
         vol.Optional("colour"): str,
         vol.Optional("material"): vol.In([kind.value for kind in MaterialKind]),
-        vol.Optional("material_other"): str,
+        vol.Optional("material_other"): _NAME,
         vol.Optional("core_weight_g"): vol.Coerce(float),
         # **The tag deviates from the rule above, deliberately.** Every other field here
         # reads null as "leave unchanged"; the tag is the only clearable one, so it needs
@@ -541,7 +547,7 @@ async def handle_update(
         vol.Required("spool_id"): str,
         vol.Required("measured_g"): vol.Coerce(float),
         vol.Optional("includes_core"): bool,
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -573,7 +579,7 @@ async def handle_reconcile(
         vol.Required("type"): f"{DOMAIN}/spools/discard",
         vol.Required("spool_id"): str,
         vol.Required("mode"): vol.In([m.value for m in DiscardMode]),
-        vol.Required("reason"): str,
+        vol.Required("reason"): _NOTE,
         vol.Optional("amount_g"): vol.Coerce(float),
     }
 )
@@ -601,7 +607,7 @@ async def handle_discard(
         vol.Required("type"): f"{DOMAIN}/spools/adjust",
         vol.Required("spool_id"): str,
         vol.Required("amount_g"): vol.Coerce(float),
-        vol.Required("reason"): str,
+        vol.Required("reason"): _NOTE,
     }
 )
 @websocket_api.async_response
@@ -712,7 +718,7 @@ async def handle_reviews_list(
         ],
         vol.Optional("assign"): [_position({vol.Required("spool_id"): str})],
         vol.Optional("charges"): [_position({vol.Required("charges"): [_CHARGE]})],
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -753,7 +759,7 @@ async def handle_reviews_approve(
     {
         vol.Required("type"): f"{DOMAIN}/reviews/dismiss",
         vol.Required("review_id"): str,
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -846,7 +852,7 @@ async def handle_movements(
         # Optional, unlike UC-10's mandatory reason, and the difference is principled: a
         # reassignment explains itself structurally — the link names the entry it corrects
         # and the pair names both spools (docs/14 §14.3).
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -878,7 +884,7 @@ async def handle_movements_reassign(
     {
         vol.Required("type"): f"{DOMAIN}/movements/void",
         vol.Required("movement_id"): str,
-        vol.Optional("reason"): vol.Any(str, None),
+        vol.Optional("reason"): vol.Any(_NOTE, None),
         # **Must be explicitly true** for the no-return branch. The server refuses a
         # restitution void on a retired spool rather than silently downgrading it: a
         # silent downgrade is a gram count that changed meaning without the user

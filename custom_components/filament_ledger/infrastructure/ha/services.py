@@ -30,6 +30,8 @@ from ...application.register_spool import RegisterSpoolCommand
 from ...application.review_queue import ApproveReviewCommand, DismissReviewCommand
 from ...const import (
     DOMAIN,
+    MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
     SERVICE_ADJUST_SPOOL,
     SERVICE_APPROVE_REVIEW,
     SERVICE_DISCARD_FILAMENT,
@@ -133,15 +135,19 @@ _CHARGE = vol.Schema(
     }
 )
 
+# Free text is bounded at the schema, on the websocket's terms (see `MAX_NAME_LENGTH`).
+_NAME = vol.All(cv.string, vol.Length(max=MAX_NAME_LENGTH))
+_NOTE = vol.All(cv.string, vol.Length(max=MAX_NOTE_LENGTH))
+
 REGISTER_SCHEMA = vol.Schema(
     {
         vol.Required("material"): vol.In([kind.value for kind in MaterialKind]),
         vol.Required("colour"): cv.string,
         vol.Required("opening_weight"): vol.Coerce(float),
         vol.Optional("core_weight"): vol.Coerce(float),
-        vol.Optional("material_other"): cv.string,
-        vol.Optional("vendor"): cv.string,
-        vol.Optional("label"): cv.string,
+        vol.Optional("material_other"): _NAME,
+        vol.Optional("vendor"): _NAME,
+        vol.Optional("label"): _NAME,
         vol.Optional("tag_uid"): cv.string,
         vol.Optional("confirm_duplicate_tag", default=False): cv.boolean,
     }
@@ -152,7 +158,7 @@ RECONCILE_SCHEMA = vol.Schema(
         vol.Required("spool_id"): cv.string,
         vol.Required("measured_g"): vol.Coerce(float),
         vol.Optional("includes_core", default=True): cv.boolean,
-        vol.Optional("note"): cv.string,
+        vol.Optional("note"): _NOTE,
     }
 )
 
@@ -160,7 +166,7 @@ DISCARD_SCHEMA = vol.Schema(
     {
         vol.Required("spool_id"): cv.string,
         vol.Required("mode"): vol.In([mode.value for mode in DiscardMode]),
-        vol.Required("reason"): cv.string,
+        vol.Required("reason"): _NOTE,
         vol.Optional("amount_g"): vol.Coerce(float),
     }
 )
@@ -169,7 +175,7 @@ ADJUST_SCHEMA = vol.Schema(
     {
         vol.Required("spool_id"): cv.string,
         vol.Required("amount_g"): vol.Coerce(float),
-        vol.Required("reason"): cv.string,
+        vol.Required("reason"): _NOTE,
     }
 )
 
@@ -196,14 +202,14 @@ APPROVE_REVIEW_SCHEMA = vol.Schema(
         ],
         vol.Optional("assign"): [_position({vol.Required("spool_id"): cv.string})],
         vol.Optional("charges"): [_position({vol.Required("charges"): [_CHARGE]})],
-        vol.Optional("note"): cv.string,
+        vol.Optional("note"): _NOTE,
     }
 )
 
 DISMISS_REVIEW_SCHEMA = vol.Schema(
     {
         vol.Required("review_id"): cv.string,
-        vol.Optional("note"): cv.string,
+        vol.Optional("note"): _NOTE,
     }
 )
 

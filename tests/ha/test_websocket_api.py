@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.filament_ledger.application.detect_spool import DetectSpool
 from custom_components.filament_ledger.application.review_queue import OpenPendingReviewCommand
+from custom_components.filament_ledger.const import MAX_NAME_LENGTH, MAX_NOTE_LENGTH
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
@@ -353,6 +354,66 @@ class TestSchemasRejectMalformedMessages:
     ) -> None:
         with pytest.raises(vol.Invalid):
             ws.parse(command, **payload)
+
+
+_CREATE_BASE = {"material": "PLA", "colour": "000000", "opening_weight_g": 1000}
+
+# Every free-text field the panel can send, with the smallest payload that is otherwise
+# valid, and the limit that applies to it.
+_FREE_TEXT_FIELDS = [
+    pytest.param(CREATE, _CREATE_BASE, "label", MAX_NAME_LENGTH, id="create-label"),
+    pytest.param(CREATE, _CREATE_BASE, "vendor", MAX_NAME_LENGTH, id="create-vendor"),
+    pytest.param(
+        CREATE, _CREATE_BASE, "material_other", MAX_NAME_LENGTH, id="create-material-other"
+    ),
+    pytest.param(UPDATE, {"spool_id": "s"}, "label", MAX_NAME_LENGTH, id="update-label"),
+    pytest.param(UPDATE, {"spool_id": "s"}, "vendor", MAX_NAME_LENGTH, id="update-vendor"),
+    pytest.param(
+        UPDATE, {"spool_id": "s"}, "material_other", MAX_NAME_LENGTH, id="update-material-other"
+    ),
+    pytest.param(
+        RECONCILE, {"spool_id": "s", "measured_g": 900}, "note", MAX_NOTE_LENGTH, id="reconcile"
+    ),
+    pytest.param(
+        DISCARD, {"spool_id": "s", "mode": "whole_spool"}, "reason", MAX_NOTE_LENGTH, id="discard"
+    ),
+    pytest.param(ADJUST, {"spool_id": "s", "amount_g": 5}, "reason", MAX_NOTE_LENGTH, id="adjust"),
+    pytest.param(REVIEWS_APPROVE, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="approve"),
+    pytest.param(REVIEWS_DISMISS, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="dismiss"),
+    pytest.param(
+        "filament_ledger/movements/reassign",
+        {"movement_id": "m", "to_spool_id": "s"},
+        "note",
+        MAX_NOTE_LENGTH,
+        id="reassign",
+    ),
+    pytest.param(
+        "filament_ledger/movements/void",
+        {"movement_id": "m"},
+        "reason",
+        MAX_NOTE_LENGTH,
+        id="void",
+    ),
+]
+
+
+class TestFreeTextIsBounded:
+    """Any authenticated user reaches these commands, and whatever they write is stored
+    and then serialised into every snapshot — so the schema caps it."""
+
+    @pytest.mark.parametrize(("command", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_at_the_limit_is_accepted(
+        self, ws: WsClient, command: str, base: dict[str, object], field_name: str, limit: int
+    ) -> None:
+        parsed = ws.parse(command, **base, **{field_name: "x" * limit})
+        assert parsed[field_name] == "x" * limit
+
+    @pytest.mark.parametrize(("command", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_beyond_the_limit_never_reaches_a_handler(
+        self, ws: WsClient, command: str, base: dict[str, object], field_name: str, limit: int
+    ) -> None:
+        with pytest.raises(vol.Invalid):
+            ws.parse(command, **base, **{field_name: "x" * (limit + 1)})
 
 
 class TestWithoutARuntime:
