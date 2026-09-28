@@ -140,7 +140,14 @@ class TestPanelSource:
     """
 
     def source(self) -> str:
-        return PANEL_SOURCE.read_text(encoding="utf-8")
+        """The panel's whole source: its entry module and every module beside it.
+
+        The views live in `www/panel/` (ADR-0010). Reading the entry file alone would let a
+        view that moved out of it carry its `data-action`s beyond these checks — a test that
+        goes on passing while it inspects less and less.
+        """
+        modules = [PANEL_SOURCE, *sorted((PANEL_SOURCE.parent / "panel").glob("*.js"))]
+        return "\n".join(module.read_text(encoding="utf-8") for module in modules)
 
     def test_finishing_a_spool_reconciles_to_a_net_zero_not_a_gross_one(self) -> None:
         """Zero net is not zero gross, and the difference is a whole reel.
