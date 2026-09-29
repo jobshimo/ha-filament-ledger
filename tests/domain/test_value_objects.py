@@ -14,8 +14,10 @@ from custom_components.filament_ledger.domain.error import DomainError, InvalidV
 from custom_components.filament_ledger.domain.value.colour import BLACK, WHITE, Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    FIRST_HOLDER,
     UNIDENTIFIED_PRINTER,
     AmsIndex,
+    HolderIndex,
     PrinterSerial,
     SlotIndex,
     TagUid,
@@ -224,6 +226,33 @@ class TestTrayRef:
         assert str(a_tray(3)) == f"AMS 1 tray 3 on printer {A_PRINTER}"
 
 
+class TestHolderIndex:
+    """Which direct feed, bounded by the machine rather than by this ledger.
+
+    `AmsIndex` states no ceiling because how many AMS units a printer can carry is the
+    machine's business. The holder's ceiling *is* the machine's answer: upstream models
+    exactly two, and a dual-nozzle printer has exactly two.
+    """
+
+    @pytest.mark.parametrize("value", [1, 2])
+    def test_both_holders_a_printer_can_have_are_accepted(self, value: int) -> None:
+        assert HolderIndex(value).value == value
+
+    @pytest.mark.parametrize("value", [0, 3, -1])
+    def test_a_holder_no_machine_has_is_refused(self, value: int) -> None:
+        with pytest.raises(InvalidValueError, match="external holder"):
+            HolderIndex(value)
+
+    def test_the_holder_a_caller_that_names_none_means_is_the_first(self) -> None:
+        assert HolderIndex(1) == FIRST_HOLDER
+
+    def test_holders_sort_in_the_order_a_reader_counts_them(self) -> None:
+        assert sorted([HolderIndex(2), HolderIndex(1)]) == [HolderIndex(1), HolderIndex(2)]
+
+    def test_it_speaks_its_own_numeral(self) -> None:
+        assert str(HolderIndex(2)) == "2"
+
+
 class TestUnidentifiedPrinter:
     """The sentinel migration 0007 writes, and why it is a name rather than a gap.
 
@@ -268,6 +297,8 @@ class TestEveryValueObjectRaisesTheDomainError:
             pytest.param(lambda: Colour(300, 0, 0), id="colour-channel"),
             pytest.param(lambda: SlotIndex(9), id="slot-out-of-range"),
             pytest.param(lambda: AmsIndex(0), id="ams-index-below-one"),
+            pytest.param(lambda: HolderIndex(0), id="holder-below-one"),
+            pytest.param(lambda: HolderIndex(3), id="holder-above-two"),
             pytest.param(lambda: PrinterSerial("  "), id="printer-serial-blank"),
             pytest.param(lambda: TagUid("   "), id="tag-blank"),
             pytest.param(lambda: TagUid("0000000000000000"), id="tag-absence-sentinel"),

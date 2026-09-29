@@ -42,8 +42,8 @@ from ..domain.service.confidence_evaluator import (
 from ..domain.value.colour import Colour
 from ..domain.value.confidence import Confidence
 from ..domain.value.grams import Grams
-from ..domain.value.identifiers import MovementId, PrintJobId, SpoolId
-from ..domain.value.location import AmsSlot, ExternalSpool, Location, Storage
+from ..domain.value.identifiers import MovementId, PrintJobId, SpoolId, position_note
+from ..domain.value.location import AmsSlot, ExternalSpool, Location, Storage, feed_of
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.print_job_state import PrintJobState
 from ..domain.value.review import ReviewState
@@ -55,12 +55,13 @@ def describe_location(location: Location) -> dict[str, str | int | None]:
     """Where a spool is, in the terms a wire and a screen can both use.
 
     A mounted spool names its machine — a tray in full with `printer`, `ams` and `slot`, and
-    a direct feed with `printer` alone, because that is what identifies each position.
+    a direct feed with `printer` and `holder`, because that is what identifies each position.
     `label` stays the single-machine sentence, and deliberately: it is the fallback the panel
     uses only for a `kind` it does not know, and the panel builds the reader's sentence from
     the parts — naming a serial beside every spool in a one-machine household would be noise
     the reader has to look past (docs/06 §6.4, amended v2.0). `ams` and `slot` are null for
-    the locations that are not a tray, which is the shape `slot` already had.
+    the locations that are not a tray, which is the shape `slot` already had; `holder` is
+    non-null for exactly `EXTERNAL_SPOOL`, which is the same rule stated from the other end.
     """
     match location:
         case AmsSlot(tray):
@@ -69,15 +70,20 @@ def describe_location(location: Location) -> dict[str, str | int | None]:
                 "printer": tray.printer.value,
                 "ams": tray.ams.value,
                 "slot": tray.slot.value,
+                "holder": None,
                 "label": f"AMS slot {tray.slot.value}",
             }
-        case ExternalSpool(printer):
+        case ExternalSpool(printer, holder):
             return {
                 "kind": "EXTERNAL_SPOOL",
                 "printer": printer.value,
                 "ams": None,
                 "slot": None,
-                "label": "External spool",
+                "holder": holder.value,
+                # The numeral only where there is a second holder to be told apart from —
+                # `position_note`'s rule, and the reason every label already written stays
+                # verbatim for a single-holder machine.
+                "label": position_note(feed_of(location)),
             }
         case Storage():
             return {
@@ -85,6 +91,7 @@ def describe_location(location: Location) -> dict[str, str | int | None]:
                 "printer": None,
                 "ams": None,
                 "slot": None,
+                "holder": None,
                 "label": "Storage",
             }
 

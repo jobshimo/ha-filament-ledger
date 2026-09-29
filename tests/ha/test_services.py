@@ -18,6 +18,8 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.filament_ledger.application.review_queue import OpenPendingReviewCommand
 from custom_components.filament_ledger.const import (
     DOMAIN,
+    MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
     SERVICE_ADJUST_SPOOL,
     SERVICE_APPROVE_REVIEW,
     SERVICE_DISCARD_FILAMENT,
@@ -32,12 +34,14 @@ from custom_components.filament_ledger.domain.error import SpoolDiscardedError
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    FIRST_HOLDER,
     UNIDENTIFIED_PRINTER,
+    HolderIndex,
     PrintJobId,
     ReviewId,
     TrayRef,
 )
-from custom_components.filament_ledger.domain.value.location import AmsSlot
+from custom_components.filament_ledger.domain.value.location import AmsSlot, ExternalSpool
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
@@ -170,6 +174,11 @@ class TestSchemas:
             pytest.param(
                 SERVICE_MOUNT_SPOOL, {"spool_id": "s", "slot": 9}, id="mount-past-the-last-slot"
             ),
+            pytest.param(
+                SERVICE_MOUNT_SPOOL,
+                {"spool_id": "s", "external": True, "holder": 3},
+                id="mount-on-a-holder-no-machine-has",
+            ),
             pytest.param(SERVICE_UNMOUNT_SPOOL, {}, id="unmount-without-a-spool-id"),
             pytest.param(SERVICE_APPROVE_REVIEW, {}, id="approve-without-a-review-id"),
             pytest.param(
@@ -206,6 +215,72 @@ class TestSchemas:
         reconciled = services.parse(SERVICE_RECONCILE_SPOOL, {"spool_id": "s", "measured_g": 100})
         # A kitchen scale weighs the whole spool, so that is the default reading.
         assert reconciled["includes_core"] is True
+
+
+_REGISTER_BASE = {"material": "PLA", "colour": "000000", "opening_weight": 1000}
+
+_FREE_TEXT_FIELDS = [
+    pytest.param(SERVICE_REGISTER_SPOOL, _REGISTER_BASE, "label", MAX_NAME_LENGTH, id="label"),
+    pytest.param(SERVICE_REGISTER_SPOOL, _REGISTER_BASE, "vendor", MAX_NAME_LENGTH, id="vendor"),
+    pytest.param(
+        SERVICE_REGISTER_SPOOL,
+        _REGISTER_BASE,
+        "material_other",
+        MAX_NAME_LENGTH,
+        id="material-other",
+    ),
+    pytest.param(
+        SERVICE_RECONCILE_SPOOL,
+        {"spool_id": "s", "measured_g": 900},
+        "note",
+        MAX_NOTE_LENGTH,
+        id="reconcile",
+    ),
+    pytest.param(
+        SERVICE_DISCARD_FILAMENT,
+        {"spool_id": "s", "mode": "whole_spool"},
+        "reason",
+        MAX_NOTE_LENGTH,
+        id="discard",
+    ),
+    pytest.param(
+        SERVICE_ADJUST_SPOOL,
+        {"spool_id": "s", "amount_g": 5},
+        "reason",
+        MAX_NOTE_LENGTH,
+        id="adjust",
+    ),
+    pytest.param(SERVICE_APPROVE_REVIEW, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="approve"),
+    pytest.param(SERVICE_DISMISS_REVIEW, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="dismiss"),
+]
+
+
+class TestFreeTextIsBounded:
+    """The same caps the websocket applies: two doors into one ledger, one rule."""
+
+    @pytest.mark.parametrize(("service", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_at_the_limit_is_accepted(
+        self,
+        services: ServiceGateway,
+        service: str,
+        base: dict[str, object],
+        field_name: str,
+        limit: int,
+    ) -> None:
+        parsed = services.parse(service, {**base, field_name: "x" * limit})
+        assert parsed[field_name] == "x" * limit
+
+    @pytest.mark.parametrize(("service", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_beyond_the_limit_never_reaches_a_use_case(
+        self,
+        services: ServiceGateway,
+        service: str,
+        base: dict[str, object],
+        field_name: str,
+        limit: int,
+    ) -> None:
+        with pytest.raises(vol.Invalid):
+            services.parse(service, {**base, field_name: "x" * (limit + 1)})
 
 
 class TestEachServiceReachesTheLedger:
@@ -308,6 +383,36 @@ class TestEachServiceReachesTheLedger:
         assert (
             await harness.ledger.use_cases.queries.detail(second)
         ).summary.spool.location.__class__.__name__ == "ExternalSpool"
+
+    async def test_mount_external_without_a_holder_lands_on_the_first(
+        self, services: ServiceGateway, harness: Harness
+    ) -> None:
+        """The compatibility the absent `ams` and `printer` already had: an automation
+        written before a machine could have two holders meant the one it had."""
+        spool_id = await a_spool(harness.ledger)
+
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=spool_id, external=True)
+
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.spool.location == ExternalSpool(UNIDENTIFIED_PRINTER, FIRST_HOLDER)
+
+    async def test_mount_external_on_the_second_holder_leaves_the_first_alone(
+        self, services: ServiceGateway, harness: Harness
+    ) -> None:
+        """A dual-nozzle machine holds a reel on each feed at once, and the service form
+        can now say which — the v2.8 external mount could not (docs/05 §5.4)."""
+        first = await a_spool(harness.ledger)
+        second = await a_spool(harness.ledger)
+
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=first, external=True)
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=second, external=True, holder=2)
+
+        assert (await harness.ledger.use_cases.queries.detail(first)).summary.spool.location == (
+            ExternalSpool(UNIDENTIFIED_PRINTER, FIRST_HOLDER)
+        )
+        assert (await harness.ledger.use_cases.queries.detail(second)).summary.spool.location == (
+            ExternalSpool(UNIDENTIFIED_PRINTER, HolderIndex(2))
+        )
 
     async def test_approve_review_converts_the_estimate_into_movements(
         self, services: ServiceGateway, harness: Harness

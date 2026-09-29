@@ -8,6 +8,7 @@ the only fake, and all it does is catch what the handler sends back.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -20,6 +21,7 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.filament_ledger.application.detect_spool import DetectSpool
 from custom_components.filament_ledger.application.review_queue import OpenPendingReviewCommand
+from custom_components.filament_ledger.const import MAX_NAME_LENGTH, MAX_NOTE_LENGTH
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
@@ -37,6 +39,7 @@ from custom_components.filament_ledger.domain.value.movement_type import Movemen
 from custom_components.filament_ledger.domain.value.percentage import Percentage
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import EstimatorKind, ReviewReason
+from custom_components.filament_ledger.infrastructure.ha import bambu_gateway, websocket_api
 from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
 from custom_components.filament_ledger.infrastructure.ha.event_bridge import LEDGER_EVENTS
 from custom_components.filament_ledger.infrastructure.ha.printer_state import ReadPrinterState
@@ -54,11 +57,14 @@ from .conftest import FakeHass, Harness, a_spool, as_hass
 # The captured reference instance: the same registry rows and tray attributes the gateway
 # suite drives, because the sync command is that gateway feeding that ledger.
 from .test_bambu_gateway import (
+    PRINT_SENSORS,
     REGISTRY_ROWS,
+    REGISTRY_UPDATED,
     TRAY_1_TAG,
     TRAY_2,
     TRAY_ATTRIBUTES,
     plant_registry,
+    print_sensor_state,
     second_printer_rows,
     tray_state,
 )
@@ -350,6 +356,66 @@ class TestSchemasRejectMalformedMessages:
             ws.parse(command, **payload)
 
 
+_CREATE_BASE = {"material": "PLA", "colour": "000000", "opening_weight_g": 1000}
+
+# Every free-text field the panel can send, with the smallest payload that is otherwise
+# valid, and the limit that applies to it.
+_FREE_TEXT_FIELDS = [
+    pytest.param(CREATE, _CREATE_BASE, "label", MAX_NAME_LENGTH, id="create-label"),
+    pytest.param(CREATE, _CREATE_BASE, "vendor", MAX_NAME_LENGTH, id="create-vendor"),
+    pytest.param(
+        CREATE, _CREATE_BASE, "material_other", MAX_NAME_LENGTH, id="create-material-other"
+    ),
+    pytest.param(UPDATE, {"spool_id": "s"}, "label", MAX_NAME_LENGTH, id="update-label"),
+    pytest.param(UPDATE, {"spool_id": "s"}, "vendor", MAX_NAME_LENGTH, id="update-vendor"),
+    pytest.param(
+        UPDATE, {"spool_id": "s"}, "material_other", MAX_NAME_LENGTH, id="update-material-other"
+    ),
+    pytest.param(
+        RECONCILE, {"spool_id": "s", "measured_g": 900}, "note", MAX_NOTE_LENGTH, id="reconcile"
+    ),
+    pytest.param(
+        DISCARD, {"spool_id": "s", "mode": "whole_spool"}, "reason", MAX_NOTE_LENGTH, id="discard"
+    ),
+    pytest.param(ADJUST, {"spool_id": "s", "amount_g": 5}, "reason", MAX_NOTE_LENGTH, id="adjust"),
+    pytest.param(REVIEWS_APPROVE, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="approve"),
+    pytest.param(REVIEWS_DISMISS, {"review_id": "r"}, "note", MAX_NOTE_LENGTH, id="dismiss"),
+    pytest.param(
+        "filament_ledger/movements/reassign",
+        {"movement_id": "m", "to_spool_id": "s"},
+        "note",
+        MAX_NOTE_LENGTH,
+        id="reassign",
+    ),
+    pytest.param(
+        "filament_ledger/movements/void",
+        {"movement_id": "m"},
+        "reason",
+        MAX_NOTE_LENGTH,
+        id="void",
+    ),
+]
+
+
+class TestFreeTextIsBounded:
+    """Any authenticated user reaches these commands, and whatever they write is stored
+    and then serialised into every snapshot — so the schema caps it."""
+
+    @pytest.mark.parametrize(("command", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_at_the_limit_is_accepted(
+        self, ws: WsClient, command: str, base: dict[str, object], field_name: str, limit: int
+    ) -> None:
+        parsed = ws.parse(command, **base, **{field_name: "x" * limit})
+        assert parsed[field_name] == "x" * limit
+
+    @pytest.mark.parametrize(("command", "base", "field_name", "limit"), _FREE_TEXT_FIELDS)
+    def test_text_beyond_the_limit_never_reaches_a_handler(
+        self, ws: WsClient, command: str, base: dict[str, object], field_name: str, limit: int
+    ) -> None:
+        with pytest.raises(vol.Invalid):
+            ws.parse(command, **base, **{field_name: "x" * (limit + 1)})
+
+
 class TestWithoutARuntime:
     async def test_a_command_before_setup_is_an_error_reply_not_a_crash(
         self, ws: WsClient, harness: Harness
@@ -385,6 +451,7 @@ class TestList:
             "printer": None,
             "ams": None,
             "slot": None,
+            "holder": None,
             "label": "Storage",
         }
         assert payload["movement_count"] == 1
@@ -858,6 +925,7 @@ class TestMountAndUnmount:
             "printer": A_PRINTER.value,
             "ams": 1,
             "slot": 2,
+            "holder": None,
             "label": "AMS slot 2",
         }
 
@@ -868,6 +936,7 @@ class TestMountAndUnmount:
             "printer": None,
             "ams": None,
             "slot": None,
+            "holder": None,
             "label": "Storage",
         }
 
@@ -885,8 +954,51 @@ class TestMountAndUnmount:
             "printer": A_PRINTER.value,
             "ams": None,
             "slot": None,
+            "holder": 1,
             "label": "External spool",
         }
+
+    async def test_a_mount_that_names_no_holder_lands_on_the_first(self, ws: WsClient) -> None:
+        """The compatibility the absent `ams` already had: a caller written before a
+        machine could have two holders meant the one it had."""
+        spool_id = await a_created_spool(ws)
+
+        await ws.result_dict(MOUNT, spool_id=spool_id, printer=A_PRINTER.value, external=True)
+        (payload,) = await ws.result_list(LIST)
+
+        assert cast("dict[str, object]", payload["location"])["holder"] == 1
+
+    async def test_a_mount_on_the_second_holder_leaves_the_first_one_alone(
+        self, ws: WsClient
+    ) -> None:
+        """The dual-nozzle case (docs/06 §6.4, v2.9): two cards, two positions, and a reel
+        on each at once. Displacing the first holder's spool here would move a reel the
+        user never touched and charge the next print through it."""
+        first = await a_created_spool(ws)
+        second = await a_created_spool(ws)
+
+        await ws.result_dict(MOUNT, spool_id=first, printer=A_PRINTER.value, external=True)
+        await ws.result_dict(
+            MOUNT, spool_id=second, printer=A_PRINTER.value, external=True, holder=2
+        )
+
+        locations = {
+            payload["id"]: cast("dict[str, object]", payload["location"])
+            for payload in await ws.result_list(LIST)
+        }
+        assert locations[first]["kind"] == "EXTERNAL_SPOOL"
+        assert locations[first]["holder"] == 1
+        assert locations[second]["holder"] == 2
+
+    async def test_a_holder_no_machine_has_is_refused_by_the_schema(self, ws: WsClient) -> None:
+        """Bounded at the adapter as well as in the domain: a typo must be a message
+        rather than a stack trace."""
+        spool_id = await a_created_spool(ws)
+
+        with pytest.raises(vol.Invalid):
+            await ws.result_dict(
+                MOUNT, spool_id=spool_id, printer=A_PRINTER.value, external=True, holder=3
+            )
 
     async def test_a_caller_that_names_no_printer_lands_in_the_tray_space_in_use(
         self, ws: WsClient, harness: Harness
@@ -1010,11 +1122,13 @@ class TestReviewsList:
                 {
                     # The tray in full: approving sends these three back, and a bare
                     # number would no longer say which tray was meant. `feed` says
-                    # which kind of position the line is (docs/05 §5.4, v2.8).
+                    # which kind of position the line is (docs/05 §5.4, v2.8), and
+                    # `holder` is null for exactly the kind that is not a holder.
                     "printer": A_PRINTER.value,
                     "feed": "ams",
                     "ams": 1,
                     "slot": 1,
+                    "holder": None,
                     "estimated_g": 71.0,
                     "charges": [{"spool_id": spool_id, "amount_g": 71.0}],
                 }
@@ -1036,6 +1150,7 @@ class TestReviewsList:
                 "feed": "ams",
                 "ams": 1,
                 "slot": 1,
+                "holder": None,
                 "estimated_g": 71.0,
                 "charges": [],
             }
@@ -1070,6 +1185,7 @@ class TestReviewsList:
                 "feed": "external",
                 "ams": None,
                 "slot": None,
+                "holder": 1,
                 "estimated_g": 12.5,
                 "charges": [],
             }
@@ -1140,6 +1256,7 @@ class TestReviewsList:
                 "feed": "ams",
                 "ams": 1,
                 "slot": 1,
+                "holder": None,
                 "estimated_g": 0.0,
                 "charges": [{"spool_id": spool_id, "amount_g": 0.0}],
             }
@@ -1895,3 +2012,54 @@ class TestSubscribe:
 
         after = {id(entry) for entry in harness.hass.bus.listeners}
         assert after == before, "the subscription left listeners behind"
+
+    async def test_a_subscription_opened_while_dormant_hears_a_printer_appear(
+        self, ws: WsClient, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The window late binding exists to close (v2.9).
+
+        `async_track_state_change_event` takes its entity list at registration, so a panel
+        opened before `ha-bambulab` finished setting up would watch nothing for as long as
+        it stayed open — and would show the teaching empty state over a printer that was
+        plainly there. The gateway tells the subscription that discovery changed, and the
+        subscription re-arms and pushes.
+        """
+        # Both debouncers shortened to nothing: the gateway's rescan and the
+        # subscription's own push. Their cooldowns are scheduling, and what this pins is
+        # that the two are wired to each other at all.
+        monkeypatch.setattr(bambu_gateway, "_REDISCOVERY_COOLDOWN_S", 0)
+        monkeypatch.setattr(websocket_api, "_PUSH_COOLDOWN_S", 0)
+        plant_registry(harness.hass, [])
+        gateway = BambuLabGateway(as_hass(harness.hass))
+        harness.runtime.printer = ReadPrinterState(
+            gateway=gateway,
+            spools=SqliteSpoolRepository(harness.ledger.database),
+            queries=harness.ledger.use_cases.queries,
+        )
+        await ws.send(SUBSCRIBE)
+        before = _printer_pushes(ws)
+        assert before[-1]["dormant"] is True
+
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        for entity_id in PRINT_SENSORS:
+            harness.hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        harness.hass.bus.async_fire(REGISTRY_UPDATED, {"action": "create"})
+        for _ in range(4):
+            await harness.hass.drain()
+            await asyncio.sleep(0)
+        await harness.hass.drain()
+
+        pushed = _printer_pushes(ws)
+        assert len(pushed) > len(before)
+        assert pushed[-1]["dormant"] is False
+
+
+def _printer_pushes(ws: WsClient) -> list[dict[str, object]]:
+    """Every printer payload the subscription has pushed, oldest first."""
+    return [
+        cast("dict[str, object]", cast("dict[str, object]", message["event"])["printer"])
+        for message in ws.connection.messages
+        if cast("dict[str, object]", message["event"])["kind"] == "printer"
+    ]

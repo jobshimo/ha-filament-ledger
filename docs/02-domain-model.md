@@ -151,15 +151,38 @@ first time a second machine appears.
 Ordered, so that every reader — the deduction loop, the review card, the persisted JSON —
 sees one canonical tray order rather than each imposing its own.
 
-**The direct feed is the other position a print draws from (v2.8).** `ExternalFeed(printer)`
-names the spool holder beside the AMS as a *consumption key*, the way `ExternalSpool(printer)`
-has named it as a *location* since v2.0 (§2.2). `Feed = TrayRef | ExternalFeed` is the key of
-a job's usage and of a review's estimate; `location_of(feed)` is the one rule that resolves a
-key to the place a spool is mounted, so UC-04's deduction and UC-05's freeze cannot drift
-apart. The direct feed sorts after every tray of its own printer, so a mixed mapping still
+**The direct feed is the other position a print draws from (v2.8).**
+`ExternalFeed(printer, holder)` names a spool holder beside the AMS as a *consumption key*,
+the way `ExternalSpool(printer, holder)` has named it as a *location* since v2.0 (§2.2).
+`Feed = TrayRef | ExternalFeed` is the key of a job's usage and of a review's estimate;
+`location_of(feed)` is the one rule that resolves a key to the place a spool is mounted, so
+UC-04's deduction and UC-05's freeze cannot drift apart. The direct feed sorts after every
+tray of its own printer and the first holder before the second, so a mixed mapping still
 reads as one sequence. Until v2.8 the printer's `External Spool` figure had no key and was
 dropped with a warning — every print fed from the holder ended figureless and opened a review
 asking what the machine had already said ([12](12-field-notes.md), 2026-09-06).
+
+### `HolderIndex`
+
+Which of a printer's direct feeds, numbered 1..2. A value object for `SlotIndex`'s reason: it
+is part of a dictionary key, and holder 0 and holder 5 are not things that exist.
+
+**Bounded where `AmsIndex` is not, and the asymmetry is the argument.** How many AMS units a
+printer can carry is the machine's business, so a ceiling invented here would refuse a real
+tray on hardware nobody has tested. The holder's ceiling *is* the machine's answer: upstream
+models exactly two (`external_spool[0]` and `[1]`), and a dual-nozzle printer has exactly two
+bolted on. Three would name a position no machine in the range has.
+
+**One-based, unlike the index upstream reports it under.** `ha-bambulab` answers
+`ams_index = 255` for the first holder and `254` for the second, off a zero-based list; the
+ledger numbers what a user can count on the machine, the way `AmsIndex` numbers what the
+printer prints on its own labels.
+
+`FIRST_HOLDER` is the holder a caller that names none means, and it is not a convenience: it
+is the same statement migration 0010 makes about every external row that already exists
+([08 §8.4](08-data-model.md)). Only the second holder earns a numeral in a sentence a user
+reads — *External spool*, *External spool 2* — so every log line, movement note and label
+written for a single-holder machine stays verbatim.
 
 **Supported since v2.0.** The gateway resolves every machine the registry describes and keys
 each one's trays under its own serial ([05 §5.8](05-ha-integration.md)); the ledger follows
@@ -189,20 +212,29 @@ end ([08 §8.4](08-data-model.md)).
 ```
 Storage()          — on a shelf, not mounted
 AmsSlot(tray)      — mounted in the tray this `TrayRef` names
-ExternalSpool(printer)
-                   — feeding that printer directly, bypassing its AMS
+ExternalSpool(printer, holder)
+                   — feeding that printer directly through one of its holders,
+                     bypassing its AMS
 ```
 
 A spool is in exactly one location. This models the physical world truthfully: a spool cannot
 be in two places, and "in storage" is a real location, not the absence of one.
 
-`ExternalSpool(printer)` names its machine, since v2.0. Each printer has exactly one direct
-feed, so an unqualified *external spool* names as many positions as there are printers — and
-the partial unique index stating *the direct feed holds one spool* ([08 §8.1](08-data-model.md))
-would have refused the second machine's reel to a ledger that could truthfully hold it.
-Migration 0008 widened the value and the index together, which is the same reading that
-widened `idx_spool_slot` in 0007, arriving one release later because this is the release where
-a second machine is followed rather than merely representable.
+`ExternalSpool` names its machine, since v2.0. An unqualified *external spool* names as many
+positions as there are printers — and the partial unique index stating *the direct feed holds
+one spool* ([08 §8.1](08-data-model.md)) would have refused the second machine's reel to a
+ledger that could truthfully hold it. Migration 0008 widened the value and the index together,
+which is the same reading that widened `idx_spool_slot` in 0007, arriving one release later
+because this is the release where a second machine is followed rather than merely
+representable.
+
+**And it names its holder, since v2.9, for the same reason one release further on.** A
+dual-nozzle printer (X2D/H2D/H2C) carries two holders and can hold a reel on each at once, so
+*the external spool of machine X* named two positions on one machine and the index refused the
+second reel exactly as the ledger-wide one had refused the second machine's. Migration 0010
+widened both together. The live evidence is the printer's own: the X2D keys the second
+holder's consumption as `External Spool 2` and reports it as `ams_index: 254`
+([12](12-field-notes.md), 2026-09-23).
 
 ### `TagUid`
 

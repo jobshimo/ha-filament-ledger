@@ -725,10 +725,11 @@ filament_ledger/printer/state
   ← {
       "dormant": false,
       "tracking":                        # identity, not measurement — see below
-        { "printers": ["00M09A351800000", "01P00A123456789"], "ams": 1, "unnamed": 0 },
+        { "printers": ["00M09A351800000", "01P00A123456789"], "unnamed": 0 },
       "machines": [                      # one entry per followed machine, in tracking order
         {
-          "printer": "00M09A351800000",
+          "printer": "00M09A351800000",  # the serial — the identity everything is keyed by
+          "printer_name": "Workshop A1", # str or null — display only
           "status": "printing",          # print_status, verbatim state string
           "progress_pct": 42,            # int or null
           "current_layer": 71,           # int or null
@@ -738,7 +739,14 @@ filament_ledger/printer/state
           "error": { "active": true, "code": "216172782120927489" } | null,
           "online": true | null,
           "connection_mode": "local" | null,
-          "active_tray": 4 | null,
+          "active_feed":                 # a position, or null — never a bare number
+            { "feed": "external", "printer": "00M09A351800000",
+              "ams": null, "slot": null, "holder": 2 } | null,
+          "ams_units": [1, 2],           # this machine's own ordinals
+          "holders": [                   # one entry per direct feed an entity describes
+            { "holder": 1, "empty": true,  "name_hint": null },
+            { "holder": 2, "empty": false, "name_hint": "Generic PETG" }
+          ],
           "trays": [ { ...per-tray shape of trays/sync, read-only... } ]
         }
       ],
@@ -773,8 +781,17 @@ filament_ledger/printer/state
   constant is frozen** — the same discipline that produced `PRINT_SENSOR_KEYS`, because
   entity ids are localised and a key nobody verified is a key that breaks in another
   language ([13 — Traps](13-phase-2-brief.md)). Unavailable or undiscovered sensors
-  serialise as `null`, never as an invented value — the gateway's standing policy
-  (`bambu_gateway.py:170-182`).
+  serialise as `null`, never as an invented value — the gateway's standing policy.
+  **Reading the key right was not the same as reading the sensor right**: `active_tray`'s
+  state is the active filament's *name*, and the gateway parsed it as an integer until
+  v2.9 — so this field was a dash for every user from the day it was added
+  ([12](12-field-notes.md), 2026-09-23). It is now `active_feed`, a position, because a
+  bare number is ambiguous the moment a machine has two AMS units or two holders.
+- **`connection_mode` travels verbatim, and it can be wrong.** Upstream computes it from
+  `model.info.mqtt_mode` and the live X2D reports `local` while it is plainly connected
+  through the cloud. That is upstream's own claim about its own transport; correcting it
+  here would be this project inventing a fact it has no way to check
+  ([12](12-field-notes.md), 2026-09-23).
 - The error code crosses the wire as a **decimal string** — HMS codes are 64-bit and a
   JSON number lands in JavaScript as a double (`serialisers.py:179-186` states the rule;
   the panel already owns the `hms()` formatter, `www/filament-ledger-panel.js:73-79`).
@@ -800,6 +817,13 @@ panel has to be able to name it. An empty `printers` is *no machine was identifi
 mount command resolves server-side rather than the panel guessing at
 ([05 §5.4](05-ha-integration.md)).
 
+**Amended (v2.9): `tracking.ams` is gone, and each machine states its own positions.** That
+field named the one AMS ordinal this ledger followed, ledger-wide, because there was only ever
+one; a machine now carries `ams_units` and `holders`, and a single number beside the printer
+list could only have contradicted them. `printer_name` joins each machine for display, beside
+the serial and never instead of it — the serial is what every row, tray reference and mount is
+keyed by ([05 §5.8](05-ha-integration.md)).
+
 `unnamed` is what is left of v1.4's `ignored`, and the replacement is the feature. That field
 was the honest interim [FEATURE-REQUESTS §7](../FEATURE-REQUESTS.md) asked for: v1 picked the
 first printer by identity and warned about the rest into a log, and v1.4 put the names on the
@@ -819,10 +843,18 @@ still running is not a glance, it is a lie with a timestamp, and the person it l
 standing at the printer.
 
 **Nothing polls, and the panel never asks twice.** Discovery already resolves which entities
-carry these figures — the tray sensors and the job sensors, `BambuLabGateway.watched_entity_ids`
-— so the panel's one subscription ([06 §6.8](06-ui-spec.md)) watches **those**, and pushes a new
-snapshot when one of them changes. Not on an interval, and not on every state change in the
-house.
+carry these figures — the tray sensors, the holder sensors and the job sensors,
+`BambuLabGateway.watched_entity_ids` — so the panel's one subscription
+([06 §6.8](06-ui-spec.md)) watches **those**, and pushes a new snapshot when one of them
+changes. Not on an interval, and not on every state change in the house.
+
+**Amended (v2.9): the subscription follows discovery too.** `async_track_state_change_event`
+takes its entity list at registration, so a panel opened before `ha-bambulab` had finished
+setting up would watch nothing for as long as it stayed open — and would show the teaching
+empty state over a printer that was plainly there. The gateway now tells its
+`subscribe_discovery` listeners when the set of followed machines changes, and the
+subscription re-arms its tracker over the entities that exist now and pushes once
+([05 §5.8](05-ha-integration.md)).
 
 A first attempt got this wrong in a way worth recording: it treated Home Assistant handing over
 a changed `hass` as the signal. That object is re-assigned whenever *anything* in the house

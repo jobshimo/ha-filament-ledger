@@ -85,12 +85,14 @@
     },
     "mount_spool": {
       "name": "Montar bobina",
-      "description": "Coloca una bobina en una bandeja del AMS. No registra ningún movimiento: mover una bobina no consume filamento.",
+      "description": "Coloca una bobina en una bandeja del AMS, o en el soporte de bobina de la propia impresora. No registra ningún movimiento: mover una bobina no consume filamento.",
       "fields": {
         "spool_id": { "name": "Bobina", "description": "Qué bobina." },
         "printer": { "name": "Impresora", "description": "El número de serie de la máquina. Déjelo vacío mientras este registro siga a una sola impresora; indíquelo cuando siga a varias, porque el número de bandeja por sí solo ya no dice de qué máquina se trata." },
         "ams": { "name": "Unidad AMS", "description": "Qué AMS de esa impresora, con la numeración que usa la propia impresora. Déjelo vacío para la primera." },
-        "slot": { "name": "Bandeja", "description": "Bandeja del AMS, de 1 a 4." }
+        "external": { "name": "Alimentación directa", "description": "Actívelo para montar en el soporte de bobina de la propia impresora en lugar de en una bandeja. Deje la bandeja vacía cuando lo haga: el soporte no tiene ninguna." },
+        "holder": { "name": "Soporte", "description": "Qué soporte de bobina, 1 o 2. Una impresora de dos extrusores tiene dos; déjelo vacío para el primero, que es el que tienen las demás máquinas." },
+        "slot": { "name": "Bandeja", "description": "Bandeja del AMS, de 1 a 4. Indique una bandeja o active la alimentación directa, nunca ninguna de las dos." }
       }
     },
     "unmount_spool": {

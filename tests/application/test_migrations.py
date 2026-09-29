@@ -23,8 +23,10 @@ from custom_components.filament_ledger.domain.model.pending_review import (
 from custom_components.filament_ledger.domain.port.repositories import SpoolFilter
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    FIRST_HOLDER,
     UNIDENTIFIED_PRINTER,
     Feed,
+    HolderIndex,
     PrintJobId,
     ReviewId,
     SpoolId,
@@ -57,6 +59,10 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
 )
 
 from .conftest import A_PRINTER, ANOTHER_PRINTER, a_tray
+
+#: The holder 0010 makes representable — the one a dual-nozzle machine carries beside the
+#: first, and the one every row that predates the migration cannot be.
+SECOND_HOLDER = HolderIndex(2)
 
 BROKEN_MIGRATION = """
 BEGIN;
@@ -1809,5 +1815,198 @@ class TestMigration0008FollowsMoreThanOnePrinter:
         database = await Database.open(tmp_path / "ledger.db", run_inline)
         try:
             assert await database.migrate() >= 8
+        finally:
+            await database.close()
+
+
+def _stage_0009(staged: Path) -> None:
+    source = next(MIGRATIONS.glob("0009_*.sql"))
+    (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+async def _staged_at_version_nine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Database, Path]:
+    """A database stopped at version 9 — where every 2.8.x install sits before 2.9.0."""
+    database, staged = await _staged_at_version_seven(tmp_path, monkeypatch)
+    _stage_0008(staged)
+    _stage_0009(staged)
+    assert await database.migrate() == 9
+    return database, staged
+
+
+def _stage_0010(staged: Path) -> None:
+    source = next(MIGRATIONS.glob("0010_*.sql"))
+    (staged / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+class TestMigration0010HoldsBothHoldersOfAPrinter:
+    """docs/08 §8.1, §8.4 — the last fact the schema still stated in the singular.
+
+    0008 gave the direct feed a machine on the reading that each machine has one. A
+    dual-nozzle printer has two, upstream models exactly two, and the live X2D reports the
+    second one's consumption under its own key — so the index that says *the direct feed of a
+    machine holds one spool* refused a state the hardware is plainly in.
+
+    **The backfill is the one thing here that could have been a guess and is not.** The old
+    index was unique on (kind, printer), so at most one external row per machine could exist;
+    every row that exists is therefore that machine's first holder.
+    """
+
+    async def test_every_external_row_becomes_its_machines_first_holder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
+        try:
+            _stage_0010(staged)
+            assert await database.migrate() == 10
+
+            rows = await database.fetch_all(
+                "SELECT id, location_kind, location_holder FROM spool ORDER BY id"
+            )
+            assert {row["id"]: row["location_holder"] for row in rows} == {
+                "external": 1,
+                "mounted": None,
+                "stored": None,
+            }
+        finally:
+            await database.close()
+
+    async def test_the_backfilled_row_hydrates_as_the_first_holder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Through the mapper that ships: a column written correctly and a mapper that
+        cannot read it back is the same failure, and it fails on every start."""
+        database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
+        try:
+            _stage_0010(staged)
+            assert await database.migrate() == HEAD_VERSION
+
+            external = await SqliteSpoolRepository(database).get(SpoolId("external"))
+            assert external is not None
+            assert external.location == ExternalSpool(UNIDENTIFIED_PRINTER, FIRST_HOLDER)
+        finally:
+            await database.close()
+
+    async def test_one_machine_can_now_hold_a_reel_on_each_of_its_holders(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The state the old index refused, and the whole reason for the release."""
+        database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
+        try:
+            _stage_0010(staged)
+            assert await database.migrate() == HEAD_VERSION
+
+            spools = SqliteSpoolRepository(database)
+            first = await spools.get(SpoolId("external"))
+            second = await spools.get(SpoolId("stored"))
+            assert first is not None
+            assert second is not None
+
+            await spools.save(first.mounted_externally(A_PRINTER, FIRST_HOLDER))
+            await spools.save(second.mounted_externally(A_PRINTER, SECOND_HOLDER))
+
+            locations = {
+                str(spool.id): spool.location for spool in await spools.list(SpoolFilter())
+            }
+            assert locations["external"] == ExternalSpool(A_PRINTER, FIRST_HOLDER)
+            assert locations["stored"] == ExternalSpool(A_PRINTER, SECOND_HOLDER)
+        finally:
+            await database.close()
+
+    async def test_one_holder_still_holds_one_reel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Widening the index per holder must not turn it off: two reels on one holder is
+        still a physical impossibility, and the rebuilt index still says so."""
+        database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
+        try:
+            _stage_0010(staged)
+            assert await database.migrate() == HEAD_VERSION
+
+            spools = SqliteSpoolRepository(database)
+            first = await spools.get(SpoolId("external"))
+            second = await spools.get(SpoolId("stored"))
+            assert first is not None
+            assert second is not None
+            await spools.save(first.mounted_externally(A_PRINTER, SECOND_HOLDER))
+
+            with pytest.raises(sqlite3.IntegrityError):
+                await spools.save(second.mounted_externally(A_PRINTER, SECOND_HOLDER))
+        finally:
+            await database.close()
+
+    async def test_a_retired_spool_still_occupies_no_holder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """0003's exclusions, carried through the rebuild. Dropping either clause would
+        resurrect the ghost that made a discarded spool hold a position for ever."""
+        database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
+        try:
+            _stage_0010(staged)
+            assert await database.migrate() == HEAD_VERSION
+
+            spools = SqliteSpoolRepository(database)
+            first = await spools.get(SpoolId("external"))
+            second = await spools.get(SpoolId("stored"))
+            assert first is not None
+            assert second is not None
+            await spools.save(first.mounted_externally(A_PRINTER, SECOND_HOLDER))
+            await database.execute(
+                "UPDATE spool SET discarded_at = '2026-09-23T12:00:00+00:00' WHERE id = ?",
+                (first.id,),
+            )
+
+            await spools.save(second.mounted_externally(A_PRINTER, SECOND_HOLDER))
+
+            occupant = await spools.find_by_location(ExternalSpool(A_PRINTER, SECOND_HOLDER))
+            assert occupant is not None
+            assert occupant.id == "stored"
+        finally:
+            await database.close()
+
+    async def test_the_whole_ledger_still_hydrates_after_the_upgrade(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
+        try:
+            _stage_0010(staged)
+            assert await database.migrate() == HEAD_VERSION
+
+            spools = await SqliteSpoolRepository(database).list(SpoolFilter())
+            assert [spool.id for spool in spools] == ["mounted", "stored", "external"]
+            assert len(await SqlitePrintJobRepository(database).list_recent(10)) == len(
+                PRE_0007_JOBS
+            )
+            pending = await SqliteReviewRepository(database).list_pending()
+            assert [review.id for review in pending] == ["review-pending"]
+        finally:
+            await database.close()
+
+    async def test_running_the_runner_again_changes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
+        try:
+            _stage_0010(staged)
+            assert await database.migrate() == 10
+            once = await database.fetch_all("SELECT id, location_holder FROM spool ORDER BY id")
+
+            assert await database.migrate() == 10
+            assert await database.migrate() == 10
+
+            twice = await database.fetch_all("SELECT id, location_holder FROM spool ORDER BY id")
+            assert [tuple(row) for row in twice] == [tuple(row) for row in once]
+            versions = await database.fetch_all(
+                "SELECT version FROM schema_version ORDER BY version"
+            )
+            assert [row["version"] for row in versions] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        finally:
+            await database.close()
+
+    async def test_it_applies_cleanly_to_an_empty_database(self, tmp_path: Path) -> None:
+        database = await Database.open(tmp_path / "ledger.db", run_inline)
+        try:
+            assert await database.migrate() >= 10
         finally:
             await database.close()

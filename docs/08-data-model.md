@@ -25,6 +25,7 @@ CREATE TABLE spool (
     location_printer  TEXT,                      -- non-null only for AMS_SLOT (0007)
     location_ams      INTEGER,                   -- non-null only for AMS_SLOT (0007)
     location_slot     INTEGER,                   -- non-null only for AMS_SLOT
+    location_holder   INTEGER,                   -- non-null only for EXTERNAL_SPOOL (0010)
     tag_uid           TEXT,
     registered_at     TEXT    NOT NULL,
     discarded_at      TEXT,                      -- the only stored part of SpoolState
@@ -41,7 +42,7 @@ CREATE UNIQUE INDEX idx_spool_slot
     WHERE location_kind = 'AMS_SLOT' AND discarded_at IS NULL;
 
 CREATE UNIQUE INDEX idx_spool_external
-    ON spool(location_kind, location_printer)
+    ON spool(location_kind, location_printer, location_holder)
     WHERE location_kind = 'EXTERNAL_SPOOL' AND discarded_at IS NULL;
 ```
 
@@ -57,15 +58,25 @@ flow and is applied by the service layer ([05 §5.4](05-ha-integration.md)), in 
 `DEFAULT 0` here would turn that bug into a silent 250 g error inside every reconciliation —
 see [02 §2.8](02-domain-model.md).
 
-The two unique indexes enforce the physical facts that a tray holds one spool and the direct
+The two unique indexes enforce the physical facts that a tray holds one spool and a direct
 feed holds one spool. A cross-aggregate invariant that only lives in application code is one
 race condition away from being violated.
 
-**`idx_spool_external` covers the machine since migration 0008.** Each printer has exactly one
-direct feed, so an index unique on `location_kind` alone stated *the direct feed holds one
-spool ledger-wide* — which refused the second machine's reel to a ledger that could truthfully
-hold it. `location_printer` carries the machine for both mounted kinds, which is what lets one
-index per kind state *one spool per position* without either naming a column of its own.
+**`idx_spool_external` covers the machine since migration 0008 and the holder since 0010.**
+An index unique on `location_kind` alone stated *the direct feed holds one spool
+ledger-wide*, which refused the second machine's reel; one unique on the machine stated *the
+direct feed of a machine holds one spool*, which refused the second reel of a dual-nozzle
+printer that has two holders and can plainly hold both. Each widening states the invariant
+about the position the hardware actually has, and neither weakens it. `location_printer`
+carries the machine for both mounted kinds and `location_holder` carries which feed, which is
+what lets one index per kind state *one spool per position* without either naming a column of
+its own.
+
+**`location_holder` is non-null for exactly `EXTERNAL_SPOOL`**, the mirror of
+`location_ams`/`location_slot` being non-null for exactly `AMS_SLOT`. A column that means
+nothing for a location is null rather than zero, so a row can never half-describe a position;
+the pairing is enforced in the domain for the same reason `idx_spool_slot`'s is — SQLite's
+`ALTER TABLE` cannot carry a cross-column `CHECK`.
 
 **`idx_spool_slot` covers the whole tray reference since migration 0007**, not `location_slot`
 alone. Two printers both have a tray 1, and an index over the number alone would have refused
@@ -221,6 +232,12 @@ is recognised by a key no tray entry ever carried — every document written bef
 reads as trays, and the two kinds sit in one column side by side
 ([02 §2.3](02-domain-model.md)).
 
+**Which holder it is joins that entry in v2.9, and only when it is not the first**:
+`{"printer": …, "external": true, "holder": 2, "mg": …}`. The same trick one level down —
+absence *is* the first holder, so every entry already in the column goes on meaning what it
+has always meant and no migration is needed. Writing `holder: 1` everywhere would say nothing
+new and would put two spellings of one fact in one column for ever.
+
 `slot_resolution` is the attribution, and since migration 0004 it carries a `spool_id`. It was
 a `{slot: spool_id|null}` map, which was the one limitation that mattered: a spool that empties
 mid-print and is replaced in the same tray leaves that tray's single reported figure belonging
@@ -333,6 +350,23 @@ printer — and it was safe because a single-printer history cannot be ambiguous
 `print_job.printer` is simply left NULL, which is what the old rows say; the one row the old
 external index allowed takes `UNIDENTIFIED` on 0007's own terms, because there can be at most
 one and it belongs to the one printer this ledger has ever fed directly.
+
+`0010_both_holders_of_a_printer.sql` is the release that follows both holders of a machine
+rather than one. It adds `location_holder`, rebuilds `idx_spool_external` on the holder as
+well as the machine, and **backfills every existing external row to holder 1**.
+
+That backfill is the only one so far that states a fact rather than a floor, and it is
+permitted for the reason 0007's placeholder was: it is not a guess. The old index was unique
+on `(kind, printer)`, so a machine could hold at most one external row at a time; every row
+that exists is therefore that machine's *first* holder, whichever nozzle the user actually
+threaded it through. Nothing is written in that the old shape did not already imply — which
+is exactly why 0009 refused to backfill `reel_uid`, where the old shape implied nothing.
+
+**No JSON column is rewritten**, unlike 0007. A stored per-position entry names the direct
+feed with `"external": true`, and `holder` is written only when it is not the first (§8.2) —
+so every entry already in those columns goes on meaning the holder it has always meant, and
+a reader needs no version to know which. That is the same trick that let the direct feed
+arrive in v2.8 without a migration, applied one level down.
 
 **Adoption adopts only when discovery names exactly one machine, and there is no third option
 that is honest.** The placeholder means *the one machine this ledger has always talked to*.

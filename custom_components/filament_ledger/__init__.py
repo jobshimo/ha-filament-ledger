@@ -23,10 +23,15 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+    from .application.query import LedgerSnapshot
     from .domain.value.print_event import PrintEvent
     from .domain.value.tray_reading import TrayReading
+    from .infrastructure.ha.bambu_gateway import BambuLabGateway
     from .infrastructure.ha.runtime import LedgerConfigEntry
+    from .infrastructure.ha.tray_sync import TraySync
+    from .infrastructure.persistence.database import Database
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +44,85 @@ PLATFORMS: list[str] = ["sensor"]
 SCAN_INTERVAL = timedelta(minutes=15)
 
 
+async def _adopt_and_sync(
+    database: Database,
+    gateway: BambuLabGateway,
+    sync_trays: TraySync,
+    coordinator: DataUpdateCoordinator[LedgerSnapshot],
+) -> None:
+    """The two startup passes, re-run for a machine discovery has only just seen (v2.9).
+
+    Both are idempotent, which is why they can be re-run rather than conditionally applied:
+
+    - **Adoption**, because rows carrying the `UNIDENTIFIED` placeholder can only learn a
+      real serial once exactly one machine is discovered, and the machine that makes that
+      true may be the one that just appeared.
+    - **The reconciliation pass**, because the port's contract is that a printer does not
+      replay what happened while nothing was listening, and nothing was listening to this
+      machine until a moment ago.
+
+    **Guarded in two halves, and the split is the point.** Adoption failing must not take
+    the reconciliation with it: the pass is what mounts the spools this machine is actually
+    holding, and skipping it would leave the AMS view showing empty trays over a full
+    printer because a rename went wrong. The second guard covers the sync and the refresh
+    together, because a refresh nobody reaches is only ever a stale screen.
+
+    Nothing propagates out of here, for the reason `TraySync.execute` guards each tray:
+    this runs on a detached background task, and an exception on one is a traceback in the
+    log with no user-facing sentence and no remedy. **`asyncio.CancelledError` is a
+    `BaseException` and is deliberately not caught** — the entry cancels this task on
+    unload, and swallowing that would keep work running against a database
+    `LedgerRuntime.async_close` has already closed.
+    """
+    from .infrastructure.persistence.printer_adoption import adopt_unidentified_trays
+
+    try:
+        await adopt_unidentified_trays(database, gateway.printers)
+    except Exception:
+        LOGGER.exception(
+            "adopting the rows of a machine that just appeared failed; "
+            "the reconciliation pass below still runs"
+        )
+    try:
+        await sync_trays.execute()
+        await coordinator.async_request_refresh()
+    except Exception:
+        LOGGER.exception(
+            "reconciling the trays of a machine that just appeared failed; "
+            "the ledger keeps whatever it last recorded for them"
+        )
+
+
+def _schedule_adopt_and_sync(
+    hass: HomeAssistant,
+    entry: LedgerConfigEntry,
+    database: Database,
+    gateway: BambuLabGateway,
+    sync_trays: TraySync,
+    coordinator: DataUpdateCoordinator[LedgerSnapshot],
+) -> None:
+    """Put that pass on a task **the config entry owns**.
+
+    `entry.async_create_background_task` rather than `hass.async_create_background_task`,
+    and the difference is a closed database. Home Assistant cancels an entry's background
+    tasks when it unloads the entry; a task created on `hass` outlives it, and a machine
+    appearing at the moment of a reload would leave one holding this entry's database,
+    gateway and coordinator — running adoption against the connection
+    `LedgerRuntime.async_close` has just closed.
+
+    Scheduled rather than awaited because the caller is the gateway's debounced discovery
+    callback, which runs inside the event loop, and adoption plus a whole tray pass is
+    database work.
+    """
+    entry.async_create_background_task(
+        hass,
+        _adopt_and_sync(database, gateway, sync_trays, coordinator),
+        name="filament_ledger discovery changed",
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bool:
+    from homeassistant.core import callback
     from homeassistant.helpers.start import async_at_started
     from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -102,6 +185,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     settings = {**entry.data, **entry.options}
 
     database = await Database.open(hass.config.path(DATABASE_FILENAME), hass.async_add_executor_job)
+    # Registered the moment it exists: a setup that fails below never reaches
+    # `async_unload_entry`, only these callbacks, so without this every failed attempt — and
+    # every retry after it — would leave a connection open. On a clean unload the runtime
+    # has already closed it, and closing a closed connection is a no-op.
+    entry.async_on_unload(database.close)
     version = await database.migrate()
     LOGGER.debug("database at schema version %s", version)
 
@@ -284,8 +372,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         # snapshot as the spools — so a job event is a mutation path too.
         await coordinator.async_request_refresh()
 
+    @callback
+    def _printers_changed() -> None:
+        """A machine appeared or went away after this entry loaded (v2.9).
+
+        The work itself is `_adopt_and_sync` and the task it runs on is
+        `_schedule_adopt_and_sync`; both are module-level so each can be driven on its own
+        by a test, which a closure over eight locals cannot be.
+        """
+        _schedule_adopt_and_sync(hass, entry, database, gateway, sync_trays, coordinator)
+
     gateway.subscribe(_tray_changed)
     gateway.subscribe_jobs(_print_event)
+    entry.async_on_unload(gateway.subscribe_discovery(_printers_changed))
     # The safety net for setup-failure paths: an exception below this line still detaches.
     # A clean unload detaches earlier — see `async_unload_entry` — and `detach` is
     # idempotent, so this registration running afterwards is a no-op.

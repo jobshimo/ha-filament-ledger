@@ -1,6 +1,6 @@
 # ADR-0006 — The panel is a plain custom element, not a built bundle
 
-**Status:** Accepted
+**Status:** Accepted — amended by [ADR-0010](0010-the-panel-has-tests.md) (the panel has tests)
 **Date:** 2026-08-02
 **Amends:** [11 — Development](../11-development.md) §11.6
 

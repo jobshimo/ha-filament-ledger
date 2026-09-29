@@ -38,22 +38,37 @@ from custom_components.filament_ledger.infrastructure.persistence.spool_reposito
 from ..application.conftest import A_PRINTER, ANOTHER_PRINTER, a_tray
 from .conftest import Harness, a_spool, as_hass
 from .test_bambu_gateway import (
+    ACTIVE_TRAY,
     CURRENT_LAYER,
     GCODE_FILE,
+    HOLDER_1,
+    HOLDER_1_DEVICE,
+    HOLDER_2,
+    HOLDER_2_DEVICE,
     PRINT_ERROR,
     PROGRESS,
     REGISTRY_ROWS,
     REMAINING_TIME,
     SECOND_STATUS,
     SECOND_TRAYS,
+    SECOND_UNIT_DEVICE,
+    SECOND_UNIT_TRAYS,
     SECOND_WEIGHT,
     STATUS,
     TOTAL_LAYERS,
+    TRAY_1,
     TRAY_1_TAG,
     TRAY_ATTRIBUTES,
+    ams_device,
+    both_holder_rows,
+    holder_device,
+    holder_state,
+    plant_devices,
     plant_registry,
     print_sensor_state,
+    printer_device,
     second_printer_rows,
+    second_unit_rows,
     tray_state,
 )
 from .test_websocket_api import WsClient
@@ -114,7 +129,7 @@ class TestDormant:
         """
         assert await ws.result_dict(PRINTER_STATE) == {
             "dormant": True,
-            "tracking": {"printers": [], "ams": 1, "unnamed": 0},
+            "tracking": {"printers": [], "unnamed": 0},
         }
 
     async def test_ha_bambulab_absent_reports_dormant(self, ws: WsClient, harness: Harness) -> None:
@@ -123,7 +138,7 @@ class TestDormant:
 
         assert await ws.result_dict(PRINTER_STATE) == {
             "dormant": True,
-            "tracking": {"printers": [], "ams": 1, "unnamed": 0},
+            "tracking": {"printers": [], "unnamed": 0},
         }
 
     async def test_a_printer_without_an_ams_is_not_dormant(
@@ -175,6 +190,7 @@ class TestPopulated:
         assert set(payload) == {"dormant", "tracking", "machines", "observed_print_time"}
         assert set(machine(payload)) == {
             "printer",
+            "printer_name",
             "status",
             "progress_pct",
             "current_layer",
@@ -185,26 +201,61 @@ class TestPopulated:
             "error",
             "online",
             "connection_mode",
-            "active_tray",
+            "active_feed",
+            "ams_units",
+            "holders",
             "trays",
         }
 
-    async def test_the_unverified_sensors_serialise_as_null_never_as_a_guess(
+    async def test_a_sensor_that_said_nothing_serialises_as_null_never_as_a_guess(
         self, ws: WsClient
     ) -> None:
-        """Online, connection mode and active tray are **not discovered yet**.
+        """The captured instance has no state for these, so each reader answers `None`.
 
-        Their upstream `translation_key`s have to be read off a real instance before the
-        constant is frozen (docs/13 — Traps): discovery matches on the key, so a guessed
-        one discovers nothing and would report "the printer never said" forever without
-        anybody suspecting it was our typo. Null is the honest answer in the meantime, and
-        it is the gateway's standing policy for an undiscovered sensor.
+        Null is the gateway's standing policy for a sensor that is absent or unavailable,
+        and the panel renders it as a dash: a missing figure is not a figure of zero, and
+        it is not a claim about the printer either.
         """
         payload = await ws.result_dict(PRINTER_STATE)
 
         assert machine(payload)["online"] is None
         assert machine(payload)["connection_mode"] is None
-        assert machine(payload)["active_tray"] is None
+        assert machine(payload)["active_feed"] is None
+        # No `printer_name` sensor in the frozen capture, and no device registry planted
+        # over it: neither source said, so the panel shows the serial alone.
+        assert machine(payload)["printer_name"] is None
+
+    async def test_the_active_position_is_read_off_the_attributes(
+        self, ws: WsClient, harness: Harness
+    ) -> None:
+        """The field that had been a dash for every user since it was added: the sensor's
+        state is a filament name and the position is in its attributes (docs/12,
+        2026-09-23). The A1 printing from its holder reported exactly this."""
+        harness.hass.states.by_entity_id[ACTIVE_TRAY] = State(
+            ACTIVE_TRAY, "Generic PETG", {"ams_index": 255, "tray_index": 0}
+        )
+
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert machine(payload)["active_feed"] == {
+            "printer": A_PRINTER.value,
+            "feed": "external",
+            "ams": None,
+            "slot": None,
+            "holder": 1,
+        }
+
+    async def test_a_machine_with_no_holder_entity_reports_none(self, ws: WsClient) -> None:
+        """The captured A1 published no `external_spool` sensor, so nothing is claimed.
+
+        An empty list is *the printer said nothing about a holder*, not *this machine has
+        none*: the AMS view floors its own card list at the first holder, because a
+        physical holder exists whether or not upstream describes it.
+        """
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert machine(payload)["holders"] == []
+        assert machine(payload)["ams_units"] == [1]
 
     async def test_the_error_is_the_binary_state_with_no_invented_code(self, ws: WsClient) -> None:
         """The captured sensor reads `off` and exposes no `code` attribute.
@@ -483,7 +534,7 @@ class TestTracking:
 
         tracking = cast("dict[str, object]", (await ws.result_dict(PRINTER_STATE))["tracking"])
 
-        assert tracking == {"printers": ["00000000TESTSER"], "ams": 1, "unnamed": 0}
+        assert tracking == {"printers": ["00000000TESTSER"], "unnamed": 0}
 
     async def test_a_machine_with_no_readable_serial_is_counted_not_followed(
         self, ws: WsClient, harness: Harness
@@ -504,7 +555,7 @@ class TestTracking:
 
         tracking = cast("dict[str, object]", (await ws.result_dict(PRINTER_STATE))["tracking"])
 
-        assert tracking == {"printers": ["00000000TESTSER"], "ams": 1, "unnamed": 1}
+        assert tracking == {"printers": ["00000000TESTSER"], "unnamed": 1}
 
 
 class TestTwoMachines:
@@ -530,7 +581,6 @@ class TestTwoMachines:
 
         assert payload["tracking"] == {
             "printers": [ANOTHER_PRINTER.value, A_PRINTER.value],
-            "ams": 1,
             "unnamed": 0,
         }
 
@@ -569,6 +619,67 @@ class TestTwoMachines:
         payload = await ws.result_dict(PRINTER_STATE)
 
         assert cast("dict[str, object]", payload["observed_print_time"])["total_minutes"] == 90
+
+
+class TestADualNozzleMachine:
+    """The X2D shape (docs/12, 2026-09-23): two AMS units, two holders, one payload.
+
+    Every figure here comes off the real readers, so this is the tab's whole answer to the
+    machine the release exists for — a block per unit and a card per holder, each stating
+    which one it is.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _wired(self, harness: Harness) -> None:
+        # Devices first: `wire` builds the gateway, and discovery reads both registries
+        # once at construction.
+        plant_devices(
+            harness.hass,
+            [
+                printer_device(),
+                ams_device(),
+                ams_device(
+                    device_id=SECOND_UNIT_DEVICE,
+                    ams_serial="00000000ZZZZAMS",
+                    name="A1_00000000TESTSER_AMS_2",
+                ),
+                holder_device(HOLDER_1_DEVICE),
+                holder_device(HOLDER_2_DEVICE, suffix="2"),
+            ],
+        )
+        wire(harness, rows=REGISTRY_ROWS + second_unit_rows() + both_holder_rows())
+        for entity_id in SECOND_UNIT_TRAYS:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(
+                entity_id,
+                {**TRAY_ATTRIBUTES[TRAY_1], "empty": True, "tag_uid": None},
+            )
+        harness.hass.states.by_entity_id[HOLDER_1] = holder_state(
+            HOLDER_1, {"empty": True, "name": "?"}
+        )
+        harness.hass.states.by_entity_id[HOLDER_2] = holder_state(
+            HOLDER_2, {"empty": False, "name": "Generic PETG"}
+        )
+
+    async def test_both_units_are_named_and_both_units_trays_travel(self, ws: WsClient) -> None:
+        payload = await ws.result_dict(PRINTER_STATE)
+        trays = cast("list[dict[str, object]]", machine(payload)["trays"])
+
+        assert machine(payload)["ams_units"] == [1, 2]
+        assert {(tray["ams"], tray["slot"]) for tray in trays} == {
+            (ams, slot) for ams in (1, 2) for slot in (1, 2, 3, 4)
+        }
+
+    async def test_each_holder_travels_with_what_the_printer_says_about_it(
+        self, ws: WsClient
+    ) -> None:
+        """The second holder's card shows a spool is there; the first one's shows it is
+        free. Both facts come from the machine rather than from the ledger."""
+        payload = await ws.result_dict(PRINTER_STATE)
+
+        assert machine(payload)["holders"] == [
+            {"holder": 1, "empty": True, "name_hint": None},
+            {"holder": 2, "empty": False, "name_hint": "Generic PETG"},
+        ]
 
 
 async def _ledger_snapshot(harness: Harness) -> list[tuple[str, int, str]]:

@@ -17,7 +17,7 @@ from typing import Any, Final
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_track_state_change_event
@@ -45,6 +45,8 @@ from ...const import (
     DEFAULT_CORE_WEIGHT_G,
     DEFAULT_OPENING_WEIGHT_G,
     DOMAIN,
+    MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
 )
 from ...domain.error import DomainError, InvalidValueError
 from ...domain.model.pending_review import ReviewCharge
@@ -52,12 +54,16 @@ from ...domain.port.repositories import MovementFilter
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
+    FIRST_HOLDER,
     MAX_AMS_SLOT,
+    MAX_EXTERNAL_HOLDER,
     MIN_AMS_INDEX,
     MIN_AMS_SLOT,
+    MIN_EXTERNAL_HOLDER,
     AmsIndex,
     ExternalFeed,
     Feed,
+    HolderIndex,
     MovementId,
     PrinterSerial,
     ReviewId,
@@ -68,7 +74,8 @@ from ...domain.value.identifiers import (
     TrayRef,
 )
 from ...domain.value.material import Material, MaterialKind
-from .bambu_gateway import TRACKED_AMS
+from .bambu_discovery import FIRST_AMS
+from .bambu_gateway import BambuLabGateway
 from .event_bridge import LEDGER_EVENTS
 from .printer_state import PrinterSnapshot
 from .runtime import LedgerConfigEntry, LedgerRuntime, loaded_entries, runtimes
@@ -85,6 +92,10 @@ from .serialisers import (
 )
 from .tray_sync import TraySyncResult
 
+#: Free text is bounded at the schema (see `MAX_NAME_LENGTH`): a name, and a note or reason.
+_NAME = vol.All(str, vol.Length(max=MAX_NAME_LENGTH))
+_NOTE = vol.All(str, vol.Length(max=MAX_NOTE_LENGTH))
+
 #: A tray as it crosses the wire — the three parts of `TrayRef`, bounded here as well as
 #: in the domain for the reason every adapter input is: the value objects raise on garbage,
 #: and an unvalidated adapter turns a typo into a stack trace instead of a message.
@@ -99,9 +110,13 @@ from .tray_sync import TraySyncResult
 #:
 #: **`feed` names the kind of position** (docs/05 §5.4, v2.8): `ams` — or absent, which is
 #: every payload written before the direct feed had a key — carries the tray's three parts;
-#: `external` names the printer's own spool holder and carries the machine alone, with the
-#: tray half absent or null. The panel sends nulls because it renders both kinds off one
-#: shape; `_feed` is where the two are told apart.
+#: `external` names the printer's own spool holder and carries the machine and which holder,
+#: with the tray half absent or null. The panel sends nulls because it renders both kinds off
+#: one shape; `_feed` is where the two are told apart.
+#:
+#: **`holder` is optional and absent means the first** (v2.9), on the same terms `ams` and
+#: `printer` are: every payload written before a machine could have two holders meant the
+#: one it had, and bounded here so a typo is a message rather than a stack trace.
 _TRAY = vol.Schema(
     {
         vol.Optional("printer"): vol.Any(str, None),
@@ -109,6 +124,13 @@ _TRAY = vol.Schema(
         vol.Optional("ams"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX))),
         vol.Optional("slot"): vol.Any(
             None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
+        ),
+        vol.Optional("holder"): vol.Any(
+            None,
+            vol.All(
+                vol.Coerce(int),
+                vol.Range(min=MIN_EXTERNAL_HOLDER, max=MAX_EXTERNAL_HOLDER),
+            ),
         ),
     }
 )
@@ -188,7 +210,7 @@ def _feed(runtime: LedgerRuntime, payload: dict[str, Any]) -> Feed:
     """
     printer = _printer(runtime, payload)
     if payload.get("feed") == "external":
-        return ExternalFeed(printer)
+        return ExternalFeed(printer, _holder(payload))
     slot = payload.get("slot")
     if slot is None:
         msg = "a tray needs a slot; the external spool is named by feed = external"
@@ -196,9 +218,19 @@ def _feed(runtime: LedgerRuntime, payload: dict[str, Any]) -> Feed:
     ams = payload.get("ams")
     return TrayRef(
         printer=printer,
-        ams=AmsIndex(int(ams if ams is not None else TRACKED_AMS.value)),
+        ams=AmsIndex(int(ams if ams is not None else FIRST_AMS.value)),
         slot=SlotIndex(int(slot)),
     )
+
+
+def _holder(payload: dict[str, Any]) -> HolderIndex:
+    """Which direct feed a payload names, or the first when it names none.
+
+    Absent reads as the first for the reason an absent `ams` reads as AMS 1: every caller
+    written before a machine could have two holders meant the one it had.
+    """
+    holder = payload.get("holder")
+    return HolderIndex(int(holder)) if holder is not None else FIRST_HOLDER
 
 
 def _by_tray[T](
@@ -424,9 +456,9 @@ async def handle_stock(
         vol.Required("colour"): str,
         vol.Required("opening_weight_g"): vol.Coerce(float),
         vol.Optional("core_weight_g"): vol.Coerce(float),
-        vol.Optional("material_other"): str,
-        vol.Optional("vendor"): vol.Any(str, None),
-        vol.Optional("label"): vol.Any(str, None),
+        vol.Optional("material_other"): _NAME,
+        vol.Optional("vendor"): vol.Any(_NAME, None),
+        vol.Optional("label"): vol.Any(_NAME, None),
         vol.Optional("tag_uid"): vol.Any(str, None),
         # Who attached the tag. The register form omits it and gets MANUAL; only the
         # register-from-sync path says DETECTED, because the serial it forwards came off
@@ -468,11 +500,11 @@ async def handle_create(
         # Metadata only — **never the balance**. The schema is the surface of
         # `EditSpoolDetails`, which replaces fields and cannot clear them: absent and
         # null both mean "leave unchanged".
-        vol.Optional("label"): vol.Any(str, None),
-        vol.Optional("vendor"): vol.Any(str, None),
+        vol.Optional("label"): vol.Any(_NAME, None),
+        vol.Optional("vendor"): vol.Any(_NAME, None),
         vol.Optional("colour"): str,
         vol.Optional("material"): vol.In([kind.value for kind in MaterialKind]),
-        vol.Optional("material_other"): str,
+        vol.Optional("material_other"): _NAME,
         vol.Optional("core_weight_g"): vol.Coerce(float),
         # **The tag deviates from the rule above, deliberately.** Every other field here
         # reads null as "leave unchanged"; the tag is the only clearable one, so it needs
@@ -516,7 +548,7 @@ async def handle_update(
         vol.Required("spool_id"): str,
         vol.Required("measured_g"): vol.Coerce(float),
         vol.Optional("includes_core"): bool,
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -548,7 +580,7 @@ async def handle_reconcile(
         vol.Required("type"): f"{DOMAIN}/spools/discard",
         vol.Required("spool_id"): str,
         vol.Required("mode"): vol.In([m.value for m in DiscardMode]),
-        vol.Required("reason"): str,
+        vol.Required("reason"): _NOTE,
         vol.Optional("amount_g"): vol.Coerce(float),
     }
 )
@@ -576,7 +608,7 @@ async def handle_discard(
         vol.Required("type"): f"{DOMAIN}/spools/adjust",
         vol.Required("spool_id"): str,
         vol.Required("amount_g"): vol.Coerce(float),
-        vol.Required("reason"): str,
+        vol.Required("reason"): _NOTE,
     }
 )
 @websocket_api.async_response
@@ -607,11 +639,18 @@ async def handle_adjust(
                 # while there is one. `external: true` names the printer's direct feed
                 # instead of a tray, and then the slot is not sent at all: the holder
                 # beside the AMS has none. One or the other, never neither.
+                #
+                # `holder` says which direct feed on a machine that has two, and absent
+                # means the first — the same terms `ams` has had since v2.0.
                 vol.Optional("printer"): vol.Any(str, None),
                 vol.Optional("external"): bool,
                 vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
                 vol.Optional("slot"): vol.All(
                     vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+                ),
+                vol.Optional("holder"): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=MIN_EXTERNAL_HOLDER, max=MAX_EXTERNAL_HOLDER),
                 ),
             }
         ),
@@ -626,7 +665,9 @@ async def handle_mount(
     runtime = _runtime(hass)
     spool_id = SpoolId(msg["spool_id"])
     if msg.get("external"):
-        await runtime.use_cases.mount_spool_externally.execute(spool_id, _printer(runtime, msg))
+        await runtime.use_cases.mount_spool_externally.execute(
+            spool_id, _printer(runtime, msg), _holder(msg)
+        )
     else:
         feed = _feed(runtime, msg)
         if not isinstance(feed, TrayRef):  # pragma: no cover - the schema has no feed key here
@@ -678,7 +719,7 @@ async def handle_reviews_list(
         ],
         vol.Optional("assign"): [_position({vol.Required("spool_id"): str})],
         vol.Optional("charges"): [_position({vol.Required("charges"): [_CHARGE]})],
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -719,7 +760,7 @@ async def handle_reviews_approve(
     {
         vol.Required("type"): f"{DOMAIN}/reviews/dismiss",
         vol.Required("review_id"): str,
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -812,7 +853,7 @@ async def handle_movements(
         # Optional, unlike UC-10's mandatory reason, and the difference is principled: a
         # reassignment explains itself structurally — the link names the entry it corrects
         # and the pair names both spools (docs/14 §14.3).
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -844,7 +885,7 @@ async def handle_movements_reassign(
     {
         vol.Required("type"): f"{DOMAIN}/movements/void",
         vol.Required("movement_id"): str,
-        vol.Optional("reason"): vol.Any(str, None),
+        vol.Optional("reason"): vol.Any(_NOTE, None),
         # **Must be explicitly true** for the no-return branch. The server refuses a
         # restitution void on a retired spool rather than silently downgrading it: a
         # silent downgrade is a gram count that changed meaning without the user
@@ -1190,11 +1231,39 @@ async def handle_subscribe(
         hass.async_create_task(printer.async_call())
 
     unsubscribes = [hass.bus.async_listen(name, _ledger_changed) for name in sorted(LEDGER_EVENTS)]
-    if entity_ids:
-        unsubscribes.append(async_track_state_change_event(hass, entity_ids, _printer_changed))
+    watching: CALLBACK_TYPE | None = (
+        async_track_state_change_event(hass, entity_ids, _printer_changed) if entity_ids else None
+    )
+
+    @callback
+    def _discovery_changed() -> None:
+        """A machine appeared or went away, so watch the entities that exist now.
+
+        **The tracker takes its entity list at registration**, so a subscription opened
+        while the gateway was dormant would go on watching nothing for as long as the panel
+        stayed open — which is exactly the window late binding exists to close. Re-arming
+        here and pushing once is what makes a printer that finishes setting up after the
+        panel was opened appear in it without a reload.
+        """
+        nonlocal watching
+        if watching is not None:
+            watching()
+            watching = None
+        current = sorted(_printer_entity_ids(hass))
+        if current:
+            watching = async_track_state_change_event(hass, current, _printer_changed)
+        hass.async_create_task(printer.async_call())
+
+    gateway = _printer_gateway(hass)
+    if gateway is not None:
+        unsubscribes.append(gateway.subscribe_discovery(_discovery_changed))
 
     @callback
     def _unsubscribe() -> None:
+        nonlocal watching
+        if watching is not None:
+            watching()
+            watching = None
         for unsubscribe in unsubscribes:
             unsubscribe()
 
@@ -1210,7 +1279,14 @@ def _printer_entity_ids(hass: HomeAssistant) -> frozenset[str]:
 
     Empty when no printer was discovered, which makes the subscription correctly silent
     rather than absent: the panel still receives ledger pushes, and the Printer tab still
-    renders its honest dormant state.
+    renders its honest dormant state — until discovery says otherwise, which is what
+    `subscribe_discovery` is for.
     """
+    gateway = _printer_gateway(hass)
+    return gateway.watched_entity_ids if gateway is not None else frozenset()
+
+
+def _printer_gateway(hass: HomeAssistant) -> BambuLabGateway | None:
+    """The one gateway startup wired, or `None` on a runtime with no printer at all."""
     printer = _runtime(hass).printer
-    return printer.gateway.watched_entity_ids if printer is not None else frozenset()
+    return printer.gateway if printer is not None else None

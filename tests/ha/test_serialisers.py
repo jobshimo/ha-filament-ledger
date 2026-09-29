@@ -26,15 +26,27 @@ from custom_components.filament_ledger.application.query import (
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    FIRST_HOLDER,
+    AmsIndex,
+    ExternalFeed,
+    HolderIndex,
     PrintJobId,
     TagUid,
 )
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
+from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import JobStatus
+from custom_components.filament_ledger.infrastructure.ha.printer_state import (
+    HolderSnapshot,
+    MachineSnapshot,
+    PrinterSnapshot,
+    PrinterTracking,
+)
 from custom_components.filament_ledger.infrastructure.ha.serialisers import (
     _observed_print_time,
     _print_time,
     grams,
     history_line,
+    printer_state,
     spool_detail,
     spool_summary,
     statistics_result,
@@ -43,7 +55,7 @@ from custom_components.filament_ledger.infrastructure.ha.serialisers import (
     whole_grams,
 )
 
-from ..application.conftest import EPOCH, a_tray
+from ..application.conftest import A_PRINTER, EPOCH, a_tray
 from .conftest import Harness, a_spool
 
 
@@ -126,6 +138,9 @@ class TestSpoolSummaryShape:
                 "printer": None,
                 "ams": None,
                 "slot": None,
+                # Non-null for exactly `EXTERNAL_SPOOL` (v2.9): the holder is half of what
+                # identifies a direct feed, and nothing else has one.
+                "holder": None,
                 "label": "Storage",
             },
             "tag_uid": "A1B2C3D4",
@@ -269,3 +284,127 @@ class TestStatisticsRounding:
     def test_a_ledger_that_has_timed_nothing_serialises_as_null(self) -> None:
         """Zero hours would claim a machine has never printed; null claims nothing."""
         assert _observed_print_time(None) is None
+
+
+def a_machine(**overrides: object) -> MachineSnapshot:
+    """One machine's glance with nothing reported, for the fields a test means to set."""
+    settings: dict[str, object] = {
+        "printer": A_PRINTER,
+        "job": JobStatus(
+            status=None,
+            name="badge.gcode.3mf",
+            current_layer=None,
+            total_layers=None,
+            progress=None,
+            error=None,
+            remaining_minutes=None,
+        ),
+    } | overrides
+    return MachineSnapshot(**settings)  # type: ignore[arg-type]
+
+
+class TestThePrinterGlanceOnTheWire:
+    """The Printer tab's payload, where the positions a machine has are named.
+
+    What is pinned here is the shape v2.9 changed: a machine states its own AMS units and
+    its own holders, the active position travels as a position rather than as an integer,
+    and the single ledger-wide AMS ordinal is gone from `tracking`.
+    """
+
+    def payload(self, *machines: MachineSnapshot) -> dict[str, object]:
+        return printer_state(
+            PrinterSnapshot(
+                dormant=False,
+                tracking=PrinterTracking(printers=(A_PRINTER,)),
+                machines=list(machines),
+            )
+        )
+
+    def test_tracking_no_longer_carries_one_ams_ordinal_for_the_whole_ledger(self) -> None:
+        """It named the single unit this ledger followed. Each machine now states its own,
+        and one number beside the printer list could only have contradicted them."""
+        tracking = cast("dict[str, object]", self.payload(a_machine())["tracking"])
+
+        assert set(tracking) == {"printers", "unnamed"}
+
+    def test_a_machine_states_every_unit_and_every_holder_it_has(self) -> None:
+        machine = cast(
+            "list[dict[str, object]]",
+            self.payload(
+                a_machine(
+                    ams_units=(AmsIndex(1), AmsIndex(2)),
+                    holders=[
+                        HolderSnapshot(holder=FIRST_HOLDER, empty=True),
+                        HolderSnapshot(
+                            holder=HolderIndex(2), empty=False, name_hint="Generic PETG"
+                        ),
+                    ],
+                )
+            )["machines"],
+        )[0]
+
+        assert machine["ams_units"] == [1, 2]
+        assert machine["holders"] == [
+            {"holder": 1, "empty": True, "name_hint": None},
+            {"holder": 2, "empty": False, "name_hint": "Generic PETG"},
+        ]
+
+    def test_a_holder_the_printer_said_nothing_about_travels_as_null_not_as_empty(
+        self,
+    ) -> None:
+        """Three-way, like every reading here: *no spool* and *no reading* are different
+        facts, and a card that rendered them identically would say a reel had gone because
+        a sensor blinked."""
+        machine = cast(
+            "list[dict[str, object]]",
+            self.payload(a_machine(holders=[HolderSnapshot(holder=FIRST_HOLDER)]))["machines"],
+        )[0]
+
+        assert machine["holders"] == [{"holder": 1, "empty": None, "name_hint": None}]
+
+    def test_the_active_position_is_a_tray_in_full(self) -> None:
+        machine = cast(
+            "list[dict[str, object]]",
+            self.payload(a_machine(active_feed=a_tray(2, ams=2)))["machines"],
+        )[0]
+
+        assert machine["active_feed"] == {
+            "printer": A_PRINTER.value,
+            "feed": "ams",
+            "ams": 2,
+            "slot": 2,
+            "holder": None,
+        }
+
+    def test_the_active_position_names_which_holder(self) -> None:
+        """A dual-nozzle machine has two, and *the external spool* named both until v2.9."""
+        machine = cast(
+            "list[dict[str, object]]",
+            self.payload(a_machine(active_feed=ExternalFeed(A_PRINTER, HolderIndex(2))))[
+                "machines"
+            ],
+        )[0]
+
+        assert machine["active_feed"] == {
+            "printer": A_PRINTER.value,
+            "feed": "external",
+            "ams": None,
+            "slot": None,
+            "holder": 2,
+        }
+
+    def test_a_machine_that_said_nothing_has_no_active_position(self) -> None:
+        machine = cast("list[dict[str, object]]", self.payload(a_machine())["machines"])[0]
+
+        assert machine["active_feed"] is None
+
+    def test_a_machine_travels_with_the_name_it_answers_to(self) -> None:
+        """Beside the serial, never instead of it: the serial is the identity every row,
+        tray reference and mount is keyed by."""
+        machine = cast(
+            "list[dict[str, object]]",
+            self.payload(a_machine(printer_name="Workshop A1"))["machines"],
+        )[0]
+
+        assert machine["printer"] == A_PRINTER.value
+        assert machine["printer_name"] == "Workshop A1"
