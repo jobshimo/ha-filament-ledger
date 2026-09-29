@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import "./harness.mjs";
 
 const WWW = new URL("../../custom_components/filament_ledger/www/", import.meta.url);
-const { fill, holderWord, hms, round1, signed, typedGrams } = await import(
+const { UNIDENTIFIED_PRINTER, fill, grams, holderWord, hms, round1, signed, typedGrams } = await import(
   new URL("panel/format.js", WWW).href
 );
 const { spoolRing } = await import(new URL("panel/spool-ring.js", WWW).href);
@@ -25,6 +25,15 @@ describe("typed gram fields", () => {
 describe("figures", () => {
   it("rounds to the tenth a movement is known to", () => {
     assert.equal(round1(300 - 10 - 289.9), 0.1);
+  });
+
+  it("writes a whole figure with its unit", () => {
+    // Below a thousand, so no grouping separator makes the result depend on the locale.
+    assert.equal(grams(640), "640 g");
+  });
+
+  it("names the unidentified printer exactly as the backend does", () => {
+    assert.equal(UNIDENTIFIED_PRINTER, "UNIDENTIFIED");
   });
 
   it("signs a change with a real minus sign", () => {

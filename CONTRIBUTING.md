@@ -96,7 +96,7 @@ and nine ADRs — is where behaviour is decided; the code is the consequence.
 
 [ADR-0006](docs/adr/0006-vanilla-panel.md) chose a vanilla-JavaScript panel with no framework, no
 bundler and no build step. [ADR-0010](docs/adr/0010-the-panel-has-tests.md) added tests on Node's
-built-in runner — no `package.json`, no dependencies. Run them with Node 22 or later:
+built-in runner — no `package.json`, no dependencies. Run them with Node 24, the version CI uses:
 
 ```bash
 node --test "tests/panel/**/*.test.mjs"

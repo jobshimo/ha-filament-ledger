@@ -24,13 +24,19 @@ describe("the inventory", () => {
     assert.match(text, /640 g/);
   });
 
-  it("leaves a finished spool to the Finished tab", () => {
+  it("leaves a finished spool to the Finished tab and keeps the rest", () => {
     const panel = panelWith({
-      _spools: [aSpool({ id: "empty", name: "Used Up", state: "DEPLETED", percentage: 0 })],
-      _stock: { total_g: 0, spool_count: 1, needs_weighing: 0 },
+      _spools: [
+        aSpool({ id: "empty", name: "Used Up", state: "DEPLETED", percentage: 0 }),
+        aSpool({ id: "live", name: "Still Printing" }),
+      ],
+      _stock: { total_g: 640, spool_count: 2, needs_weighing: 0 },
     });
 
-    assert.doesNotMatch(visibleText(panel.inventoryView()), /Used Up/);
+    const text = visibleText(panel.inventoryView());
+
+    assert.doesNotMatch(text, /Used Up/);
+    assert.match(text, /Still Printing/);
   });
 
   it("escapes what the user typed, so a label cannot inject markup", () => {
@@ -58,8 +64,8 @@ describe("the inventory", () => {
   it("speaks Spanish when the language is Spanish", () => {
     const html = panelWith({ _spools: [] }, "es").inventoryView();
 
+    assert.match(visibleText(html), /Todavía no hay bobinas/);
     assert.doesNotMatch(visibleText(html), /No spools yet/i);
-    assert.match(html, /data-action="dialog" data-id="new-spool"/);
   });
 });
 
@@ -70,7 +76,7 @@ describe("the statistics", () => {
     const html = panel.statsView();
 
     assert.match(visibleText(html), /Loading/);
-    assert.equal(html.match(/data-action="stats-period"/g).length, 3);
+    assert.equal((html.match(/data-action="stats-period"/g) ?? []).length, 3);
     assert.match(html, /data-id="30d"\s+disabled/);
   });
 
