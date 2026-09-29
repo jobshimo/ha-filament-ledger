@@ -35,6 +35,12 @@ DEFAULT_AUTO_REGISTER_ON_DETECT: Final = True
 
 DATABASE_FILENAME: Final = "filament_ledger.db"
 
+# Free text arriving from outside — the panel's websocket and the services — is bounded at
+# the schema. Not a business rule: a spool name has no meaningful maximum. It keeps any
+# authenticated caller from writing megabytes into rows every snapshot then serialises.
+MAX_NAME_LENGTH: Final = 200
+MAX_NOTE_LENGTH: Final = 2000
+
 # Panel
 PANEL_URL: Final = "filament-ledger"
 PANEL_TITLE: Final = "Filament"

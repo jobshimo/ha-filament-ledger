@@ -185,6 +185,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     settings = {**entry.data, **entry.options}
 
     database = await Database.open(hass.config.path(DATABASE_FILENAME), hass.async_add_executor_job)
+    # Registered the moment it exists: a setup that fails below never reaches
+    # `async_unload_entry`, only these callbacks, so without this every failed attempt — and
+    # every retry after it — would leave a connection open. On a clean unload the runtime
+    # has already closed it, and closing a closed connection is a no-op.
+    entry.async_on_unload(database.close)
     version = await database.migrate()
     LOGGER.debug("database at schema version %s", version)
 

@@ -1440,7 +1440,7 @@ class TestCurrentTrays:
         ],
     )
     async def test_an_unusable_weight_is_dropped_never_fabricated(self, unusable: object) -> None:
-        """The reading stays whole and the figure goes missing: `_read` is total by
+        """The reading stays whole and the figure goes missing: `read_tray` is total by
         construction, and the domain refuses a non-positive opening weight anyway."""
         hass = bambu_hass()
         hass.states.by_entity_id[TRAY_2] = tray_state(
@@ -1837,14 +1837,15 @@ class TestJobEventTranslation:
             pytest.param(float("-inf"), id="negative-infinity"),
             pytest.param(1e30, id="a-figure-too-large-to-quantise"),
             pytest.param(float("nan"), id="not-a-number"),
+            pytest.param("1e999999", id="text-that-overflows-when-scaled"),
         ],
     )
     async def test_a_figure_no_quantity_can_hold_is_skipped_not_raised(
-        self, unusable: float
+        self, unusable: float | str
     ) -> None:
-        """All four are floats, so a type check waves them through and `Grams.of` raises
-        — `InvalidOperation` for the first three, `ValueError` for the last. This runs on
-        every republish now, from a callback that promised the event loop it never
+        """Every one passes the type check — four floats and a decimal string, which
+        upstream writes too — and `Grams.of` raises `InvalidValueError` for each. This runs
+        on every republish now, from a callback that promised the event loop it never
         raises, so the guard is the difference between a skipped key and an exception
         unwinding the bus dispatch."""
         hass = bambu_hass()

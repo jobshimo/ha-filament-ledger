@@ -95,8 +95,15 @@ and nine ADRs — is where behaviour is decided; the code is the consequence.
 ## Panel changes need a hand-verification checklist
 
 [ADR-0006](docs/adr/0006-vanilla-panel.md) chose a vanilla-JavaScript panel with no framework, no
-bundler and no build step — which also means **no JS test harness**. That is an accepted cost,
-and it comes with an obligation.
+bundler and no build step. [ADR-0010](docs/adr/0010-the-panel-has-tests.md) added tests on Node's
+built-in runner — no `package.json`, no dependencies. Run them with Node 24, the version CI uses:
+
+```bash
+node --test "tests/panel/**/*.test.mjs"
+```
+
+They check what a view shows, escapes and offers. They do not see layout, dialogs or a phone
+screen, so the checklist below still applies.
 
 Panel logic that contains *rules* belongs server-side, where it is testable: visibility filtering
 in the read models, voidability in the domain, amounts computed by use cases. What is left in the
@@ -113,7 +120,7 @@ what you changed, and cover at minimum:
   failed part in their hand;
 - every interpolation of user data goes through `esc()` (reasons, notes, labels, job names).
 
-This list is the panel's test suite. Skipping it is skipping the tests.
+This list is the half of the panel's tests a machine cannot run. Skipping it is skipping them.
 
 ## Commits and pull requests
 

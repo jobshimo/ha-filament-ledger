@@ -8,6 +8,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from custom_components.filament_ledger.domain.error import InvalidValueError
 from custom_components.filament_ledger.domain.value.grams import Grams, total
 
 
@@ -46,6 +47,30 @@ class TestConstruction:
         """`bool` is a subclass of `int`, so this is a real hole worth closing."""
         with pytest.raises(TypeError):
             Grams(True)
+
+    @pytest.mark.parametrize(
+        "unusable",
+        [
+            pytest.param(float("nan"), id="not-a-number"),
+            pytest.param(float("inf"), id="infinity"),
+            pytest.param(float("-inf"), id="negative-infinity"),
+            pytest.param("nan", id="not-a-number-as-text"),
+            pytest.param("1e400", id="infinity-as-text"),
+            pytest.param(1e30, id="too-large-to-quantise"),
+            # Finite, but past the decimal context's exponent limit once scaled to
+            # milligrams: that raises `decimal.Overflow`, which is not an
+            # `InvalidOperation` and escaped until it was caught by name.
+            pytest.param("1e999999", id="overflows-when-scaled"),
+            pytest.param("lots", id="not-a-decimal"),
+            pytest.param("", id="empty-text"),
+        ],
+    )
+    def test_a_figure_no_quantity_can_hold_is_a_domain_error(self, unusable: float | str) -> None:
+        """Every edge that forwards a user's figure catches `DomainError` and nothing
+        else, so a bare `ValueError` or `decimal.InvalidOperation` escaping from here is
+        a traceback where the user should have read a message."""
+        with pytest.raises(InvalidValueError):
+            Grams.of(unusable)
 
 
 class TestArithmetic:
