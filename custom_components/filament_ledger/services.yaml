@@ -97,8 +97,21 @@ mount_spool:
       required: false
       selector:
         number: { min: 1, mode: box }
+    # The direct feed beside the AMS, and which of them on a machine that has two. The
+    # v2.8 external mount existed in the schema but was never expressible through this
+    # form — there was no `external` field — so a user with a reel on the holder had to
+    # call the service from YAML or from the panel.
+    external:
+      required: false
+      selector: { boolean: }
+    holder:
+      required: false
+      selector:
+        number: { min: 1, max: 2, mode: box }
+    # No longer required: a mount names a slot **or** the direct feed, and the service
+    # handler refuses a call that names neither.
     slot:
-      required: true
+      required: false
       selector:
         number: { min: 1, max: 4, mode: box }
 

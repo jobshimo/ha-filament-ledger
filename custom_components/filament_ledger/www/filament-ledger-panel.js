@@ -226,24 +226,50 @@ const typedGrams = (raw) => {
  * The parts travel together because a tray takes all of them to name — the review card
  * renders exactly what the backend froze, and the approval sends exactly that back.
  * `feed` says which kind of position it is: an AMS tray is `printer` + `ams` + `slot`,
- * and the printer's own external spool (direct feed) is `printer` alone, with `ams` and
- * `slot` sent as **null** rather than omitted, so the entry always has the same keys and
- * the backend never has to guess whether a missing slot means "external" or "forgot".
+ * and the printer's own external spool (direct feed) is `printer` + `holder`, with `ams`
+ * and `slot` sent as **null** rather than omitted, so the entry always has the same keys
+ * and the backend never has to guess whether a missing slot means "external" or "forgot".
+ * `holder` is the mirror of that: null for a tray, and the holder's number for a feed,
+ * because a dual-nozzle machine has two and *the external spool* names neither.
  *
- * `ams` and `slot` are numbers on the wire and come out of `dataset` as strings, so they
- * go back as numbers; the schema would coerce them, but a payload that reads as the data
- * it describes is worth the two calls. An external line renders them as empty strings,
- * and `Number("")` is 0 — a slot that does not exist — which is why the branch is on the
- * feed and not on the strings.
+ * `ams`, `slot` and `holder` are numbers on the wire and come out of `dataset` as strings,
+ * so they go back as numbers; the schema would coerce them, but a payload that reads as
+ * the data it describes is worth the calls. An external line renders the tray half as
+ * empty strings, and `Number("")` is 0 — a slot that does not exist — which is why the
+ * branch is on the feed and not on the strings.
  */
+/**
+ * Which string names one direct feed, given how many the machine has.
+ *
+ * With one holder the answer is *External spool*, exactly what every card and every
+ * label has said since v2.8 — a machine with one holder has no second position to be
+ * told apart from. With two, that phrase names neither, so they become left and right:
+ * the reader is standing at the machine looking at two holders, and upstream's own
+ * indexes (255 and 254) would mean nothing to them.
+ *
+ * Stated once because three surfaces ask it — the AMS card, the Printer tab's active
+ * position, and the review card's row — and three copies is three chances to disagree.
+ */
+const holderWord = (holder, holderCount) => {
+  if (holderCount < 2) return "ams.external";
+  return holder === 2 ? "ams.externalRight" : "ams.externalLeft";
+};
+
 const trayRef = (element) => {
   const feed = element.dataset.feed === "external" ? "external" : "ams";
   return feed === "external"
-    ? { printer: element.dataset.printer, ams: null, slot: null, feed }
+    ? {
+        printer: element.dataset.printer,
+        ams: null,
+        slot: null,
+        holder: Number(element.dataset.holder) || 1,
+        feed,
+      }
     : {
         printer: element.dataset.printer,
         ams: Number(element.dataset.ams),
         slot: Number(element.dataset.slot),
+        holder: null,
         feed,
       };
 };
@@ -554,7 +580,11 @@ class FilamentLedgerPanel extends HTMLElement {
     // the reader has to look past on every card; with two machines the same three words stop
     // saying where anything is (docs/06 §6.4, amended v2.0).
     const suffix = this._amsPrinters().length > 1 ? "_ON" : "";
-    const key = `loc.${location?.kind}${location?.printer ? suffix : ""}`;
+    // The second holder is a different place from the first, so it is a different key.
+    // Only the second is numbered: a machine with one holder has nothing to distinguish,
+    // and every label already on a card for it reads exactly as it always has.
+    const second = location?.kind === "EXTERNAL_SPOOL" && location?.holder === 2 ? "_2" : "";
+    const key = `loc.${location?.kind}${second}${location?.printer ? suffix : ""}`;
     const label = this._t(key, {
       slot: location?.slot,
       printer:
@@ -576,14 +606,17 @@ class FilamentLedgerPanel extends HTMLElement {
    * owns the sentinel (`websocket_api._TRAY`). Inventing a name here would be the panel
    * deciding what an unidentified printer is called.
    *
-   * The AMS ordinal comes from the glance, because there is one per machine and the backend
-   * is what says which.
+   * **The AMS ordinal comes from the card the user tapped**, not from a ledger-wide
+   * constant. It used to come from `tracking.ams`, which named the one unit this ledger
+   * followed; a machine now states its own units and a mount into the second one has to
+   * say so, or every reel on it would be recorded in the first (v2.9). Omitted when the
+   * card had no ordinal to give, and the backend then reads the first — the same answer
+   * `_TRAY` has given an absent `ams` since v2.0.
    */
-  _traySpace(printer) {
+  _traySpace(printer, ams) {
     const space = {};
     if (printer) space.printer = printer;
-    const ams = this._printer?.tracking?.ams;
-    if (ams) space.ams = ams;
+    if (ams) space.ams = Number(ams);
     return space;
   }
 
@@ -592,17 +625,20 @@ class FilamentLedgerPanel extends HTMLElement {
    *
    * Two positions, one command. An AMS tray names its `slot` inside the tray space above.
    * The printer's external spool — the direct feed beside the AMS — has no slot and no AMS
-   * unit, so it sends `external: true` in place of the slot and only the machine from the
-   * tray space: an `ams` ordinal on a position that is not in the AMS would be a claim
-   * about a unit the spool is not in. Both paths (`mount-pick` and the form submit) build
-   * from here so they cannot disagree about the shape.
+   * unit, so it sends `external: true` in place of the slot, the machine from the tray
+   * space, and `holder` for which of the machine's feeds it is: an `ams` ordinal on a
+   * position that is not in the AMS would be a claim about a unit the spool is not in,
+   * while a holder left unsaid on a dual-nozzle machine would land every reel on the
+   * first. Both paths (`mount-pick` and the form submit) build from here so they cannot
+   * disagree about the shape.
    */
   _mountPayload(spoolId) {
     const dialog = this._dialog ?? {};
-    const space = this._traySpace(dialog.printer);
+    const space = this._traySpace(dialog.printer, dialog.ams);
     if (dialog.external) {
       const payload = { spool_id: spoolId, external: true };
       if (space.printer) payload.printer = space.printer;
+      if (dialog.holder) payload.holder = Number(dialog.holder);
       return payload;
     }
     return { spool_id: spoolId, ...space, slot: dialog.slot };
@@ -1060,18 +1096,23 @@ class FilamentLedgerPanel extends HTMLElement {
         this._dialog = {
           kind: "mount",
           slot: Number(slot),
+          // Which AMS unit the tapped card belongs to. A machine can have several, and a
+          // mount that named none would land every reel in the first (v2.9).
+          ams: Number(target.dataset.ams) || null,
           printer: target.dataset.printer || null,
         };
         this.render();
         break;
       case "mount-external":
-        // The fifth position on a machine: the spool holder beside the AMS that feeds the
-        // extruder directly. Same dialog, same picker, no slot — `external` is what the
-        // payload carries in the slot's place (`_mountPayload`).
+        // The direct feed: the spool holder beside the AMS that feeds the extruder
+        // directly. Same dialog, same picker, no slot — `external` is what the payload
+        // carries in the slot's place, and `holder` says which of them on a machine that
+        // has two (`_mountPayload`).
         this._dialog = {
           kind: "mount",
           external: true,
           slot: null,
+          holder: Number(target.dataset.holder) || null,
           printer: target.dataset.printer || null,
         };
         this.render();
@@ -2233,35 +2274,104 @@ class FilamentLedgerPanel extends HTMLElement {
    * renders exactly as before, because an honest extra word must never become a
    * dependency.
    */
-  _trayStatus(printer, slot) {
+  _trayStatus(printer, ams, slot) {
+    // **The whole reference, not the slot alone.** Matching on the number would answer
+    // AMS 2's tray 1 with AMS 1's status the moment a machine had two units, which is the
+    // same ambiguity a bare slot had across two printers before v2.0.
+    const machine = this._machineSnapshot(printer);
+    return (
+      (machine?.trays ?? []).find((tray) => tray.ams === ams && tray.slot === slot)?.status ??
+      null
+    );
+  }
+
+  /** One machine's last glance, or null — `printer` is null in the anonymous-space case. */
+  _machineSnapshot(printer) {
     const machines = this._printer?.machines ?? [];
-    const machine =
-      printer === null ? machines[0] : machines.find((m) => m.printer === printer);
-    return (machine?.trays ?? []).find((tray) => tray.slot === slot)?.status ?? null;
+    return printer === null ? (machines[0] ?? null) : machines.find((m) => m.printer === printer);
   }
 
   /**
-   * One machine's positions: its four AMS trays, then its external spool.
+   * Which AMS units to draw a block for: what the printer says it has, what the ledger
+   * holds spools on, and one as the floor.
    *
-   * The external spool is the holder beside the AMS that feeds the extruder directly. It
-   * is a fifth place a reel can be and be consumed from, so it gets the fifth card, drawn
-   * with the same markup as a tray: the same ring, the same buttons, the same empty state
-   * with the same [ Mount ]. What differs is only what the backend needs to name it — no
-   * slot — and the heading, which says what it is rather than a number. A ledger whose
-   * spools never report an `EXTERNAL_SPOOL` location simply shows the card empty; nothing
-   * is invented to fill it.
+   * The same union rule `_amsPrinters` uses for machines, and for its reason. A unit the
+   * glance has not mentioned may still hold a reel the ledger recorded — a machine that
+   * has gone away, a snapshot not taken yet — and a view that listed only what discovery
+   * currently reports would hide it. One is the floor because every machine has an AMS 1
+   * to mount into even when nothing has been discovered at all.
+   */
+  _amsUnits(printer) {
+    const reported = this._machineSnapshot(printer)?.ams_units ?? [];
+    const held = this._spools
+      .filter(
+        (s) =>
+          s.location.kind === "AMS_SLOT" &&
+          (printer === null || s.location.printer === printer) &&
+          s.location.ams != null,
+      )
+      .map((s) => s.location.ams);
+    return [...new Set([1, ...reported, ...held])].sort((a, b) => a - b);
+  }
+
+  /**
+   * Which holders to draw a card for — the same union, one position over.
+   *
+   * A machine that published no holder sensor still has a holder: every Bambu printer
+   * does, and the backend deliberately reports none rather than inventing one
+   * (`ReadPrinterState._holders`). The floor is this view's judgement, made here.
+   */
+  _amsHolders(printer) {
+    const reported = (this._machineSnapshot(printer)?.holders ?? []).map((h) => h.holder);
+    const held = this._spools
+      .filter(
+        (s) =>
+          s.location.kind === "EXTERNAL_SPOOL" &&
+          (printer === null || s.location.printer === printer),
+      )
+      .map((s) => s.location.holder ?? 1);
+    return [...new Set([1, ...reported, ...held])].sort((a, b) => a - b);
+  }
+
+  /**
+   * One machine's positions: a block per AMS unit, then a card per direct feed.
+   *
+   * The direct feed is the holder beside the AMS that feeds the extruder directly. It is
+   * a place a reel can be and be consumed from, so it gets a card drawn with the same
+   * markup as a tray: the same ring, the same buttons, the same empty state with the same
+   * [ Mount ]. What differs is only what the backend needs to name it — no slot, a
+   * `holder` instead — and the heading, which says what it is rather than a number. A
+   * ledger whose spools never report an `EXTERNAL_SPOOL` location simply shows the card
+   * empty; nothing is invented to fill it.
+   *
+   * **A block per unit, and a heading over it only when there is more than one** (v2.9).
+   * The same rule the machine heading follows: with one unit the number says nothing the
+   * reader did not already know, and a household with a single AMS sees the tab it has
+   * always seen.
    *
    * `printer` is null only in the one-anonymous-space case above; the mount buttons then
    * name no printer and the backend resolves the absence, which is the same path a v1
    * automation takes.
    */
   amsSection(printer, named, followed) {
+    const units = this._amsUnits(printer);
+    const blocks = units.map((ams) => this.amsUnitBlock(printer, ams, units.length > 1));
+    return `<div class="ams-space">
+      ${named ? this.machineHeading(printer, followed) : ""}
+      ${blocks.join("")}
+      <div class="trays">${this.holderCards(printer).join("")}</div>
+    </div>`;
+  }
+
+  /** One AMS unit's four trays, headed by its ordinal once a machine has more than one. */
+  amsUnitBlock(printer, ams, numbered) {
     const t = this._t;
-    // A location names its printer, so the match names it too — otherwise a spool an
-    // automation mounted into another machine's tray 3 would appear here as though it were
-    // in this one's.
+    // A location names its printer and its unit, so the match names both — otherwise a
+    // spool in another machine's tray 3, or in this machine's *other* unit's tray 3, would
+    // appear here as though it were in this one.
     const onThisMachine = (location) => printer === null || location.printer === printer;
-    const here = (location) => location.kind === "AMS_SLOT" && onThisMachine(location);
+    const here = (location) =>
+      location.kind === "AMS_SLOT" && onThisMachine(location) && (location.ams ?? 1) === ams;
     const machine = esc(printer ?? "");
     const slots = [1, 2, 3, 4].map((slot) => {
       const spool = this._spools.find((s) => here(s.location) && s.location.slot === slot);
@@ -2271,32 +2381,56 @@ class FilamentLedgerPanel extends HTMLElement {
         // The printer snapshot says so, and the card repeats it — the same [ Mount ]
         // button then does for a third-party reel what the chip does for a Bambu one,
         // because consumption already charges by location, not by tag.
-        const chipless = this._trayStatus(printer, slot) === "NO_TAG";
+        const chipless = this._trayStatus(printer, ams, slot) === "NO_TAG";
         return this.emptyPositionCard(
           t("ams.slot", { slot }),
           t(chipless ? "ams.chipless" : "ams.empty"),
-          `<button data-action="mount-slot" data-slot="${slot}"
+          `<button data-action="mount-slot" data-slot="${slot}" data-ams="${esc(ams)}"
                   data-printer="${machine}">${t("act.mount")}</button>`,
         );
       }
       return this.positionCard(t("ams.slot", { slot }), spool);
     });
-    const external = this._spools.find(
-      (s) => s.location.kind === "EXTERNAL_SPOOL" && onThisMachine(s.location),
-    );
-    slots.push(
-      external
-        ? this.positionCard(t("ams.external"), external)
-        : this.emptyPositionCard(
-            t("ams.external"),
-            t("ams.empty"),
-            `<button data-action="mount-external" data-printer="${machine}">${t("act.mount")}</button>`,
-          ),
-    );
-    return `<div class="ams-space">
-      ${named ? this.machineHeading(printer, followed) : ""}
+    return `<div class="ams-unit">
+      ${numbered ? `<h4 class="ams-unit-h">${t("ams.unit", { ams })}</h4>` : ""}
       <div class="trays">${slots.join("")}</div>
     </div>`;
+  }
+
+  /**
+   * One card per direct feed, named by where it is rather than by a number.
+   *
+   * With one holder the card reads *External spool*, exactly as it always has. With two —
+   * a dual-nozzle machine — *external spool* names neither, so they are told apart as
+   * left and right: the user is standing at the machine looking at two holders, and
+   * upstream's own indexes are no help to them at all.
+   */
+  holderCards(printer) {
+    const t = this._t;
+    const holders = this._amsHolders(printer);
+    const machine = esc(printer ?? "");
+    const reported = this._machineSnapshot(printer)?.holders ?? [];
+    return holders.map((holder) => {
+      const heading = t(holderWord(holder, holders.length));
+      const spool = this._spools.find(
+        (s) =>
+          s.location.kind === "EXTERNAL_SPOOL" &&
+          (printer === null || s.location.printer === printer) &&
+          (s.location.holder ?? 1) === holder,
+      );
+      if (spool) return this.positionCard(heading, spool);
+      // "Empty" is the ledger's word, and the printer may disagree: a reel on the holder
+      // that the ledger has no row for is the holder's form of `ams.chipless`, and the
+      // [ Mount ] button beside it is how the user says which spool it is. Null — the
+      // printer did not say — reads as the ledger's own word, never as an occupied holder.
+      const occupied = reported.find((h) => h.holder === holder)?.empty === false;
+      return this.emptyPositionCard(
+        heading,
+        t(occupied ? "ams.occupied" : "ams.empty"),
+        `<button data-action="mount-external" data-holder="${esc(holder)}"
+                data-printer="${machine}">${t("act.mount")}</button>`,
+      );
+    });
   }
 
   /** A position with nothing the ledger knows of in it, and the button that changes that. */
@@ -2353,10 +2487,17 @@ class FilamentLedgerPanel extends HTMLElement {
   machineHeading(printer, followed) {
     const t = this._t;
     const unnamed = printer === UNIDENTIFIED_PRINTER || printer === null;
-    const name = unnamed ? t("ams.machineUnnamed") : esc(printer);
+    const called = this._machineSnapshot(printer)?.printer_name;
+    // What the machine answers to, with the serial beside it — never instead of it. The
+    // serial is what every row, tray reference and mount is keyed by, and a heading that
+    // showed only a friendly name would leave a reader with two sections and no way to
+    // tell which serial either of them is (v2.9).
+    const name = unnamed ? t("ams.machineUnnamed") : esc(called || printer);
+    const serial = !unnamed && called ? `<span class="muted small">${esc(printer)}</span>` : "";
     const stale = printer !== null && !followed.has(printer);
     return `<div class="ams-head">
       <h3 class="pr-h">${name}</h3>
+      ${serial}
       ${stale ? `<p class="muted small">${t("ams.machineStale")}</p>` : ""}
     </div>`;
   }
@@ -3143,6 +3284,17 @@ class FilamentLedgerPanel extends HTMLElement {
    * with no `feed` at all is a tray — the shape every review had before the external
    * spool was a place a print could draw from.
    */
+  /**
+   * How many holders the machine a review line names has — for the wording, nothing more.
+   *
+   * A card for a machine that has gone away, or one opened before the first glance
+   * arrived, answers one, and the row then reads *External spool*: the sentence a reader
+   * has always seen, rather than a *(left)* that implies a right nobody can see.
+   */
+  _reviewHolderCount(printer) {
+    return this._amsHolders(printer ?? null).length;
+  }
+
   reviewTray(line) {
     const t = this._t;
     const external = line.feed === "external";
@@ -3156,10 +3308,15 @@ class FilamentLedgerPanel extends HTMLElement {
     return `
       <div class="rv-tray" data-feed="${external ? "external" : "ams"}"
         data-printer="${esc(line.printer)}" data-ams="${esc(line.ams)}"
-        data-slot="${esc(line.slot)}" data-orig="${esc(line.estimated_g)}"
+        data-slot="${esc(line.slot)}" data-holder="${esc(line.holder ?? "")}"
+        data-orig="${esc(line.estimated_g)}"
         data-frozen="${esc(frozen)}">
         <div class="rv-row">
-          <span class="rv-slot">${external ? t("ams.external") : t("ams.slot", { slot: line.slot })}</span>
+          <span class="rv-slot">${
+            external
+              ? t(holderWord(line.holder, this._reviewHolderCount(line.printer)))
+              : t("ams.slot", { slot: line.slot })
+          }</span>
           <input class="rv-amt num" type="number" min="0" step="0.1"
             value="${esc(line.estimated_g.toFixed(1))}"> g
         </div>
@@ -3271,11 +3428,14 @@ class FilamentLedgerPanel extends HTMLElement {
     return trays.map((tray) => this._trayWord(tray)).join(this._t("act.and"));
   }
 
-  /** One position, mid-sentence: *slot 3* or *the external spool*. */
+  /** One position, mid-sentence: *slot 3*, *the external spool*, *the second one*. */
   _trayWord(tray) {
-    return tray.feed === "external"
-      ? this._t("review.externalWord")
-      : this._t("review.slotWord", { slot: tray.slot });
+    if (tray.feed !== "external") return this._t("review.slotWord", { slot: tray.slot });
+    // Only the second holder earns a numeral, the rule every other surface follows: a
+    // machine with one holder has no second position to be told apart from.
+    return this._t(
+      Number(tray.holder) === 2 ? "review.externalWord2" : "review.externalWord",
+    );
   }
 
   /**
@@ -3316,8 +3476,13 @@ class FilamentLedgerPanel extends HTMLElement {
         attributed += share;
         if (share !== 0 && !charge.spool_id) missing = true;
       }
-      // The position, by feed and slot, so the hint can name the external spool as such.
-      const which = { feed: tray.dataset.feed, slot: tray.dataset.slot };
+      // The position, by feed, slot and holder, so the hint can name each direct feed as
+      // itself rather than calling both of a dual-nozzle machine's holders one thing.
+      const which = {
+        feed: tray.dataset.feed,
+        slot: tray.dataset.slot,
+        holder: tray.dataset.holder,
+      };
       if (missing) unattributed.push(which);
 
       const left = round1(amount - attributed);
@@ -3782,15 +3947,21 @@ class FilamentLedgerPanel extends HTMLElement {
         ${machines.map((machine) => this.printerMachine(machine, named)).join("")}
         ${this.printerHours(state.observed_print_time)}
         <p class="muted small">${t("printer.readOnly")}</p>
-        <p class="muted small">${t("printer.pendingSensors")}</p>
       </section>`,
     );
   }
 
   /** One machine's section: what it is called, what it is doing, and what its trays hold. */
   printerMachine(machine, named) {
+    // The name beside the serial, for `machineHeading`'s reason: the serial is the
+    // identity, and a heading showing only a friendly name would leave a reader with two
+    // sections and no way to tell which machine either of them is.
+    const heading = machine.printer_name
+      ? `<h3 class="pr-h pr-machine-h">${esc(machine.printer_name)}</h3>
+         <span class="muted small">${esc(machine.printer)}</span>`
+      : `<h3 class="pr-h pr-machine-h">${esc(machine.printer)}</h3>`;
     return `<div class="pr-machine">
-      ${named ? `<h3 class="pr-h pr-machine-h">${esc(machine.printer)}</h3>` : ""}
+      ${named ? heading : ""}
       ${this.printerFacts(machine)}
       ${this.printerError(machine.error)}
       ${this.printerTrays(machine)}
@@ -3834,14 +4005,53 @@ class FilamentLedgerPanel extends HTMLElement {
           state.connection_mode == null ? DASH : esc(state.connection_mode),
         )}
         ${this.printerFact(
-          t("printer.activeTray"),
-          state.active_tray == null ? DASH : esc(state.active_tray),
+          t("printer.activeFeed"),
+          this.activeFeedWord(state.active_feed, (state.holders ?? []).length),
         )}
       </div>`;
   }
 
+  /**
+   * Where the machine is drawing from, in the reader's words — *AMS 1 · Slot 2*, or
+   * *External spool (right)*.
+   *
+   * This field showed a dash for every user until v2.9: the backend parsed the sensor's
+   * state as an integer and the state is a filament name (docs/12, 2026-09-23). It now
+   * arrives as a position, and a position is what is rendered — a bare number would be
+   * ambiguous the moment a machine has two units or two holders, which is the same
+   * ambiguity the whole release is about.
+   */
+  activeFeedWord(feed, holderCount) {
+    const t = this._t;
+    if (!feed) return DASH;
+    // No `esc` around the result: `substitute` escapes every value it fills in, and the
+    // templates themselves are this project's own strings — the rule every other
+    // `printerFact` call on this card follows.
+    if (feed.feed === "external") return t(holderWord(feed.holder, holderCount));
+    return t("printer.activeFeedAms", {
+      ams: feed.ams,
+      slot: t("ams.slot", { slot: feed.slot }),
+    });
+  }
+
   printerFact(key, value) {
     return `<div class="pr-fact"><div class="k">${key}</div><div class="v">${value}</div></div>`;
+  }
+
+  /**
+   * The followed machines, as prose: *Workshop A1 (00000000TESTSER)*, or the serial alone.
+   *
+   * The name is a label and the serial is the identity, so a list that dropped the serial
+   * would leave a reader unable to match this sentence to the sections below it — which
+   * are the only place a mount, a review or a history row ever names a machine.
+   */
+  _machineList(printers) {
+    return printers
+      .map((serial) => {
+        const called = this._machineSnapshot(serial)?.printer_name;
+        return called ? `${called} (${serial})` : serial;
+      })
+      .join(", ");
   }
 
   /**
@@ -3867,7 +4077,7 @@ class FilamentLedgerPanel extends HTMLElement {
         <h3 class="pr-h">${t("printer.trackingHeading")}</h3>
         ${
           printers.length
-            ? `<p>${t("printer.trackingFollowing", { serials: printers.join(", ") })}</p>`
+            ? `<p>${t("printer.trackingFollowing", { serials: this._machineList(printers) })}</p>`
             : ""
         }
         ${unnamed ? `<p class="muted small">${t("printer.trackingUnnamed", { count: unnamed })}</p>` : ""}
@@ -5501,12 +5711,19 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 .pr-machine-h { margin-bottom: 0; font-size: 12.5px; letter-spacing: .06em;
   text-transform: none; color: var(--fl-ink); font-family: var(--fl-font-mono); }
 
-/* One machine's four trays on the AMS tab. Same structure, same reason. */
+/* One machine's positions on the AMS tab. Same structure, same reason. */
 .ams-space { display: flex; flex-direction: column; gap: 10px; }
 .ams-head { display: flex; flex-direction: column; gap: 2px; }
 .ams-head .pr-h { margin: 0; text-transform: none; letter-spacing: .06em; font-size: 12.5px;
   color: var(--fl-ink); font-family: var(--fl-font-mono); }
 .ams-head p { margin: 0; }
+/* One AMS unit's block. The heading only exists on a machine with more than one, and it is
+   deliberately quieter than the machine's own: a unit is a subdivision of a machine, and a
+   heading as loud as the section's would read as a second printer on a phone. */
+.ams-unit { display: flex; flex-direction: column; gap: 8px; }
+.ams-unit + .ams-unit { margin-top: 4px; }
+.ams-unit-h { margin: 0; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--fl-ink-dim); font-family: var(--fl-font-mono); }
 
 /* Settings tab — docs/14 §14.6.4. */
 .set-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 12px; }

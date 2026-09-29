@@ -99,15 +99,19 @@ def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
             }
         case SpoolMounted(spool_id, tray):
             return event_name("spool_mounted"), {"spool_id": spool_id, **_tray_fields(tray)}
-        case SpoolMountedExternally(spool_id, printer):
+        case SpoolMountedExternally(spool_id, printer, holder):
             # The same bus name as a tray mount: an automation that reacts to *a spool
             # went into the machine* wants both, and the panel's live subscription
             # listens by name (`LEDGER_EVENTS`). `external` is what tells them apart,
-            # and no tray half is sent because there is none to send.
+            # and no tray half is sent because there is none to send — `holder` is that
+            # half's counterpart, because a dual-nozzle machine has two direct feeds and
+            # an automation reacting to the wrong one is reacting to a spool that did not
+            # move.
             return event_name("spool_mounted"), {
                 "spool_id": spool_id,
                 "printer": printer.value,
                 "external": True,
+                "holder": holder.value,
             }
         case SpoolUnmounted(spool_id):
             return event_name("spool_unmounted"), {"spool_id": spool_id}

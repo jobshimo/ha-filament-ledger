@@ -496,7 +496,7 @@ uv run pytest -q              # the whole suite: 898 tests
 ```
 
 The design is written down before it is built. [docs/](docs/) holds the contract — sixteen
-numbered documents and eight ADRs — and it is the document, not the code, that is amended first
+numbered documents and nine ADRs — and it is the document, not the code, that is amended first
 when something changes:
 
 | Document | Contents |

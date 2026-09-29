@@ -11,8 +11,10 @@ from __future__ import annotations
 import pytest
 
 from custom_components.filament_ledger.domain.value.identifiers import (
+    FIRST_HOLDER,
     ExternalFeed,
     Feed,
+    HolderIndex,
     PrinterSerial,
     position_note,
 )
@@ -28,6 +30,52 @@ from .conftest import A_PRINTER, a_tray
 # Sorts after `A_PRINTER` (`…TESTSER`), so the expected sequences below read printer by
 # printer in the order the ordering promises.
 ANOTHER_PRINTER = PrinterSerial("00000000ZZZZZSR")
+
+SECOND_HOLDER = HolderIndex(2)
+
+
+class TestTheSecondHolder:
+    """A dual-nozzle printer has two direct feeds, and they are two positions.
+
+    Read off the live X2D on 2026-09-23: its weight sensor keys the second holder's figure
+    as `External Spool 2`, and its `active_tray` reports `ams_index: 254` for it against
+    `255` for the first. Both are real, and both hold a reel at once.
+    """
+
+    def test_a_feed_that_names_no_holder_is_the_first_one(self) -> None:
+        """The default every call site written before the second holder relies on."""
+        assert ExternalFeed(A_PRINTER) == ExternalFeed(A_PRINTER, FIRST_HOLDER)
+
+    def test_one_printers_two_holders_are_two_feeds(self) -> None:
+        assert ExternalFeed(A_PRINTER) != ExternalFeed(A_PRINTER, SECOND_HOLDER)
+
+    def test_each_holder_keys_its_own_figure(self) -> None:
+        usage = {ExternalFeed(A_PRINTER): 1, ExternalFeed(A_PRINTER, SECOND_HOLDER): 2}
+        assert len(usage) == 2
+        assert usage[ExternalFeed(A_PRINTER)] == 1
+
+    def test_the_first_holder_sorts_before_the_second(self) -> None:
+        assert ExternalFeed(A_PRINTER) < ExternalFeed(A_PRINTER, SECOND_HOLDER)
+        assert a_tray(4) < ExternalFeed(A_PRINTER, SECOND_HOLDER)
+        assert ExternalFeed(A_PRINTER, SECOND_HOLDER) < a_tray(1, printer=ANOTHER_PRINTER)
+
+    def test_both_holders_resolve_to_their_own_location_and_back(self) -> None:
+        feed = ExternalFeed(A_PRINTER, SECOND_HOLDER)
+        assert location_of(feed) == ExternalSpool(A_PRINTER, SECOND_HOLDER)
+        assert feed_of(ExternalSpool(A_PRINTER, SECOND_HOLDER)) == feed
+        assert ExternalSpool(A_PRINTER) != ExternalSpool(A_PRINTER, SECOND_HOLDER)
+
+    def test_only_the_second_holder_earns_a_numeral(self) -> None:
+        """A machine with one holder has no second position to be told apart from, so the
+        sentence every log line and every history row already shows stays verbatim."""
+        assert position_note(ExternalFeed(A_PRINTER)) == "External spool"
+        assert position_note(ExternalFeed(A_PRINTER, SECOND_HOLDER)) == "External spool 2"
+        assert str(ExternalFeed(A_PRINTER, SECOND_HOLDER)) == (
+            "external spool 2 on printer 00000000TESTSER"
+        )
+        assert str(ExternalSpool(A_PRINTER, SECOND_HOLDER)) == (
+            "External spool 2 on printer 00000000TESTSER"
+        )
 
 
 class TestOrdering:

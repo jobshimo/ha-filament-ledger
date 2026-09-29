@@ -13,8 +13,10 @@ from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
     ABSENT_TAG_SENTINEL,
     MIN_AMS_INDEX,
+    MIN_EXTERNAL_HOLDER,
     UNIDENTIFIED_PRINTER,
     AmsIndex,
+    HolderIndex,
     PrinterSerial,
     ReelUid,
     SlotIndex,
@@ -30,6 +32,7 @@ from .database import Database
 COLUMNS = (
     "id, material, material_other, colour, vendor, label, opening_weight_mg, "
     "core_weight_mg, location_kind, location_printer, location_ams, location_slot, "
+    "location_holder, "
     "tag_uid, tag_source, reel_uid, registered_at, discarded_at, deleted_at, deleted_reason"
 )
 
@@ -48,28 +51,37 @@ def _parse(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
-def _location_columns(location: Location) -> tuple[str, str | None, int | None, int | None]:
+#: The location columns in the order every statement below writes and reads them: kind,
+#: printer, AMS ordinal, slot, holder. Named so the two sides cannot drift.
+type _LocationColumns = tuple[str, str | None, int | None, int | None, int | None]
+
+
+def _location_columns(location: Location) -> _LocationColumns:
     match location:
         case AmsSlot(tray):
-            return "AMS_SLOT", tray.printer.value, tray.ams.value, tray.slot.value
-        case ExternalSpool(printer):
-            # `location_printer` carries the machine for both mounted kinds since 0008, which
+            return "AMS_SLOT", tray.printer.value, tray.ams.value, tray.slot.value, None
+        case ExternalSpool(printer, holder):
+            # `location_printer` carries the machine for both mounted kinds since 0008 and
+            # `location_holder` carries which of that machine's two feeds since 0010 — which
             # is what lets one partial unique index per kind state *one spool per position*
-            # without either of them naming a printer column of its own.
-            return "EXTERNAL_SPOOL", printer.value, None, None
+            # without either of them naming a column of its own.
+            return "EXTERNAL_SPOOL", printer.value, None, None, holder.value
         case Storage():
-            return "STORAGE", None, None, None
+            return "STORAGE", None, None, None, None
 
 
-def _location_from(kind: str, printer: str | None, ams: int | None, slot: int | None) -> Location:
+def _location_from(
+    kind: str, printer: str | None, ams: int | None, slot: int | None, holder: int | None
+) -> Location:
     """Rebuild the location, tolerating a mounted row that names no printer.
 
-    Migrations 0007 and 0008 backfill every mounted row with a printer — and a tray row with
-    an AMS index besides — so a row missing either should not exist. Should one turn up
-    anyway — a backup restored from between the ALTER and the UPDATE, a row inserted by
-    hand — it hydrates exactly as the migration would have written it, for the reason
-    `_tag_from` tolerates the sentinel and `_tag_source_from` defaults to MANUAL: one odd row
-    must not fail every list and get, and with them the coordinator and the whole entry.
+    Migrations 0007, 0008 and 0010 backfill every mounted row with a printer — a tray row
+    with an AMS index besides, and an external row with a holder — so a row missing any of
+    them should not exist. Should one turn up anyway — a backup restored from between the
+    ALTER and the UPDATE, a row inserted by hand — it hydrates exactly as the migration
+    would have written it, for the reason `_tag_from` tolerates the sentinel and
+    `_tag_source_from` defaults to MANUAL: one odd row must not fail every list and get, and
+    with them the coordinator and the whole entry.
     """
     if kind == "AMS_SLOT" and slot is not None:
         return AmsSlot(
@@ -80,7 +92,10 @@ def _location_from(kind: str, printer: str | None, ams: int | None, slot: int | 
             )
         )
     if kind == "EXTERNAL_SPOOL":
-        return ExternalSpool(printer=_printer_from(printer))
+        return ExternalSpool(
+            printer=_printer_from(printer),
+            holder=HolderIndex(holder if holder is not None else MIN_EXTERNAL_HOLDER),
+        )
     return Storage()
 
 
@@ -149,6 +164,7 @@ def _to_spool(row: sqlite3.Row) -> Spool:
             row["location_printer"],
             row["location_ams"],
             row["location_slot"],
+            row["location_holder"],
         ),
         registered_at=registered,
         vendor=row["vendor"],
@@ -233,18 +249,19 @@ class SqliteSpoolRepository:
         stopped watching deleted rows in migration 0003, and a read that still saw one
         would report an occupant no constraint is defending.
         """
-        kind, printer, ams, slot = _location_columns(location)
+        kind, printer, ams, slot, holder = _location_columns(location)
         if kind == "STORAGE":
             # Storage is not a unique position; "which spool is in storage" has no answer.
             return None
-        # `IS` rather than `=` on all three tray columns: it is SQLite's null-safe
-        # equality, so the one predicate answers both the tray question — where every
-        # column is set — and the external-feed question, where all three are NULL.
+        # `IS` rather than `=` on every column but the kind: it is SQLite's null-safe
+        # equality, so the one predicate answers both the tray question — where the AMS
+        # half is set and the holder is NULL — and the direct-feed question, where the
+        # halves are the other way round.
         row = await self.database.fetch_one(
             f"SELECT {COLUMNS} FROM spool "
             f"WHERE location_kind = ? AND location_printer IS ? AND location_ams IS ? "
-            f"AND location_slot IS ? AND {IN_INVENTORY}",
-            (kind, printer, ams, slot),
+            f"AND location_slot IS ? AND location_holder IS ? AND {IN_INVENTORY}",
+            (kind, printer, ams, slot, holder),
         )
         return _to_spool(row) if row else None
 
@@ -273,16 +290,16 @@ class SqliteSpoolRepository:
         return [_to_spool(row) for row in rows]
 
     async def save(self, spool: Spool) -> None:
-        kind, printer, ams, slot = _location_columns(spool.location)
+        kind, printer, ams, slot, holder = _location_columns(spool.location)
         await self.database.execute(
             """
             INSERT INTO spool (
                 id, material, material_other, colour, vendor, label,
                 opening_weight_mg, core_weight_mg, location_kind, location_printer,
-                location_ams, location_slot,
+                location_ams, location_slot, location_holder,
                 tag_uid, tag_source, reel_uid,
                 registered_at, discarded_at, deleted_at, deleted_reason, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 material = excluded.material,
                 material_other = excluded.material_other,
@@ -294,6 +311,7 @@ class SqliteSpoolRepository:
                 location_printer = excluded.location_printer,
                 location_ams = excluded.location_ams,
                 location_slot = excluded.location_slot,
+                location_holder = excluded.location_holder,
                 tag_uid = excluded.tag_uid,
                 tag_source = excluded.tag_source,
                 reel_uid = excluded.reel_uid,
@@ -315,6 +333,7 @@ class SqliteSpoolRepository:
                 printer,
                 ams,
                 slot,
+                holder,
                 spool.tag_uid.value if spool.tag_uid else None,
                 spool.tag_source.value if spool.tag_source else None,
                 spool.reel_uid.value if spool.reel_uid else None,

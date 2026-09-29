@@ -16,6 +16,7 @@ from custom_components.filament_ledger.domain.model.spool import Spool, register
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    HolderIndex,
     SlotIndex,
     TagSource,
     TagUid,
@@ -91,11 +92,18 @@ class TestLocation:
         assert not is_mounted(Storage())
 
     def test_the_external_spool_counts_as_mounted_and_names_its_machine(self) -> None:
-        """One direct feed per printer (docs/02 §2.2): the location carries the serial, so
-        two machines can each be fed a reel without the ledger calling them one place."""
+        """The location carries the serial (docs/02 §2.2), so two machines can each be fed
+        a reel without the ledger calling them one place."""
         mounted = a_spool().mounted_externally(A_PRINTER)
         assert is_mounted(mounted.location)
         assert mounted.location == ExternalSpool(A_PRINTER)
+
+    def test_the_second_holder_of_a_machine_is_its_own_place(self) -> None:
+        """A dual-nozzle printer carries two holders, so naming the machine alone names two
+        positions — and a mount that landed on either would be a coin toss."""
+        mounted = a_spool().mounted_externally(A_PRINTER, HolderIndex(2))
+        assert mounted.location == ExternalSpool(A_PRINTER, HolderIndex(2))
+        assert mounted.location != a_spool().mounted_externally(A_PRINTER).location
 
     def test_moving_returns_a_new_instance(self) -> None:
         original = a_spool()

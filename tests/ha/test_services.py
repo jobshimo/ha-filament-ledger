@@ -32,12 +32,14 @@ from custom_components.filament_ledger.domain.error import SpoolDiscardedError
 from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    FIRST_HOLDER,
     UNIDENTIFIED_PRINTER,
+    HolderIndex,
     PrintJobId,
     ReviewId,
     TrayRef,
 )
-from custom_components.filament_ledger.domain.value.location import AmsSlot
+from custom_components.filament_ledger.domain.value.location import AmsSlot, ExternalSpool
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.spool_state import SpoolState
@@ -169,6 +171,11 @@ class TestSchemas:
             ),
             pytest.param(
                 SERVICE_MOUNT_SPOOL, {"spool_id": "s", "slot": 9}, id="mount-past-the-last-slot"
+            ),
+            pytest.param(
+                SERVICE_MOUNT_SPOOL,
+                {"spool_id": "s", "external": True, "holder": 3},
+                id="mount-on-a-holder-no-machine-has",
             ),
             pytest.param(SERVICE_UNMOUNT_SPOOL, {}, id="unmount-without-a-spool-id"),
             pytest.param(SERVICE_APPROVE_REVIEW, {}, id="approve-without-a-review-id"),
@@ -308,6 +315,36 @@ class TestEachServiceReachesTheLedger:
         assert (
             await harness.ledger.use_cases.queries.detail(second)
         ).summary.spool.location.__class__.__name__ == "ExternalSpool"
+
+    async def test_mount_external_without_a_holder_lands_on_the_first(
+        self, services: ServiceGateway, harness: Harness
+    ) -> None:
+        """The compatibility the absent `ams` and `printer` already had: an automation
+        written before a machine could have two holders meant the one it had."""
+        spool_id = await a_spool(harness.ledger)
+
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=spool_id, external=True)
+
+        detail = await harness.ledger.use_cases.queries.detail(spool_id)
+        assert detail.summary.spool.location == ExternalSpool(UNIDENTIFIED_PRINTER, FIRST_HOLDER)
+
+    async def test_mount_external_on_the_second_holder_leaves_the_first_alone(
+        self, services: ServiceGateway, harness: Harness
+    ) -> None:
+        """A dual-nozzle machine holds a reel on each feed at once, and the service form
+        can now say which — the v2.8 external mount could not (docs/05 §5.4)."""
+        first = await a_spool(harness.ledger)
+        second = await a_spool(harness.ledger)
+
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=first, external=True)
+        await services.call(SERVICE_MOUNT_SPOOL, spool_id=second, external=True, holder=2)
+
+        assert (await harness.ledger.use_cases.queries.detail(first)).summary.spool.location == (
+            ExternalSpool(UNIDENTIFIED_PRINTER, FIRST_HOLDER)
+        )
+        assert (await harness.ledger.use_cases.queries.detail(second)).summary.spool.location == (
+            ExternalSpool(UNIDENTIFIED_PRINTER, HolderIndex(2))
+        )
 
     async def test_approve_review_converts_the_estimate_into_movements(
         self, services: ServiceGateway, harness: Harness

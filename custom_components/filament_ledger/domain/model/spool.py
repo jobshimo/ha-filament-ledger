@@ -35,6 +35,8 @@ from ..error import (
 from ..value.colour import Colour
 from ..value.grams import Grams
 from ..value.identifiers import (
+    FIRST_HOLDER,
+    HolderIndex,
     PrinterSerial,
     ReelUid,
     SpoolId,
@@ -200,9 +202,15 @@ class Spool:
     def mounted_in(self, tray: TrayRef) -> Spool:
         return self.moved_to(AmsSlot(tray))
 
-    def mounted_externally(self, printer: PrinterSerial) -> Spool:
-        """On the direct feed of the machine named — one feed per printer (docs/02 §2.2)."""
-        return self.moved_to(ExternalSpool(printer))
+    def mounted_externally(
+        self, printer: PrinterSerial, holder: HolderIndex = FIRST_HOLDER
+    ) -> Spool:
+        """On one direct feed of the machine named — up to two per printer (docs/02 §2.2).
+
+        The holder defaults for the reason `FIRST_HOLDER` states: it is the same statement
+        migration 0010 makes about every external row that already exists.
+        """
+        return self.moved_to(ExternalSpool(printer, holder))
 
     def unmounted(self) -> Spool:
         return self.moved_to(Storage())
