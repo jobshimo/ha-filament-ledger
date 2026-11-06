@@ -28,6 +28,7 @@
  *   escaping the template would print the tags.
  */
 
+import { syncColourEditor } from "./panel/colour.js";
 import {
   esc,
   resolveLanguage,
@@ -38,6 +39,10 @@ import { UNIDENTIFIED_PRINTER, fill, grams, signed } from "./panel/format.js";
 import { STYLES } from "./panel/styles.js";
 import { mixIn } from "./panel/mixin.js";
 import { AmsViews } from "./panel/ams.js";
+import { Notifications } from "./panel/notifications.js";
+import { Appearance } from "./panel/appearance.js";
+import { InventoryFilters } from "./panel/inventory-filters.js";
+import { RegistrationActions } from "./panel/registration.js";
 import { DialogViews } from "./panel/dialogs.js";
 import { HistoryViews } from "./panel/history.js";
 import { InventoryViews } from "./panel/inventory.js";
@@ -48,24 +53,7 @@ import { SpoolDetailViews } from "./panel/spool-detail.js";
 import { StatisticsViews } from "./panel/statistics.js";
 import { TrashViews } from "./panel/trash.js";
 
-const TABS = [
-  "inventory",
-  "history",
-  // Beside History, because the two answer the same question at two zoom levels: History
-  // is every entry, Stats is what those entries add up to (docs/06 §6.7).
-  "stats",
-  "review",
-  "ams",
-  // Between AMS and Trash: a glance at the machine sits with the daily surfaces, and the
-  // correction ones sit behind them (docs/14 §14.4.4, §14.5).
-  "printer",
-  // Beside Trash, because both are the past tense of the inventory: Finished holds the
-  // spools whose filament is gone, Trash holds the ones that were never really here.
-  "finished",
-  "trash",
-  // Last. Configuration is the least-frequent surface (docs/14 §14.6.4).
-  "settings",
-];
+const TABS = ["inventory", "ams", "review", "history", "stats", "printer", "finished", "trash", "settings"];
 
 /**
  * The empty filter set, and therefore the whole history (docs/06 §6.6).
@@ -282,7 +270,14 @@ class FilamentLedgerPanel extends HTMLElement {
 
   set hass(hass) {
     const first = !this._hass;
+    if (this._hass?.user?.id && this._hass.user.id !== hass?.user?.id) {
+      this._clearRegistration();
+      this._forgetNotification();
+      this._notificationDraft = null;
+      this._dialog = null;
+    }
     this._hass = hass;
+    this._checkNotificationActivation();
     // The subscription is the first load as well as the live one: it pushes the current
     // state on open, so there is no separate set of startup reads that could disagree with
     // what arrives a moment later.
@@ -304,6 +299,7 @@ class FilamentLedgerPanel extends HTMLElement {
   _applyLanguage() {
     this._lang = resolveLanguage(this._hass);
     this._t = translator(this._lang);
+    this.lang = this._lang;
   }
 
   /**
@@ -421,13 +417,50 @@ class FilamentLedgerPanel extends HTMLElement {
   _mountPayload(spoolId) {
     const dialog = this._dialog ?? {};
     const space = this._traySpace(dialog.printer, dialog.ams);
+    const source = this._spools.find(s => s.id === spoolId)?.location ?? {kind: "STORAGE"};
+    const expected_source = source.kind === "AMS_SLOT"
+      ? {kind: source.kind, printer: source.printer, ams: source.ams, slot: source.slot}
+      : source.kind === "EXTERNAL_SPOOL"
+        ? {kind: source.kind, printer: source.printer, holder: source.holder}
+        : {kind: "STORAGE"};
+    const guard = {expected_source, expected_destination_spool_id: dialog.expectedDestination ?? null};
     if (dialog.external) {
-      const payload = { spool_id: spoolId, external: true };
-      if (space.printer) payload.printer = space.printer;
-      if (dialog.holder) payload.holder = Number(dialog.holder);
-      return payload;
+      return {spool_id: spoolId, external: true, printer: space.printer,
+              holder: Number(dialog.holder) || 1, ...guard};
     }
-    return { spool_id: spoolId, ...space, slot: dialog.slot };
+    return { spool_id: spoolId, ...space, slot: dialog.slot, ...guard };
+  }
+
+  _captureDestination() {
+    const d = this._dialog;
+    if (!d.external && !d.prefill) d.prefill = this._machineSnapshot(d.printer)?.trays?.find(t => t.ams === (d.ams || 1) && t.slot === d.slot) ?? null;
+    d.expectedDestination = this._spools.find(s => {
+      const l = s.location;
+      return (!d.printer || l.printer === d.printer) && (d.external
+        ? l.kind === "EXTERNAL_SPOOL" && l.holder === (d.holder || 1)
+        : l.kind === "AMS_SLOT" && l.ams === (d.ams || 1) && l.slot === d.slot);
+    })?.id ?? null;
+  }
+
+  async _assignSaved(spoolId) {
+    if (this._assignmentPending) return;
+    this._assignmentPending = true;
+    try {
+      await this.call("spools/mount", this._mountPayload(spoolId));
+      if (this._dialog.registration) this._clearRegistration();
+      this._dialog = null;
+      this._error = null;
+      await this.refresh();
+    } catch (error) {
+      this._dialog.savedSpoolId = spoolId;
+      this._dialog.kind = "assignment-recovery";
+      this._dialog.conflict = error.code === "assignment_conflict";
+      this._error = this._dialog.conflict ? this._t("position.conflict") : error.message || String(error);
+      await this.refresh();
+    } finally {
+      this._assignmentPending = false;
+      this.render();
+    }
   }
 
   /** *active*, *sealed*, *discarded*, *deleted* — the derived state, in words. */
@@ -438,6 +471,7 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    this._initAppearance();
     // The ambient layer is a sibling of #root, not part of it. The panel repaints by
     // replacing #root's innerHTML on every navigation (ADR-0006), and a drifting particle
     // rebuilt on every tab change would snap back to the bottom each time. Set once here,
@@ -446,6 +480,7 @@ class FilamentLedgerPanel extends HTMLElement {
       `<style>${STYLES}</style>${AMBIENT}<div id="root"></div>`;
     this._root = this.shadowRoot.getElementById("root");
     this._root.addEventListener("click", (event) => this._onClick(event));
+    this._root.addEventListener("keydown", (event) => this._onTaskKey(event));
     this._root.addEventListener("submit", (event) => this._onSubmit(event));
     // Review cards are edited in place — a full re-render per keystroke would steal the
     // focus mid-number — so edits patch the card directly instead of going through render().
@@ -461,9 +496,12 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._stopAppearance();
     window.removeEventListener("resize", this._onViewportResize);
     // A pending filter read would fire into a panel that no longer has a root to paint.
     clearTimeout(this._filterTimer);
+    clearTimeout(this._previewTimer);
+    clearTimeout(this._inventoryTimer);
     // Home Assistant keeps one websocket for the whole frontend. A subscription this panel
     // opened and did not close outlives the panel and keeps a read model being computed for
     // a view nobody is looking at, once more per navigation away and back.
@@ -518,6 +556,7 @@ class FilamentLedgerPanel extends HTMLElement {
     if (payload.kind === "printer") this._printer = payload.printer;
     else {
       this._spools = payload.spools;
+      this._loadInventory();
       this._stock = payload.stock;
       this._reviews = payload.reviews;
       // The unfiltered history: the payload is computed once on the server for everyone
@@ -656,6 +695,7 @@ class FilamentLedgerPanel extends HTMLElement {
         this.call("trash"),
       ]);
       this._spools = spools;
+      await this._loadInventory();
       this._stock = stock;
       // The one source of truth for everything review-shaped: the cards, the tab badge
       // and the "n pending" count all read this list.
@@ -697,8 +737,31 @@ class FilamentLedgerPanel extends HTMLElement {
     const target = event.target.closest("[data-action]");
     if (!target) return;
     const { action, id, slot } = target.dataset;
+    if (["dialog", "mount-slot", "mount-external", "sync-register", "spool-actions"].includes(action)) {
+      this._dialogOpener = {...target.dataset};
+    }
 
     switch (action) {
+      case "notification-for-spool":
+        this._notificationPresetSpoolId = id;
+        this._tab = "settings"; this._detail = null;
+        this._loadSettings(); this._setupNotification();
+        break;
+      case "notification-setup":
+        if (this._tab !== "settings") { this._tab = "settings"; this._detail = null; this._loadSettings(); }
+        this._setupNotification(); break;
+      case "notification-custom": this._setupNotification(true); break;
+      case "notification-save": this._saveNotification(); break;
+      case "notification-test": this._testNotification(); break;
+      case "notification-toggle": this._toggleNotification(id); break;
+      case "notification-cancel":
+        if (!this._notificationBusy) {
+          this._notificationDraft = null; this._forgetNotification(); this.render();
+        }
+        break;
+      case "inventory-reset":
+        this._resetInventory();
+        break;
       case "tab":
         this._tab = id;
         this._detail = null;
@@ -778,7 +841,9 @@ class FilamentLedgerPanel extends HTMLElement {
         // The existing create dialog, pre-filled with everything the tray reported —
         // the user confirms the one number the RFID cannot know (docs/06 §6.4).
         const outcome = (this._sync?.slots ?? []).find((o) => String(o.slot) === slot);
-        this._dialog = { kind: "new-spool", prefill: outcome ?? null, fromSync: true };
+        this._dialog = { kind: "new-spool", prefill: outcome ?? null, positionEntry: true,
+          printer: outcome?.printer, ams: outcome?.ams, slot: outcome?.slot };
+        this._captureDestination();
         this.render();
         break;
       }
@@ -844,6 +909,9 @@ class FilamentLedgerPanel extends HTMLElement {
       case "intent-delete":
         this.guarded(() => this.call("spools/delete", { spool_id: id }));
         break;
+      case "mark-opened":
+        this.guarded(() => this.call("spools/open", { spool_id: id }));
+        break;
       case "restore-spool":
         this.guarded(() => this.call("spools/restore", { spool_id: id }));
         break;
@@ -866,11 +934,15 @@ class FilamentLedgerPanel extends HTMLElement {
         // read as if the markup worked. No inline handler may be reintroduced anywhere in
         // this file; they bypass the one dispatch path the panel has.
         if (target.matches(".scrim") && event.target.closest(".modal")) break;
+        if (this._registrationPending || this._assignmentPending) break;
+        if (this._dialog?.registration) this._clearRegistration();
         this._dialog = null;
         this.render();
         // A live update that arrived while this dialog was open was held rather than
         // dropped; the surface is idle again, so let it land.
         this._releaseLive();
+        const opener = this._dialogOpener;
+        if (opener) Array.from(this._root.querySelectorAll("[data-action]")).find(e => Object.entries(opener).every(([key, value]) => e.dataset[key] === value))?.focus();
         break;
       case "unmount":
         this.guarded(() => this.call("spools/unmount", { spool_id: id }));
@@ -887,6 +959,7 @@ class FilamentLedgerPanel extends HTMLElement {
           ams: Number(target.dataset.ams) || null,
           printer: target.dataset.printer || null,
         };
+        this._captureDestination();
         this.render();
         break;
       case "mount-external":
@@ -901,13 +974,26 @@ class FilamentLedgerPanel extends HTMLElement {
           holder: Number(target.dataset.holder) || null,
           printer: target.dataset.printer || null,
         };
+        this._captureDestination();
+        this.render();
+        break;
+      case "position-register":
+        this._dialog = {...this._dialog, kind: "new-spool", positionEntry: true};
+        this.render();
+        break;
+      case "assignment-retry":
+        this._assignSaved(this._dialog.savedSpoolId);
+        break;
+      case "assignment-review":
+        this._captureDestination();
+        this._dialog.conflict = false;
         this.render();
         break;
       case "mount-pick":
         // The tap IS the choice: `guarded` closes the dialog and refreshes on success,
         // and an error keeps the message in the bar — the same contract every form
         // submit in this file follows.
-        this.guarded(() => this.call("spools/mount", this._mountPayload(id)));
+        this._assignSaved(id);
         break;
       case "open-spool-picker":
         // The picker serves two hosts: the reassign form and one charge row of a review
@@ -1036,6 +1122,7 @@ class FilamentLedgerPanel extends HTMLElement {
   async _loadSettings() {
     try {
       this._settings = await this.call("settings/get");
+      await this._loadNotifications();
       this._error = null;
     } catch (error) {
       this._error = error.message || String(error);
@@ -1128,7 +1215,31 @@ class FilamentLedgerPanel extends HTMLElement {
     };
   }
 
+  _onTaskKey(event) {
+    const modal = this._root.querySelector(".modal");
+    if (event.key === "Escape") {
+      if (modal) modal.querySelector("[data-action='close-dialog']")?.click();
+      else {
+        const menu = this._root.querySelector(".nav-more[open]");
+        if (menu) { menu.open = false; menu.querySelector("summary")?.focus(); }
+      }
+      return;
+    }
+    if (modal && event.key === "Tab") {
+      const controls = Array.from(modal.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]")).filter(e => e.getClientRects().length);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && this.shadowRoot.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && this.shadowRoot.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }
+  }
+
   _onInput(event) {
+    syncColourEditor(event.target);
+    if (event.target.matches("[data-appearance]")) { this._setAppearance(event.target.value); return; }
+    const inventory = event.target.closest("[data-inventory]");
+    if (inventory) { this._changeInventory(inventory); return; }
+    const registration = event.target.closest("form[data-form='new-spool']");
+    if (registration) { this._syncRegistration(registration); return; }
     // The History filter row. The value moves to the instance — the DOM it was typed into
     // is replaced on the next paint — and the read is debounced, because a keystroke is not
     // a round trip. `input` rather than `change` covers all four typed controls with one
@@ -1163,30 +1274,9 @@ class FilamentLedgerPanel extends HTMLElement {
     const spoolId = this._dialog?.spool_id ?? this._detail?.id;
 
     switch (form.dataset.form) {
-      case "new-spool": {
-        const fromSync = Boolean(this._dialog?.fromSync);
-        this.guarded(async () => {
-          await this.call("spools/create", {
-            material: data.material,
-            material_other: data.material_other || undefined,
-            colour: data.colour,
-            opening_weight_g: Number(data.opening_weight_g),
-            core_weight_g: Number(data.core_weight_g),
-            vendor: data.vendor || null,
-            label: data.label || null,
-            tag_uid: data.tag_uid || undefined,
-            // The one path whose tag came off a tray reading rather than off the
-            // keyboard, so the one path that records DETECTED — and the edit dialog
-            // then refuses to let that tag drift from the physical spool. Everywhere
-            // else the field is omitted and the backend records MANUAL.
-            tag_source: fromSync && data.tag_uid ? "DETECTED" : undefined,
-          });
-          // Registered from the outcome strip: re-run the pass so the new tag mounts
-          // and the strip reports the slot as it now is, instead of going stale.
-          if (fromSync) this._sync = await this.call("trays/sync");
-        });
+      case "new-spool":
+        this._submitRegistration();
         break;
-      }
       case "edit-spool": {
         const spool = this._detail;
         if (!spool) break;
@@ -1196,7 +1286,9 @@ class FilamentLedgerPanel extends HTMLElement {
           // shipped command's semantics, kept deliberately (docs/14 §14.2).
           label: data.label || null,
           vendor: data.vendor || null,
-          colour: data.colour,
+          colour: data.colour_known === "false" ? null : data.colour.trim(),
+          colour_known: data.colour_known === "true",
+          low_stock_threshold_g: data.low_stock_threshold_g === "" ? null : Number(data.low_stock_threshold_g),
           material: data.material,
           material_other: data.material_other || undefined,
           // Sent only when it actually changed. The wire carries `core_weight_g` rounded
@@ -1313,11 +1405,20 @@ class FilamentLedgerPanel extends HTMLElement {
           this.call("movements/restore", { movement_id: this._dialog.movement_id }),
         );
         break;
+      case "notification":
+        this._notificationInput(form);
+        try {
+          this._notificationAction(); this._notificationDraft.phase = "review";
+          this._notificationError = null; this._rememberNotification();
+        } catch (error) { this._notificationError = error.message || String(error); }
+        this.render();
+        break;
       case "settings":
         // Every field, every time: the command takes any subset, and sending the whole
         // form is what makes "what the tab shows" and "what the entry holds" the same
         // four numbers after a save.
         this._saveSettings({
+          low_stock_threshold_g: Number(data.low_stock_threshold_g),
           default_opening_weight: Number(data.default_opening_weight),
           default_core_weight: Number(data.default_core_weight),
           anomaly_threshold: Number(data.anomaly_threshold),
@@ -1543,6 +1644,8 @@ class FilamentLedgerPanel extends HTMLElement {
     const offset = entering ? 0 : (this._scroller?.scrollTop ?? 0);
     const sideways = entering ? 0 : (this._scroller?.scrollLeft ?? 0);
     const focused = this._focused();
+    const newDialog = this._dialog?.kind !== this._paintedDialog;
+    this._paintedDialog = this._dialog?.kind;
     this._root.innerHTML = `
       ${this.header()}
       <main class="${entering ? "entering" : ""}">
@@ -1560,7 +1663,14 @@ class FilamentLedgerPanel extends HTMLElement {
       scroller.scrollTop = offset;
       scroller.scrollLeft = sideways;
     }
-    this._restoreFocus(focused);
+    const taskModal = this._root.querySelector(".modal");
+    if (taskModal) {
+      for (const [i, control] of Array.from(taskModal.querySelectorAll("input, select, textarea, button, a[href]")).entries()) {
+        control.dataset.focus ??= `dialog-${control.name || i}`;
+      }
+      if (newDialog) (taskModal.querySelector("input:not([disabled]), select:not([disabled]), button") ?? taskModal).focus();
+    }
+    if (!newDialog) this._restoreFocus(focused);
     this._syncTabStrip();
     const main = this._root.querySelector("main.entering");
     if (main) this._settleAnimation(main, () => main.classList.remove("entering"));
@@ -1651,10 +1761,13 @@ class FilamentLedgerPanel extends HTMLElement {
         <nav>
           ${TABS.map(
             (tab) => `
-            <button data-action="tab" data-id="${tab}" class="${this._tab === tab && !this._detail ? "on" : ""}">
+            <button data-focus="tab-${tab}" data-action="tab" data-id="${tab}" ${this._tab === tab ? 'aria-current="page"' : ""} class="${["inventory", "ams", "review", "history"].includes(tab) ? "nav-primary" : "nav-secondary"} ${this._tab === tab && !this._detail ? "on" : ""}">
               ${t(`tab.${tab}`)}${badges[tab] || ""}
             </button>`,
           ).join("")}
+          <details class="nav-more"><summary>${t("navigation.more")}${["inventory", "ams", "review", "history"].includes(this._tab) ? "" : ` · ${t("tab." + this._tab)}`}</summary>
+            <div>${TABS.filter(tab => !["inventory", "ams", "review", "history"].includes(tab)).map(tab => `<button data-action="tab" data-id="${tab}" ${this._tab === tab ? 'aria-current="page"' : ""}>${t("tab." + tab)}</button>`).join("")}</div>
+          </details>
         </nav>
       </header>`;
   }
@@ -1703,6 +1816,10 @@ mixIn(
   PrinterViews,
   SettingsViews,
   DialogViews,
+  RegistrationActions,
+  InventoryFilters,
+  Appearance,
+  Notifications,
 );
 
 // Before the element is defined, not from `connectedCallback`: the faces belong to the document

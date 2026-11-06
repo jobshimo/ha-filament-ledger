@@ -301,7 +301,7 @@ export class HistoryViews {
     return `
       <tr>
         <td class="when" title="${esc(m.occurred_at)}">${this.when(m.occurred_at)}</td>
-        <td class="who"><span class="hist-dot" style="background:${esc(m.spool_colour)}"></span>${esc(m.spool_name)}</td>
+        <td class="who"><span class="hist-dot" style="background:${m.spool_colour == null ? "var(--fl-surface-sunken)" : esc(m.spool_colour_rgba ?? m.spool_colour)}" title="${m.spool_colour == null ? t("colour.unknown") : esc(m.spool_colour_rgba ?? m.spool_colour)}"></span>${esc(m.spool_name)}</td>
         <td class="what">${this.movementLabel(m.type)}
           ${detail ? `<span>${detail}</span>` : ""}
         </td>

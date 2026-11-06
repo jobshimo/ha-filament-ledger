@@ -26,6 +26,7 @@ from ..domain.port.repositories import SpoolRepository
 from ..domain.port.unit_of_work import UnitOfWork
 from ..domain.value.identifiers import SpoolId
 from .errors import SpoolNotFoundError
+from .low_stock import LowStock
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,7 @@ class RestoreSpool:
     spools: SpoolRepository
     events: EventPublisher
     uow: UnitOfWork
+    low_stock: LowStock | None = None
 
     async def execute(self, spool_id: SpoolId) -> None:
         """Back to inventory, in storage. **The old slot is not reclaimed.**
@@ -75,6 +77,8 @@ class RestoreSpool:
                 )
                 raise InvalidValueError(msg)
             await self.spools.save(spool.restored())
+            if self.low_stock is not None:
+                await self.low_stock.baseline(spool_id)
 
         # Published after the commit — never for a write that could still roll back.
         await self.events.publish(SpoolRestored(spool_id=spool.id, display_name=spool.display_name))

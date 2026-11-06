@@ -38,7 +38,39 @@ class Movement:
     reassigns_movement_id: MovementId | None = None
     reinstates_movement_id: MovementId | None = None
 
+    opening_basis: str = "LEGACY_UNSPECIFIED"
+    gross_weight_mg: int | None = None
+    tare_weight_mg: int | None = None
+
     def __post_init__(self) -> None:
+        if self.opening_basis not in {
+            "DECLARED_NET",
+            "MEASURED_NET",
+            "MEASURED_GROSS",
+            "CONFIGURED_DEFAULT",
+            "DETECTED_NOMINAL",
+            "LEGACY_UNSPECIFIED",
+        }:
+            raise InvalidValueError("Invalid opening basis")
+        if (
+            self.type is not MovementType.OPENING_BALANCE
+            and self.opening_basis != "LEGACY_UNSPECIFIED"
+        ):
+            raise InvalidValueError("Opening provenance applies only to opening balances")
+        if self.opening_basis == "MEASURED_GROSS":
+            if (
+                self.type is not MovementType.OPENING_BALANCE
+                or self.gross_weight_mg is None
+                or self.tare_weight_mg is None
+                or self.tare_weight_mg < 0
+                or self.gross_weight_mg <= self.tare_weight_mg
+                or self.amount.milligrams != self.gross_weight_mg - self.tare_weight_mg
+            ):
+                raise InvalidValueError(
+                    "Gross opening quantity must equal gross minus non-negative tare"
+                )
+        elif self.gross_weight_mg is not None or self.tare_weight_mg is not None:
+            raise InvalidValueError("Gross and tare apply only to measured gross openings")
         if self.amount.is_zero:
             msg = f"{self.type} of zero records nothing and only adds noise"
             raise InvalidValueError(msg)
@@ -71,6 +103,9 @@ def record(
     review_id: ReviewId | None = None,
     reassigns_movement_id: MovementId | None = None,
     reinstates_movement_id: MovementId | None = None,
+    opening_basis: str = "LEGACY_UNSPECIFIED",
+    gross_weight_mg: int | None = None,
+    tare_weight_mg: int | None = None,
 ) -> Movement:
     """Build a movement, generating its identity.
 
@@ -90,6 +125,9 @@ def record(
         review_id=review_id,
         reassigns_movement_id=reassigns_movement_id,
         reinstates_movement_id=reinstates_movement_id,
+        opening_basis=opening_basis,
+        gross_weight_mg=gross_weight_mg,
+        tare_weight_mg=tare_weight_mg,
     )
 
 

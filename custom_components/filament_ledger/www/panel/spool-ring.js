@@ -43,6 +43,7 @@ function spoolRing(size, percentage, colour) {
   return `<svg class="ring" viewBox="0 0 ${box} ${box}" aria-hidden="true"
       style="--ring-circ:${circumference};color:${esc(colour)}">
       <circle class="ring-track" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"></circle>
+      <circle class="ring-outline" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w + 2}" fill="none" stroke="var(--fl-ink-dim)"></circle>
       <circle class="ring-arc" cx="${mid}" cy="${mid}" r="${r}" stroke-width="${w}"
         stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"></circle>
     </svg>`;

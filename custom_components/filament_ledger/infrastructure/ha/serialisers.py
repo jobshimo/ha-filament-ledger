@@ -93,6 +93,24 @@ def spool_summary(summary: SpoolSummary) -> dict[str, Any]:
         "material_kind": spool.material.kind.value,
         "colour": spool.colour.display_hex,
         "colour_hex8": spool.colour.hex8,
+        "colour_known": spool.colour_known,
+        "colour_rgba": "#" + spool.colour.hex8 if spool.colour_known else None,
+        "opened_at": spool.opened_at.isoformat() if spool.opened_at else None,
+        "opening_basis": summary.opening_basis,
+        "gross_weight_g": summary.gross_weight_mg / 1000
+        if summary.gross_weight_mg is not None
+        else None,
+        "tare_weight_g": summary.tare_weight_mg / 1000
+        if summary.tare_weight_mg is not None
+        else None,
+        "effective_low_stock_threshold_g": summary.effective_low_stock_threshold_mg / 1000,
+        "low_stock_threshold_inherited": spool.low_stock_threshold_mg is None,
+        "low_stock_threshold_g": spool.low_stock_threshold_mg / 1000
+        if spool.low_stock_threshold_mg is not None
+        else None,
+        "low_stock_eligible": summary.state.value in ("ACTIVE", "DEPLETED"),
+        "is_low_stock": summary.is_low_stock,
+        "last_low_stock_occurrence_id": spool.last_low_stock_occurrence_id,
         "foreground": spool.colour.foreground.display_hex,
         "balance_g": whole_grams(summary.balance),
         "balance_exact_g": grams(summary.balance),
@@ -218,7 +236,8 @@ def movement_line(line: GlobalHistoryLine) -> dict[str, Any]:
         "movement_id": movement.id,
         "spool_id": movement.spool_id,
         "spool_name": line.spool_name,
-        "spool_colour": line.spool_colour.display_hex,
+        "spool_colour": line.spool_colour.display_hex if line.spool_colour_known else None,
+        "spool_colour_rgba": "#" + line.spool_colour.hex8 if line.spool_colour_known else None,
         "type": movement.type.value,
         "amount_g": grams(movement.amount),
         "direction": entry_direction(movement),
@@ -263,7 +282,8 @@ def _trashed_movement(entry: TrashedMovement) -> dict[str, Any]:
         "movement_id": movement.id,
         "spool_id": entry.spool.id,
         "spool_name": entry.spool.display_name,
-        "spool_colour": entry.spool.colour.display_hex,
+        "spool_colour": entry.spool.colour.display_hex if entry.spool.colour_known else None,
+        "spool_colour_rgba": "#" + entry.spool.colour.hex8 if entry.spool.colour_known else None,
         # The two retirement facts, not the derived `SpoolState`. A trash row never shows
         # SEALED or ACTIVE, and deriving those would cost a balance read per row to
         # produce a word nobody renders — while these two are what the explanatory line
@@ -320,7 +340,11 @@ def statistics_result(view: StatisticsView) -> dict[str, Any]:
             "total": view.reviews.total,
         },
         "by_colour": [
-            {"colour": entry.colour.display_hex, "grams": whole_grams(entry.grams)}
+            {
+                "colour": entry.colour.display_hex if entry.colour_known else None,
+                "colour_rgba": "#" + entry.colour.hex8 if entry.colour_known else None,
+                "grams": whole_grams(entry.grams),
+            }
             for entry in view.by_colour
         ],
         "by_material": [
@@ -404,6 +428,7 @@ def _slot_sync(outcome: SlotSyncOutcome) -> dict[str, Any]:
         "name_hint": reading.name,
         "material_hint": reading.material,
         "colour_hint": reading.colour.display_hex if reading.colour else None,
+        "colour_hint_rgba": "#" + reading.colour.hex8 if reading.colour else None,
         # Whole grams, like every other opening weight on the wire: the figure fills a
         # form field the user may type over, and a tenth would claim a precision a
         # nominal reel weight does not have.

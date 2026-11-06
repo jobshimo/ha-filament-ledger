@@ -347,6 +347,9 @@ class DetectSpool:
         """
         if not self.auto_register or reading.tag is None:
             return
+        occupant = await self.spools.find_by_location(AmsSlot(reading.tray))
+        if occupant is not None and occupant.tag_uid is None:
+            return  # A manual assignment remains authoritative until a known identity replaces it.
         if reading.material is None or reading.colour is None:
             return  # a spool the system cannot describe is a spool it must not invent
         if reading.reel is not None:
@@ -413,6 +416,9 @@ class DetectSpool:
                     # The opening balance is the configured default nobody confirmed
                     # today, and the history's provenance label must say so.
                     movement_source=MovementSource.AUTOMATIC,
+                    opening_basis="DETECTED_NOMINAL"
+                    if reading.weight is not None
+                    else "CONFIGURED_DEFAULT",
                     # Reaching here with candidates means the chip is spoken for but the
                     # reel is genuinely new — two reels whose chip UIDs collide, or a
                     # legacy row that speaks for a different reel. Either way the duplicate

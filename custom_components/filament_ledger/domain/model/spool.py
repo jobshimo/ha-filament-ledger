@@ -91,7 +91,32 @@ class Spool:
     # again on restore.
     deleted_reason: str | None = None
 
+    opened_at: datetime | None = None
+    colour_known: bool = True
+    low_stock_threshold_mg: int | None = None
+    low_stock_armed: bool = False
+    low_stock_baseline_threshold_mg: int = 100000
+    last_low_stock_occurrence_id: str | None = None
+
     def __post_init__(self) -> None:
+        if not isinstance(self.colour_known, bool) or not isinstance(self.low_stock_armed, bool):
+            raise InvalidValueError("Colour-known and low-stock armed must be booleans")
+        if self.opened_at is not None and (
+            self.opened_at.tzinfo is None or self.opened_at.utcoffset() is None
+        ):
+            raise InvalidValueError("Opened timestamp must include a UTC offset")
+        for threshold in (self.low_stock_threshold_mg, self.low_stock_baseline_threshold_mg):
+            if threshold is not None and (
+                not isinstance(threshold, int) or isinstance(threshold, bool)
+            ):
+                raise InvalidValueError("Threshold must be integer milligrams")
+        if (
+            self.low_stock_threshold_mg is not None
+            and not 0 < self.low_stock_threshold_mg <= 10000000
+        ):
+            raise InvalidValueError("low_stock_threshold_mg must be positive and at most 10000 g")
+        if self.low_stock_baseline_threshold_mg <= 0:
+            raise InvalidValueError("low_stock_baseline_threshold_mg must be positive")
         if not self.opening_weight.is_positive:
             msg = f"opening_weight must be > 0, got {self.opening_weight.as_decimal} g"
             raise InvalidValueError(msg)
@@ -146,6 +171,7 @@ class Spool:
             balance=balance,
             movement_count=movement_count,
             deleted_at=self.deleted_at,
+            opened_at=self.opened_at,
         )
 
     def remaining_percentage(self, balance: Grams) -> Percentage:
@@ -190,6 +216,10 @@ class Spool:
             )
             raise SpoolDeletedError(msg)
 
+    def opened(self, at: datetime) -> Spool:
+        self._guard_in_inventory()
+        return self if self.opened_at is not None else replace(self, opened_at=at)
+
     def moved_to(self, location: Location) -> Spool:
         """Change location. Records no movement — moving a spool consumes no filament.
 
@@ -223,7 +253,7 @@ class Spool:
         throw it away, or was it registered by mistake?* (docs/14 §14.4.3).
         """
         self._guard_in_inventory()
-        return replace(self, location=Storage(), discarded_at=at)
+        return replace(self, location=Storage(), discarded_at=at, low_stock_armed=False)
 
     def deleted(self, at: datetime, reason: str | None = None) -> Spool:
         """Retract the registration: the spool was never really here (docs/14 §14.4.3).
@@ -244,7 +274,9 @@ class Spool:
         caption. A row that retired itself owes the user a sentence.
         """
         self._guard_in_inventory()
-        return replace(self, location=Storage(), deleted_at=at, deleted_reason=reason)
+        return replace(
+            self, location=Storage(), deleted_at=at, low_stock_armed=False, deleted_reason=reason
+        )
 
     def restored(self) -> Spool:
         """Bring a deleted spool back — and its history with it.

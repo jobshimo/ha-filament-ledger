@@ -284,7 +284,7 @@ export class PrinterViews {
             s.location.slot === tray.slot,
         );
         const swatch = tray.colour_hint
-          ? `<div class="reel" style="background:${esc(tray.colour_hint)}"></div>`
+          ? `<div class="reel" style="background:${esc(tray.colour_hint_rgba ?? tray.colour_hint)}"></div>`
           : `<div class="reel empty-reel"></div>`;
         const reported = [tray.name_hint, tray.material_hint].filter(Boolean).map(esc).join(" · ");
         return `<div class="card tray">

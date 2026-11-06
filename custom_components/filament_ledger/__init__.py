@@ -37,7 +37,7 @@ LOGGER = logging.getLogger(__name__)
 
 # Plain strings rather than the `Platform` enum, so this module needs nothing from Home
 # Assistant at import time. `async_forward_entry_setups` accepts either.
-PLATFORMS: list[str] = ["sensor"]
+PLATFORMS: list[str] = ["sensor", "binary_sensor"]
 
 # The ledger is push-shaped: it changes when somebody does something. This interval is a
 # safety net for a missed refresh, not the mechanism.
@@ -193,6 +193,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     version = await database.migrate()
     LOGGER.debug("database at schema version %s", version)
 
+    from .application.low_stock import LowStock
+    from .application.open_spool import OpenSpool
+    from .const import CONF_LOW_STOCK_THRESHOLD, DEFAULT_LOW_STOCK_THRESHOLD_G
+    from .infrastructure.persistence.registration_request_repository import (
+        SqliteRegistrationRequestRepository,
+    )
+
     spools = SqliteSpoolRepository(database)
     movements = SqliteMovementRepository(database)
     # Its own repository because it is its own thing: a status record *about* a movement,
@@ -209,6 +216,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     ) / Decimal(100)
     anomalies = AnomalyDetector(reconciliation_delta_ratio=threshold)
 
+    low_stock_threshold_mg = Grams.of(
+        settings.get(CONF_LOW_STOCK_THRESHOLD, DEFAULT_LOW_STOCK_THRESHOLD_G)
+    ).milligrams
     queries = Queries(
         spools=spools,
         movements=movements,
@@ -217,8 +227,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         voids=voids,
         clock=clock,
         confidence=ConfidenceEvaluator(),
+        low_stock_threshold_mg=low_stock_threshold_mg,
         anomalies=anomalies,
     )
+
+    low_stock = LowStock(spools, movements, queries, clock, events)
+    async with database:
+        for summary in await queries.overview(include_discarded=True):
+            await low_stock.baseline(summary.spool.id)
 
     # Built once, used twice: the websocket approves against it indirectly, and
     # `TrackPrintJob` opens through it when the gateway reports an interrupted job.
@@ -232,7 +248,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # `TrackPrintJob` hands it every FINISHED job; the review queue is its degradation
     # path for anything the printer could not attribute.
     record_print_consumption = RecordPrintConsumption(
-        jobs, spools, movements, open_pending_review, clock, events, database, anomalies
+        jobs,
+        spools,
+        movements,
+        open_pending_review,
+        clock,
+        events,
+        database,
+        anomalies,
+        low_stock=low_stock,
     )
 
     # The defaults, read once here for the two consumers that apply them: the runtime
@@ -248,15 +272,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
     # Built once, then shared: `UseCases` carries it for every interactive register path,
     # and `DetectSpool` invokes the very same instance for auto-registration — two
     # constructions would be two places for the wiring to drift apart.
-    register_spool = RegisterSpool(spools, movements, clock, events, database)
+    register_spool = RegisterSpool(
+        spools,
+        movements,
+        clock,
+        events,
+        database,
+        SqliteRegistrationRequestRepository(database),
+        low_stock_threshold_mg=low_stock_threshold_mg,
+    )
 
     # `database` is passed where a `UnitOfWork` is expected: the connection is the thing
     # that can make a multi-write sequence atomic, so it is the thing that implements it.
     use_cases = UseCases(
+        open_spool=OpenSpool(spools, clock, database),
         register_spool=register_spool,
-        reconcile_spool=ReconcileSpool(spools, movements, clock, events, database, anomalies),
-        discard_filament=DiscardFilament(spools, movements, clock, events, database, anomalies),
-        adjust_spool=AdjustSpool(spools, movements, clock, events, database, anomalies),
+        reconcile_spool=ReconcileSpool(
+            spools, movements, clock, events, database, anomalies, low_stock=low_stock
+        ),
+        discard_filament=DiscardFilament(
+            spools, movements, clock, events, database, anomalies, low_stock=low_stock
+        ),
+        adjust_spool=AdjustSpool(
+            spools, movements, clock, events, database, anomalies, low_stock=low_stock
+        ),
         mount_spool=MountSpool(spools, clock, events, database),
         mount_spool_externally=MountSpoolExternally(spools, events, database),
         unmount_spool=UnmountSpool(spools, events, database),
@@ -280,7 +319,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
             # registration time, because a label is stored data, not a translated view.
             language=hass.config.language,
         ),
-        edit_spool_details=EditSpoolDetails(spools, database),
+        edit_spool_details=EditSpoolDetails(spools, database, low_stock=low_stock),
         # What the gateway's job events drive: starts become RUNNING rows, interrupted
         # endings become reviews, and a finish goes to UC-04 for the automatic
         # deduction. Classification arrives on the event itself (Q1, closed).
@@ -294,20 +333,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: LedgerConfigEntry) -> bo
         record_print_consumption=record_print_consumption,
         open_pending_review=open_pending_review,
         approve_review=ApproveReview(
-            reviews, spools, movements, jobs, clock, events, database, anomalies
+            reviews,
+            spools,
+            movements,
+            jobs,
+            clock,
+            events,
+            database,
+            anomalies,
+            low_stock=low_stock,
         ),
         dismiss_review=DismissReview(reviews, jobs, clock, events, database),
         # v1.0's corrections. Each one brackets its read-compute-write in the same unit of
         # work every other use case uses, and publishes after the commit.
         reassign_movement=ReassignMovement(
-            spools, movements, voids, clock, events, database, anomalies
+            spools, movements, voids, clock, events, database, anomalies, low_stock=low_stock
         ),
-        void_movement=VoidMovement(spools, movements, voids, clock, events, database, anomalies),
+        void_movement=VoidMovement(
+            spools, movements, voids, clock, events, database, anomalies, low_stock=low_stock
+        ),
         restore_movement=RestoreMovement(
-            spools, movements, voids, clock, events, database, anomalies
+            spools, movements, voids, clock, events, database, anomalies, low_stock=low_stock
         ),
         delete_spool=DeleteSpool(spools, clock, events, database),
-        restore_spool=RestoreSpool(spools, events, database),
+        restore_spool=RestoreSpool(spools, events, database, low_stock=low_stock),
         queries=queries,
     )
 

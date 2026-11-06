@@ -2,6 +2,7 @@
 //
 // Installed on the panel by `mixIn` (./mixin.js, ADR-0010); `this` is the panel.
 
+import { colourSample } from "./colour.js";
 import { esc } from "../i18n.js";
 import { fill, grams } from "./format.js";
 
@@ -40,7 +41,7 @@ export class TrashViews {
       .map(
         (spool) => `
       <div class="trash-row">
-        <span class="hist-dot" style="background:${esc(spool.colour)}"></span>
+        ${colourSample(spool, t)}
         <span class="trash-name">${esc(spool.name)}</span>
         <span class="muted small">${fill(
           t("trash.spoolMeta", {
@@ -94,7 +95,7 @@ export class TrashViews {
     meta = fill(meta, "when", this.when(entry.voided_at));
     return `
       <div class="trash-row">
-        <span class="hist-dot" style="background:${esc(entry.spool_colour)}"></span>
+        <span class="hist-dot" title="${entry.spool_colour == null ? t("colour.unknown") : esc(entry.spool_colour_rgba ?? entry.spool_colour)}" style="background:${entry.spool_colour == null ? "var(--fl-surface-sunken)" : esc(entry.spool_colour_rgba ?? entry.spool_colour)}"></span>
         <span class="trash-name">${esc(entry.spool_name)}</span>
         <span class="muted small">${meta}</span>
         <span class="trash-acts">${action}</span>

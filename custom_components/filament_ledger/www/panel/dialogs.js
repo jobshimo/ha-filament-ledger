@@ -4,6 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { fill, grams, signed, typedGrams } from "./format.js";
+import { colourValue, colourSample, colourEditor } from "./colour.js";
 import { spoolRing } from "./spool-ring.js";
 
 const MATERIALS = ["PLA", "PETG", "ABS", "ASA", "TPU", "PC", "PA", "PVA", "SUPPORT", "OTHER"];
@@ -23,6 +24,7 @@ export class DialogViews {
       finish: () => this.finishForm(),
       discard: () => this.discardForm(),
       mount: () => this.mountForm(),
+      "assignment-recovery": () => this.assignmentRecovery(),
       "dismiss-review": () => this.dismissReviewForm(),
       "edit-spool": () => this.editSpoolForm(),
       reassign: () => this.reassignForm(),
@@ -34,55 +36,55 @@ export class DialogViews {
     const body = bodies[this._dialog.kind];
     return `
       <div class="scrim" data-action="close-dialog">
-        <div class="modal">
+        <div class="modal ${this._dialog.kind === "new-spool" ? "registration-modal" : ""}" role="dialog" aria-modal="true" aria-label="${this._t("navigation.task")}" tabindex="-1">
           ${body ? body() : ""}
         </div>
       </div>`;
   }
 
+  assignmentRecovery() {
+    return `<h3>${this._t("position.saved")}</h3><p>${this._t("position.savedHelp")}</p>
+      <p>${this._t("position.destination", {printer: this._dialog.printer || "—", position: this._dialog.external ? this._dialog.holder || 1 : `${this._dialog.ams || 1} / ${this._dialog.slot}`})}</p>
+      <button data-action="${this._dialog.conflict ? "assignment-review" : "assignment-retry"}">${this._t(this._dialog.conflict ? "position.review" : "position.retry")}</button>
+      ${this.formActions(null)}`;
+  }
+
   newSpoolForm() {
     const t = this._t;
-    const defaults = this._stock?.defaults || { opening_weight_g: 1000, core_weight_g: 250 };
-    // Pre-fill from a sync outcome when one opened this dialog (docs/06 §6.4): material,
-    // colour, name, tag and — when the tag carried one — the reel's own weight are what
-    // the tray reported.
-    const hint = this._dialog?.prefill ?? null;
-    // The tagged reel's weight wins over the configured default, so registering by hand
-    // and letting auto-registration do it produce the same number for the same reel.
-    // Still only a pre-fill: `tray_weight` is what the reel held *new*, and somebody
-    // registering a half-used spool must be able to type the figure they measured over
-    // it. Absent (the tag said nothing) falls back to the default, as it always did.
-    const opening = hint?.weight_hint_g ?? defaults.opening_weight_g;
-    // A hint outside the list (say "PLA-CF") must not fall through to the browser's
-    // default first option — PLA is specific, and wrong, silently. OTHER plus the raw
-    // hint in the name field drops nothing the printer said (TrayReading's guarantee).
-    const hinted = hint?.material_hint ?? null;
-    const material = hinted ? (MATERIALS.includes(hinted) ? hinted : "OTHER") : null;
-    const materialOther = hinted && !MATERIALS.includes(hinted) ? hinted : "";
+    const d = this._registrationDraft();
+    if (d.savedSpoolId) {
+      this._dialog.savedSpoolId = d.savedSpoolId;
+      this._dialog.kind = "assignment-recovery";
+      return this.assignmentRecovery();
+    }
+    const options = (values, selected, prefix) => values.map(v => `<option value="${v}" ${v === selected ? "selected" : ""}>${t(prefix + v)}</option>`).join("");
+    const gross = d.opening_basis === "MEASURED_GROSS";
     return `
-      <form data-form="new-spool">
-        <h3>${t("dlg.registerTitle")}</h3>
-        <label>${t("dlg.material")}
-          <select name="material">${MATERIALS.map((m) => `<option ${m === material ? "selected" : ""}>${m}</option>`).join("")}</select>
-        </label>
-        <label>${t("dlg.materialOther")}<input name="material_other" value="${esc(materialOther)}" placeholder="${t("dlg.materialOtherPlaceholder")}"></label>
-        <label>${t("dlg.colour")}<input name="colour" value="${esc(hint?.colour_hint || "#000000")}" type="color"></label>
-        <label>${t("dlg.openingWeight")}
-          <input name="opening_weight_g" type="number" step="0.1" min="1" value="${esc(opening)}" required>
-        </label>
-        <label>${t("dlg.coreWeight")}
-          <input name="core_weight_g" type="number" step="0.1" min="0" value="${defaults.core_weight_g}" required>
-          <small>${t("dlg.coreWeightHelp")}</small>
-        </label>
-        <label>${t("dlg.vendor")}<input name="vendor" placeholder="${t("dlg.vendorPlaceholder")}"></label>
-        <label>${t("dlg.label")}<input name="label" value="${esc(hint?.name_hint || "")}" placeholder="${t("dlg.labelPlaceholder")}"></label>
-        ${
-          hint?.tag_uid
-            ? `<input type="hidden" name="tag_uid" value="${esc(hint.tag_uid)}">
-        <p class="muted small">${t("dlg.tagFromSlot", { tag: hint.tag_uid, slot: hint.slot })}</p>`
-            : ""
-        }
-        ${this.formActions(t("dlg.register"))}
+      <form data-form="new-spool" aria-labelledby="registration-title">
+        <h3 id="registration-title">${t("dlg.registerTitle")}</h3>
+        <div class="registration-sections">
+        <fieldset><legend>${t("registration.identity")}</legend>
+          <label>${t("dlg.material")}<select name="material">${MATERIALS.map(m => `<option ${m === d.material ? "selected" : ""}>${m}</option>`).join("")}</select></label>
+          <label>${t("dlg.materialOther")}<input name="material_other" value="${esc(d.material_other)}" maxlength="120"></label>
+          <label>${t("dlg.vendor")}<input name="vendor" value="${esc(d.vendor)}" placeholder="${t("dlg.vendorPlaceholder")}" maxlength="120"></label>
+          <label>${t("dlg.label")}<input name="label" value="${esc(d.label)}" maxlength="120"></label>
+          ${colourEditor(d.colour, d.colour_known !== "false", t)}
+        </fieldset>
+        <fieldset><legend>${t("registration.quantity")}</legend>
+          <label>${t("registration.condition")}<select name="opening_condition">${options(["new", "partly_used"], d.opening_condition, "registration.condition.")}</select></label>
+          <label>${t("registration.basis")}<select name="opening_basis">${options(["DECLARED_NET", "MEASURED_NET", "MEASURED_GROSS"], d.opening_basis, "registration.basis.")}</select></label>
+          <label data-quantity-mode="net" ${gross ? "hidden" : ""}>${t("dlg.openingWeight")}<input name="opening_weight_g" type="number" step="0.001" min="0.001" max="10000" value="${esc(d.opening_weight_g)}" ${gross ? "disabled" : ""}></label>
+          <label data-quantity-mode="gross" ${gross ? "" : "hidden"}>${t("registration.gross")}<input name="gross_weight_g" type="number" step="0.001" min="0.001" max="10000" value="${esc(d.gross_weight_g)}" ${gross ? "" : "disabled"}></label>
+          <label>${t("dlg.coreWeight")}<input name="core_weight_g" type="number" step="0.001" min="0" max="10000" value="${esc(d.core_weight_g)}"></label>
+          <p data-preview role="status" aria-live="polite">${this._preview ? t("registration.preview", {grams: this._preview.opening_weight_g}) : esc(this._previewError || t("registration.previewPending"))}</p>
+        </fieldset>
+        </div>
+        <details><summary>${t("registration.optionalTag")}</summary>
+          <label>${t("dlg.tag")}<input name="tag_uid" value="${esc(d.tag_uid)}"></label>
+          <label class="check"><input type="checkbox" name="confirm_duplicate_tag" ${d.confirm_duplicate_tag === "on" ? "checked" : ""}>${t("registration.duplicateTag")}</label>
+        </details>
+        <div class="actions"><button type="button" data-action="close-dialog">${t("act.cancel")}</button>
+        <button class="primary" type="submit" ${!this._preview || this._registrationPending ? "disabled" : ""}>${t("dlg.register")}</button></div>
       </form>`;
   }
 
@@ -108,13 +110,16 @@ export class DialogViews {
           ).join("")}</select>
         </label>
         <label>${t("dlg.materialOther")}<input name="material_other" value="${esc(other)}" placeholder="${t("dlg.materialOtherPlaceholder")}"></label>
-        <label>${t("dlg.colour")}<input name="colour" value="${esc(spool.colour)}" type="color"></label>
+        ${colourEditor(spool.colour_rgba ?? spool.colour, spool.colour_known, t)}
         <label>${t("dlg.vendor")}<input name="vendor" value="${esc(spool.vendor ?? "")}" placeholder="${t("dlg.vendorPlaceholder")}"></label>
         <label>${t("dlg.label")}<input name="label" value="${esc(spool.label ?? "")}" placeholder="${t("dlg.labelPlaceholder")}"></label>
         <label>${t("dlg.coreWeight")}
           <input name="core_weight_g" type="number" step="0.1" min="0" value="${esc(spool.core_weight_g)}" required>
         </label>
         <p class="muted small">${t("dlg.editClearNote")}</p>
+        <label>${t("lowStock.override")}<input name="low_stock_threshold_g" type="number" step="0.001" min="0.001" max="10000" value="${esc(spool.low_stock_threshold_g ?? "")}" placeholder="${esc(spool.effective_low_stock_threshold_g ?? 100)}"></label>
+        <small>${t("lowStock.inheritHelp")}</small>
+
         ${this.editTagField(spool)}
         ${this.editCorrectionSection(spool)}
         ${this.formActions(t("act.save"))}
@@ -511,11 +516,13 @@ export class DialogViews {
     const title = external ? t("dlg.mountExternalTitle") : t("dlg.mountTitle", { slot });
     if (!available.length) {
       return `<h3>${title}</h3>
+        <button data-action="position-register" class="primary">${t("inv.newSpool")}</button>
         <p class="muted">${t("dlg.mountNone")}</p>
         ${this.formActions(null)}`;
     }
     return `
       <h3>${title}</h3>
+      <button data-action="position-register" class="primary">${t("inv.newSpool")}</button>
       ${this.spoolPickerSections(available, "mount-pick")}
       ${this.formActions(null)}`;
   }
@@ -523,12 +530,12 @@ export class DialogViews {
   /** The card's inside — ring, name, material, balance — shared by every spool choice. */
   spoolChoiceBody(spool) {
     return `<span class="mc-art">
-        ${spoolRing("slot", spool.percentage, spool.colour)}
-        <span class="ring-mid"><span class="ring-hub" style="background:${esc(spool.colour)}"></span></span>
+        ${spoolRing("slot", spool.percentage, colourValue(spool))}
+        <span class="ring-mid"><span class="ring-hub" style="background:${esc(colourValue(spool))}"></span></span>
       </span>
       <span class="mc-body">
         <span class="mc-name">${esc(spool.name)}</span>
-        <span class="mc-sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</span>
+        <span class="mc-sub">${colourSample(spool, this._t)} ${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</span>
         <span class="mc-grams">${spool.balance_g}<small> g</small> · ${spool.percentage}%</span>
       </span>`;
   }
@@ -599,6 +606,7 @@ export class DialogViews {
     layer.dataset.action = "close-picker";
     layer.innerHTML = `<div class="modal picker-modal">
       <h3>${title}</h3>
+      <button data-action="position-register" class="primary">${t("inv.newSpool")}</button>
       ${this.spoolPickerSections(candidates, "picker-pick")}
       <div class="actions"><button type="button" data-action="close-picker">${t("act.cancel")}</button></div>
     </div>`;

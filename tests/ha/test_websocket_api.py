@@ -129,6 +129,9 @@ class FakeConnection:
 
     def send_message(self, message: dict[str, object]) -> None:
         self.messages.append(message)
+        if message.get("type") == "result" and message.get("success") is False:
+            error = cast("dict[str, str]", message["error"])
+            self.replies[cast(int, message["id"])] = Reply(error=(error["code"], error["message"]))
 
     def send_result(self, msg_id: int, result: object = None) -> None:
         self.replies[msg_id] = Reply(result=result)
@@ -698,7 +701,14 @@ class TestUpdateTheTag:
     ) -> None:
         """Criterion 5. The dialog never offers the input; the command refuses it anyway,
         and `guarded` turns the domain error into something the panel can render."""
-        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4", tag_source="DETECTED")
+        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4")
+
+        from dataclasses import replace
+
+        repo = SqliteSpoolRepository(harness.ledger.database)
+        registered = await repo.get(SpoolId(spool_id))
+        assert registered is not None
+        await repo.save(replace(registered, tag_source=TagSource.DETECTED))
 
         code, message = await ws.error(UPDATE, spool_id=spool_id, tag_uid="BEEF0001")
         assert code == "TagNotEditableError"
@@ -729,10 +739,16 @@ class TestUpdateTheTag:
         self, ws: WsClient, harness: Harness
     ) -> None:
         """Criterion 9, over the command the panel's register-from-sync path calls."""
-        spool_id = await a_created_spool(ws, tag_uid="A1B2C3D4", tag_source="DETECTED")
-
-        spool = (await harness.ledger.use_cases.queries.detail(SpoolId(spool_id))).summary.spool
-        assert spool.tag_source is TagSource.DETECTED
+        code, message = await ws.error(
+            CREATE,
+            material="PLA",
+            colour="000000",
+            opening_weight_g=1000,
+            tag_uid="A1B2C3D4",
+            tag_source="DETECTED",
+        )
+        assert code == "InvalidValueError"
+        assert "printer detection" in message
 
     async def test_an_omitted_source_registers_a_tag_as_the_users_own(
         self, ws: WsClient, harness: Harness
@@ -1451,6 +1467,7 @@ class TestMovements:
                 "spool_id": spool_id,
                 "spool_name": "PLA Basic Black",
                 "spool_colour": "#000000",
+                "spool_colour_rgba": "#000000FF",
                 "type": "MANUAL_ADJUSTMENT",
                 "amount_g": -100.0,
                 "direction": "DECREASE",
@@ -1467,6 +1484,7 @@ class TestMovements:
                 "spool_id": spool_id,
                 "spool_name": "PLA Basic Black",
                 "spool_colour": "#000000",
+                "spool_colour_rgba": "#000000FF",
                 "type": "OPENING_BALANCE",
                 "amount_g": 1000.0,
                 # An opening balance is the one entry that only ever goes one way, and
@@ -1503,6 +1521,7 @@ class TestMovements:
             "spool_id": spool_id,
             "spool_name": "Bambu Lab PLA",
             "spool_colour": "#000000",
+            "spool_colour_rgba": "#000000FF",
             "type": "ESTIMATED_CONSUMPTION",
             "amount_g": -71.0,
             "direction": "DECREASE",
@@ -1672,7 +1691,7 @@ class TestStatistics:
             "wasted_g": 12,
             "prints": {"finished": 1, "cancelled": 0, "failed": 0, "total": 1},
             "reviews": {"approved": 0, "dismissed": 0, "total": 0},
-            "by_colour": [{"colour": "#000000", "grams": 84}],
+            "by_colour": [{"colour": "#000000", "colour_rgba": "#000000FF", "grams": 84}],
             "by_material": [{"material": "PLA", "grams": 84}],
             "top_prints": [
                 {
@@ -1851,6 +1870,7 @@ class TestTraysSync:
             "name_hint": "Bambu PLA Matte",
             "material_hint": "PLA",
             "colour_hint": "#FFFFFF",
+            "colour_hint_rgba": "#FFFFFFFF",
             "weight_hint_g": 1000,
             "spool_id": None,
             "spool_name": None,
@@ -1895,6 +1915,7 @@ class TestTraysSync:
             "name_hint": "Bambu PLA Basic",
             "material_hint": "PLA",
             "colour_hint": "#5E43B7",
+            "colour_hint_rgba": "#5E43B7FF",
             "weight_hint_g": 1000,
             "spool_id": spool_id,
             "spool_name": "PLA Basic Purple",
@@ -1927,6 +1948,7 @@ class TestTraysSync:
             "name_hint": "Bambu PLA Basic",
             "material_hint": "PLA",
             "colour_hint": "#5E43B7",
+            "colour_hint_rgba": "#5E43B7FF",
             "weight_hint_g": 1000,
             "spool_id": None,
             "spool_name": None,

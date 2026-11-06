@@ -58,12 +58,13 @@ def strings(node: object, prefix: str = "") -> Iterator[tuple[str, str]]:
 LANGUAGES = sorted(path.name for path in TRANSLATIONS.glob("*.json"))
 
 
-def test_both_languages_are_present() -> None:
+def test_all_supported_languages_are_present() -> None:
     """Guards the parity test below from passing because a file went missing."""
-    assert LANGUAGES == ["en.json", "es.json"]
+    assert LANGUAGES == ["en.json", "es.json", "tr.json"]
 
 
-def test_es_mirrors_en_key_for_key() -> None:
+@pytest.mark.parametrize("language", ["es.json", "tr.json"])
+def test_other_languages_mirror_en_key_for_key(language: str) -> None:
     """Structure must match exactly, in both directions.
 
     A key only in EN is a Spanish instance falling back to English silently; a key only in
@@ -71,10 +72,10 @@ def test_es_mirrors_en_key_for_key() -> None:
     is not.
     """
     english = set(paths(load("en.json")))
-    spanish = set(paths(load("es.json")))
+    localized = set(paths(load(language)))
 
-    assert sorted(english - spanish) == [], "keys missing from es.json"
-    assert sorted(spanish - english) == [], "keys in es.json that en.json does not have"
+    assert sorted(english - localized) == [], f"keys missing from {language}"
+    assert sorted(localized - english) == [], f"extra keys in {language}"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -111,7 +112,7 @@ I18N = (
 )
 
 _KEY = re.compile(r'^ {2}"([\w.]+)":\s*(.*?)(?=^ {2}"[\w.]+":|\Z)', re.MULTILINE | re.DOTALL)
-_TOKEN = re.compile(r"\[\[(\w+)\]\]")
+_TOKEN = re.compile(r"(?:\[\[|\{\{)\s*(\w+)\s*(?:\]\]|\}\})")
 
 
 def table(name: str) -> dict[str, str]:
@@ -126,34 +127,37 @@ def table(name: str) -> dict[str, str]:
     return dict(_KEY.findall(source[start : source.index("\n};", start)]))
 
 
-def test_the_panel_table_has_both_languages() -> None:
+def test_the_panel_table_has_all_supported_languages() -> None:
     """Guards the parity test below from passing because a table went missing."""
     assert len(table("EN")) > 0
     assert len(table("ES")) > 0
+    assert len(table("TR")) > 0
 
 
-def test_the_panel_tables_mirror_each_other_key_for_key() -> None:
+@pytest.mark.parametrize("language", ["ES", "TR"])
+def test_the_panel_tables_mirror_each_other_key_for_key(language: str) -> None:
     """A key only in EN is a Spanish panel silently falling back to English — which the
     translator does on purpose, so nothing on screen looks broken and nobody ever notices.
     A key only in ES is a translation of something that no longer exists, which reads as
     coverage and is not."""
     english = set(table("EN"))
-    spanish = set(table("ES"))
+    localized = set(table(language))
 
-    assert sorted(english - spanish) == [], "keys missing from the ES table in www/i18n.js"
-    assert sorted(spanish - english) == [], "keys in the ES table that EN does not have"
+    assert sorted(english - localized) == [], f"keys missing from {language} in www/i18n.js"
+    assert sorted(localized - english) == [], f"extra keys in {language} in www/i18n.js"
 
 
-def test_every_panel_string_carries_the_same_placeholders_in_both_languages() -> None:
+@pytest.mark.parametrize("language", ["ES", "TR"])
+def test_every_panel_string_carries_the_same_placeholders(language: str) -> None:
     """A translation that drops a `[[token]]` loses the number the sentence was about, and
     one that invents a token renders the literal `[[token]]` on screen. Both are silent:
     the substitution leaves an unmatched token standing rather than blanking it, precisely
     so the failure is visible — and this makes it visible in CI instead of on a phone."""
     english = table("EN")
-    spanish = table("ES")
+    localized = table(language)
     mismatched = {
         key: (sorted(set(_TOKEN.findall(english[key]))), sorted(set(_TOKEN.findall(value))))
-        for key, value in spanish.items()
+        for key, value in localized.items()
         if key in english and set(_TOKEN.findall(english[key])) != set(_TOKEN.findall(value))
     }
 
@@ -165,7 +169,7 @@ def test_no_panel_string_is_blank() -> None:
     sees an unlabelled control rather than an English one."""
     offenders = [
         key
-        for language in ("EN", "ES")
+        for language in ("EN", "ES", "TR")
         for key, value in table(language).items()
         if not value.strip().strip(",")
     ]

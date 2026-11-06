@@ -989,3 +989,16 @@ class TestTheOldestRowSurvivesWhicheverSideWasReadFirst:
         survivors = [s.spool.id for s in await ledger.use_cases.queries.overview()]
         assert survivors == [older]
         assert (await ledger.use_cases.queries.detail(newer)).summary.spool.is_deleted
+
+
+async def test_unknown_reading_does_not_auto_register_over_manual_untagged_assignment(
+    ledger: Ledger,
+) -> None:
+    from dataclasses import replace
+
+    spool_id = await a_spool(ledger)
+    await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+    detector = replace(ledger.use_cases.detect_spool, auto_register=True)
+    await detector.execute(a_full_reading(1))
+    assert len(await ledger.use_cases.queries.overview()) == 1
+    assert (await located(ledger, spool_id)).location == AmsSlot(a_tray(1))

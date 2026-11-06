@@ -738,3 +738,13 @@ non-discarded spool, which §2.3 establishes is legal. The system does not pick 
 fullest, or the first. It names the candidates and asks, because choosing wrong means every
 subsequent print deducts from a spool sitting on a shelf while the one in the machine runs
 out unannounced.
+
+---
+
+## Filament experience amendment (2026-11-06)
+
+Physical opening is an explicit optional UTC fact, separate from the derived lifecycle. Partly-used registration establishes it; legacy histories retain their existing derivation. Unknown colour has an explicit knownness flag; a compatibility colour must never be displayed/grouped as actual black. Opening movements capture declared/measured/default/detected basis and gross/tare when relevant without rewriting old entries. Confidence keeps its current algorithm and is displayed alongside its evidence basis.
+
+Thresholds are positive integer milligrams, optionally overridden per spool, with a 100 g household default. Current low stock is distinct from a qualifying crossing. Evaluate before/after quantities for the whole transaction, using final lifecycle eligibility and a durable armed/threshold baseline. Sealed/retired spools do not warn. Exactly one event publishes per qualifying crossing during uninterrupted commit/publication; restart/rule edits do not replay. Publication and destination receipt are not durable delivery guarantees.
+
+**Implementation evidence (2026-11-06).** Registration now stores opened-at and colour-known facts independently of RFID. Exact quantity validation is shared by preview and commit; legacy opening provenance remains unspecified. A legacy active spool does not acquire a guessed opening date when later consumption arrives.

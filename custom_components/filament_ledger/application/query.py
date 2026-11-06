@@ -39,6 +39,7 @@ from ..domain.service.confidence_evaluator import (
     anchor_movement,
     movements_since_anchor,
 )
+from ..domain.service.low_stock import is_low_stock
 from ..domain.value.colour import Colour
 from ..domain.value.confidence import Confidence
 from ..domain.value.grams import Grams
@@ -153,6 +154,16 @@ class SpoolSummary:
     movement_count: int
     last_movement_at: datetime | None
     has_anomaly: bool
+    effective_low_stock_threshold_mg: int = 100000
+    opening_basis: str = "LEGACY_UNSPECIFIED"
+    gross_weight_mg: int | None = None
+    tare_weight_mg: int | None = None
+
+    @property
+    def is_low_stock(self) -> bool:
+        return is_low_stock(
+            self.spool, self.state, self.balance.milligrams, self.effective_low_stock_threshold_mg
+        )
 
     @property
     def percentage(self) -> int:
@@ -242,6 +253,7 @@ class GlobalHistoryLine:
     # and part of the contract anyway, so a row can offer the right actions without a
     # second query. A row that says `voided` offers neither Delete nor Reassign.
     voided: bool = False
+    spool_colour_known: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +378,7 @@ class ColourConsumption:
 
     colour: Colour
     grams: Grams
+    colour_known: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -520,6 +533,8 @@ class Queries:
     confidence: ConfidenceEvaluator = field(default_factory=ConfidenceEvaluator)
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
 
+    low_stock_threshold_mg: int = 100000
+
     async def open_chapters(self) -> VoidChapters:
         """Every entry currently hidden as voided. One read, reused across a query pass."""
         return VoidChapters.of(await self.voids.list_open())
@@ -535,6 +550,7 @@ class Queries:
         # Two calls to `chapters.visible` would be two chances for the sentence to describe
         # a window the badge was not evaluated over.
         accounted = chapters.visible(history)
+        opening = next((m for m in history if m.type is MovementType.OPENING_BALANCE), None)
         return SpoolSummary(
             spool=spool,
             balance=current,
@@ -549,6 +565,11 @@ class Queries:
                 movements=accounted, opening_weight=spool.opening_weight
             ),
             confidence_basis=confidence_basis(accounted),
+            effective_low_stock_threshold_mg=spool.low_stock_threshold_mg
+            or self.low_stock_threshold_mg,
+            opening_basis=opening.opening_basis if opening else "LEGACY_UNSPECIFIED",
+            gross_weight_mg=opening.gross_weight_mg if opening else None,
+            tare_weight_mg=opening.tare_weight_mg if opening else None,
             # The count is of the whole history: it is what the detail view renders and
             # what SEALED is derived from, and hiding rows from it would make a spool
             # with one voided print read as never used.
@@ -561,11 +582,15 @@ class Queries:
             ),
         )
 
-    async def overview(self, *, include_discarded: bool = False) -> list[SpoolSummary]:
+    async def overview(
+        self, *, include_discarded: bool = False, filters: SpoolFilter | None = None
+    ) -> list[SpoolSummary]:
         """Inventory. Deleted spools are absent and there is no flag to bring them back:
         the Trash is where a retracted registration is seen, and `SpoolFilter.deleted_only`
         is how it asks (docs/14 §14.4.5)."""
-        spools = await self.spools.list(SpoolFilter(include_discarded=include_discarded))
+        spools = await self.spools.list(
+            filters if filters is not None else SpoolFilter(include_discarded=include_discarded)
+        )
         chapters = await self.open_chapters()
         summaries = [await self.summarise(spool, chapters) for spool in spools]
         # Depleted spools sink to the bottom but stay visible: still a real object until
@@ -578,6 +603,41 @@ class Queries:
                 -s.balance.milligrams,
             ),
         )
+
+    async def inventory(
+        self,
+        *,
+        search: str = "",
+        material: str = "",
+        location: str = "",
+        low_stock_only: bool = False,
+        sort: str = "default",
+        view: str = "all",
+    ) -> list[SpoolSummary]:
+        summaries = await self.overview(
+            filters=SpoolFilter(material=material or None, location_kind=location or None)
+        )
+        needle = search.strip().casefold()
+        selected = [
+            s
+            for s in summaries
+            if (view != "stock" or low_stock_only or s.state is not SpoolState.DEPLETED)
+            and (
+                not needle
+                or needle in " ".join((s.spool.display_name, s.spool.vendor or "")).casefold()
+            )
+            and (not material or s.spool.material.kind.value == material)
+            and (not location or describe_location(s.spool.location)["kind"] == location)
+            and (not low_stock_only or s.is_low_stock)
+        ]
+        if sort == "remaining":
+            return sorted(
+                selected,
+                key=lambda s: (s.balance.milligrams, s.spool.display_name.casefold(), s.spool.id),
+            )
+        if sort == "name":
+            return sorted(selected, key=lambda s: (s.spool.display_name.casefold(), s.spool.id))
+        return selected
 
     async def detail(self, spool_id: SpoolId) -> SpoolDetail:
         """Everything, always — including a deleted spool's, reached from the Trash.
@@ -667,6 +727,7 @@ class Queries:
                     movement=movement,
                     spool_name=spool.display_name,
                     spool_colour=spool.colour,
+                    spool_colour_known=spool.colour_known,
                     job_name=job.name if job is not None else None,
                 )
             )
@@ -800,7 +861,7 @@ class Queries:
         # would read as that function to anyone skimming.
         used = Grams.zero()
         wasted = Grams.zero()
-        by_colour: dict[Colour, Grams] = {}
+        by_colour: dict[tuple[Colour, bool], Grams] = {}
         by_material: dict[str, Grams] = {}
         per_job: dict[PrintJobId, Grams] = {}
         spools: dict[SpoolId, Spool | None] = {}
@@ -820,7 +881,11 @@ class Queries:
                 wasted = wasted + amount
             elif movement.type in _CONSUMPTION_TYPES:
                 used = used + amount
-                by_colour[spool.colour] = by_colour.get(spool.colour, Grams.zero()) + amount
+                colour_key = (
+                    spool.colour if spool.colour_known else Colour.parse("000000"),
+                    spool.colour_known,
+                )
+                by_colour[colour_key] = by_colour.get(colour_key, Grams.zero()) + amount
                 material = spool.material.display_name
                 by_material[material] = by_material.get(material, Grams.zero()) + amount
                 if movement.job_id is not None:
@@ -840,7 +905,7 @@ class Queries:
             ),
             reviews=await self._review_outcomes(since),
             by_colour=[
-                ColourConsumption(colour=colour, grams=amount)
+                ColourConsumption(colour=colour[0], colour_known=colour[1], grams=amount)
                 for colour, amount in _descending(by_colour)
             ],
             by_material=[

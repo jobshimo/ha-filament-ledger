@@ -24,6 +24,8 @@ export class SettingsViews {
       "",
       `<section class="stack">
         ${this._settings ? this.settingsForm(this._settings, admin) : ""}
+        ${this.notificationSettings()}
+        ${this.appearanceSettings()}
         ${this.languageCard()}
       </section>`,
     );
@@ -41,6 +43,7 @@ export class SettingsViews {
       <form class="card set-card" data-form="settings">
         <h3 class="pr-h">${t("settings.heading")}</h3>
         ${admin ? "" : `<p class="muted small">${t("settings.readOnly")}</p>`}
+        ${field("low_stock_threshold_g", t("lowStock.threshold"), t("lowStock.globalHelp"), settings.low_stock_threshold_g ?? 100, 'min="0.001" max="10000" step="0.001"')}
         ${field(
           "default_opening_weight",
           t("settings.openingWeight"),
@@ -92,6 +95,7 @@ export class SettingsViews {
           ${option("", t("settings.languageAuto"))}
           ${option("en", t("settings.languageEn"))}
           ${option("es", t("settings.languageEs"))}
+          ${option("tr", t("settings.languageTr"))}
         </div>
         <small class="muted">${t("settings.languageHelp")}</small>
       </div>`;

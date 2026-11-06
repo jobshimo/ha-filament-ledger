@@ -10,14 +10,16 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
-from ...application.query import display_job_name
-from ...const import EVENT_PREFIX
+from ...application.query import describe_location, display_job_name
+from ...const import DOMAIN, EVENT_PREFIX
 from ...domain.event import (
     AmbiguousTagDetected,
     AnomalyDetected,
     ConfidenceDegraded,
     DomainEvent,
+    LowStockCrossed,
     MovementReassigned,
     MovementRecorded,
     MovementReinstated,
@@ -54,6 +56,7 @@ def event_name(suffix: str) -> str:
 LEDGER_EVENTS: Final = frozenset(
     event_name(suffix)
     for suffix in (
+        "low_stock",
         "spool_registered",
         "spool_mounted",
         "spool_unmounted",
@@ -87,11 +90,33 @@ class HomeAssistantEventBus:
 
     async def publish(self, event: DomainEvent) -> None:
         name, data = _translate(event)
+        if isinstance(event, LowStockCrossed):
+            registry = er.async_get(self.hass)
+            data["low_stock_entity_id"] = registry.async_get_entity_id(
+                "binary_sensor", DOMAIN, f"{DOMAIN}_{event.spool_id}_low_stock"
+            )
         self.hass.bus.async_fire(name, data)
 
 
 def _translate(event: DomainEvent) -> tuple[str, dict[str, Any]]:
     match event:
+        case LowStockCrossed():
+            return event_name("low_stock"), {
+                "occurrence_id": event.occurrence_id,
+                "spool_id": event.spool_id,
+                "name": event.display_name,
+                "vendor": event.vendor,
+                "material": event.material,
+                "colour_rgba": event.colour_rgba,
+                "balance_g": float(event.balance.as_decimal),
+                "threshold_g": float(event.threshold.as_decimal),
+                "confidence": event.confidence.value,
+                "opening_basis": event.opening_basis,
+                "quantity_basis": event.quantity_basis,
+                "location": describe_location(event.location),
+                "occurred_at": event.occurred_at.isoformat(),
+                "low_stock_entity_id": None,
+            }
         case SpoolRegistered(spool_id, display_name):
             return event_name("spool_registered"), {
                 "spool_id": spool_id,

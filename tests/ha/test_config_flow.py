@@ -55,6 +55,7 @@ class TestUserStep:
         schema = result["data_schema"]
         assert schema is not None
         assert schema({}) == {
+            "low_stock_threshold_g": 100.0,
             CONF_DEFAULT_OPENING_WEIGHT: 1000,
             CONF_DEFAULT_CORE_WEIGHT: 250,
             CONF_ANOMALY_THRESHOLD: 15,
@@ -130,6 +131,7 @@ class TestOptionsFlow:
         schema = result["data_schema"]
         assert schema is not None
         assert schema({}) == {
+            "low_stock_threshold_g": 100.0,
             CONF_DEFAULT_OPENING_WEIGHT: 800,
             CONF_DEFAULT_CORE_WEIGHT: 180,
             CONF_ANOMALY_THRESHOLD: 33,

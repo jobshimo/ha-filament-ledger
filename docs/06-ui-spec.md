@@ -1190,3 +1190,32 @@ decoration: under `prefers-reduced-motion` the decorative animation stops and tr
 collapse to near zero. Because the panel no longer inherits a theme, a user cannot fix our
 contrast from their side, which makes the palette's contrast our obligation rather than
 theirs.
+
+---
+
+## Modern filament workflows amendment (2026-11-06)
+
+Both phone and desktop are primary. Identity, remaining grams, confidence/basis, location and next action outrank decoration. Inventory offers server-backed name/brand search, material/location/low-stock filters, smallest-remainder sort, count and reset; filtered results never replace the full AMS/picker data. Preserve drafts/focus/filter/scroll across live updates and reject stale responses.
+
+Registration groups identity and new/partly-used quantity basis. Gross mode alone requires explicit tare; show a matching read-only server preview before Save. From any position offer existing/new filament and keep the full destination throughout create-then-guarded-mount recovery. Unknown occupancy is not empty. Quantity confidence and shortage have distinct labels.
+
+Phone navigation keeps Inventory, AMS, Review and History directly reachable, with labelled More for secondary views. Retain all existing destinations and badges. Settings offers device-local Automatic/Light/Dark appearance plus permission-appropriate low-stock/notification controls. All surfaces/overlays use both themes and bounded true-colour samples independent of text/status.
+
+**Implementation evidence (2026-11-06).** The implemented panel keeps Inventory, AMS, Review and History directly reachable at narrow widths; More names the current secondary view. Inventory criteria are held separately from complete AMS/picker inventory. Filters start collapsed, server results patch without replacing the focused filter, registration drafts retain their request ID and destination, and partial assignment retries reuse the saved physical spool.
+
+
+## Interface refinement (2026-11-06)
+
+Inventory refinement keeps one quantity gauge per card, a keyboard-reachable spool name, a larger bounded colour sample and a separate location line. Registration uses two related field groups side by side on desktop and one column on phones; field names, server preview and guarded save remain unchanged.
+
+**Refinement verification.** Local illustrative preview checked at 360, 900 and 1280 px with Light/Dark inventory, desktop/phone registration and light AMS. No inventory card overflow was measured; phone inventory buttons meet 44 px. All 54 panel tests pass. This does not verify live Home Assistant, physical touch/screen readers or notification delivery.
+
+Colour entry uses one shared editor in registration and editing: named basic colours, native RGB picker and optional RGB/RGBA code. Unknown is an option within the colour selection or an empty code, without a separate known/unknown control. RGB picker changes preserve an existing alpha byte.
+
+Colour editor verification: named selection, Unknown/blank, custom RGBA and native picker opening checked in the local preview; phone colour controls measured 306 px with no overflow. All 58 panel tests pass, including alpha preservation and clearing an edited colour without invalid metadata.
+
+## Turkish localization (2026-11-06)
+
+Support Turkish throughout the panel and Home Assistant setup, options, entity and service descriptions. Automatic follows a Turkish Home Assistant profile (including tr-TR); users can select Türkçe per device. Preserve ledger values, identifiers, templates and escaped placeholders.
+
+Turkish verification: all 513 panel keys and Home Assistant translation leaves match the English structure. Placeholder checks include panel substitutions and automation template variables. Turkish selection persists across reloads; 360 px navigation/cards and phone/desktop registration were checked in the local illustrative preview with no measured horizontal overflow. Live HA setup and service screens are covered by translation structure tests, not a deployed UI check.

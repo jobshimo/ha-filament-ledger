@@ -445,3 +445,13 @@ overhead with no payoff.
 
 **Exactly one automatic path changes a balance: UC-04.** UC-02 and UC-03 move spools without
 moving grams, and UC-05 opens a question without answering it. Everything else asks first.
+
+---
+
+## Registration and assignment amendment (2026-11-06)
+
+PreviewRegistration validates net or gross-minus-tare using the same synchronous domain calculation as RegisterSpool, without writes, IDs, receipts or events. Registration accepts any brand without RFID; quantity changes invalidate preview, and create revalidates independently. Actor-scoped UUID request receipts are committed with spool/opening movement; identical retries return the original spool, changed intent fails. Opening a sealed spool records no quantity movement.
+
+Registration and assignment remain separate recoverable operations. Mount compares optional expected source/destination inside its transaction before displacement; current-panel calls always send expectations, while legacy callers retain their existing semantics. A failed assignment leaves one saved spool in Storage. Moving filament never consumes it.
+
+**Implementation evidence (2026-11-06).** Implemented PreviewRegistration (synchronous, read-only), actor-scoped durable registration retries, OpenSpool (metadata only), guarded AMS/external assignment, server-owned inventory criteria and transaction-end low-stock decisions. Moving filament still creates no quantity movement.

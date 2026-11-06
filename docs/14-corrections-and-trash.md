@@ -946,7 +946,7 @@ entry's options flow — three navigation levels away from the panel that they c
   back to EN — a missing string must never render as a blank or a raw key, because the
   panel's strings carry the teaching voice and a hole in it reads as breakage.
 - **Selection:** a manual override in `localStorage` (`filament_ledger.language`:
-  `en`, `es`, or absent = auto) wins; otherwise `hass.locale.language` with a
+  `en`, `es`, `tr`, or absent = auto) wins; otherwise `hass.locale.language` with a
   prefix match (`es-419` → `es`); otherwise EN. The override lives client-side because
   language of *this panel on this device* is a device preference, not ledger state.
 - **Every user-facing string goes through the table.** The extraction inventory is the
@@ -965,7 +965,7 @@ entry's options flow — three navigation levels away from the panel that they c
 
 ### 14.6.2 Backend translations
 
-`translations/es.json`, mirroring `en.json` key-for-key — config flow, options, service
+`translations/es.json` and `translations/tr.json`, mirroring `en.json` key-for-key — config flow, options, service
 descriptions. Two rules, both already paid for:
 
 - Key structure must match `en.json` exactly; hassfest validates the mirror.
@@ -1244,3 +1244,11 @@ labels and job names in every new modal and Trash row are user data.
 printer sensors (§14.5) resolve by `platform` + `translation_key`, verified on the
 reference instance, exactly as `_discover_trays`/`_discover_print_sensors` do
 (`bambu_gateway.py:383-443`) — never by entity id string.
+
+---
+
+## Filament experience correction amendment (2026-11-06)
+
+Quantity changes, reversals, reinstatements and both reassignment legs participate in low-stock evaluation inside the original UoW, from transaction-start to transaction-end balance. Use final retirement status; throwing away a whole spool cannot emit a replenishment warning for waste. Metadata open/delete/restore and threshold edits update current eligibility without fictional crossings. Old history and confidence calculations remain intact. Every touched dialog keeps Cancel/body/scrim behaviour, absent-value dashes, escaped user text, keyboard access and EN/ES labels.
+
+**Implementation evidence (2026-11-06).** Corrections, both reassignment legs, void/reinstatement, approved reviews and normal print consumption evaluate low-stock state at transaction end. Whole-spool retirement cannot produce a shortage warning. Threshold edits, restore, registration and startup establish status/baselines silently. Retrying a registration receipt after retirement returns the original identity without restoring it.

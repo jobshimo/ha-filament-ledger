@@ -50,6 +50,7 @@ from ..domain.value.grams import Grams
 from ..domain.value.identifiers import MovementId, SpoolId
 from ..domain.value.movement_type import MovementSource, MovementType
 from .errors import MovementNotFoundError, SpoolNotFoundError
+from .low_stock import LowStock
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,7 @@ class ReassignMovement:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, command: ReassignMovementCommand) -> Grams:
         """Returns the magnitude that moved. One unit of work; events after the commit."""
@@ -88,7 +90,7 @@ class ReassignMovement:
         # Both legs land together or neither does. A crash between them would leave a
         # spool credited for grams no other spool was charged for — the ledger inventing
         # filament, which is the one failure this design exists to make impossible.
-        async with self.uow:
+        async with self.low_stock.transaction(self.uow) if self.low_stock else self.uow:
             movement = await self.movements.get(command.movement_id)
             if movement is None:
                 raise MovementNotFoundError(command.movement_id)

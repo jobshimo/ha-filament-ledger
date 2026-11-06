@@ -1880,6 +1880,7 @@ class TestMigration0010HoldsBothHoldersOfAPrinter:
         database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
         try:
             _stage_0010(staged)
+            _stage_remaining(staged)
             assert await database.migrate() == HEAD_VERSION
 
             external = await SqliteSpoolRepository(database).get(SpoolId("external"))
@@ -1895,6 +1896,7 @@ class TestMigration0010HoldsBothHoldersOfAPrinter:
         database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
         try:
             _stage_0010(staged)
+            _stage_remaining(staged)
             assert await database.migrate() == HEAD_VERSION
 
             spools = SqliteSpoolRepository(database)
@@ -1922,6 +1924,7 @@ class TestMigration0010HoldsBothHoldersOfAPrinter:
         database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
         try:
             _stage_0010(staged)
+            _stage_remaining(staged)
             assert await database.migrate() == HEAD_VERSION
 
             spools = SqliteSpoolRepository(database)
@@ -1944,6 +1947,7 @@ class TestMigration0010HoldsBothHoldersOfAPrinter:
         database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
         try:
             _stage_0010(staged)
+            _stage_remaining(staged)
             assert await database.migrate() == HEAD_VERSION
 
             spools = SqliteSpoolRepository(database)
@@ -1971,6 +1975,7 @@ class TestMigration0010HoldsBothHoldersOfAPrinter:
         database, staged = await _staged_at_version_nine(tmp_path, monkeypatch)
         try:
             _stage_0010(staged)
+            _stage_remaining(staged)
             assert await database.migrate() == HEAD_VERSION
 
             spools = await SqliteSpoolRepository(database).list(SpoolFilter())
@@ -2010,3 +2015,44 @@ class TestMigration0010HoldsBothHoldersOfAPrinter:
             assert await database.migrate() >= 10
         finally:
             await database.close()
+
+
+async def test_filament_experience_upgrade_preserves_ledger_and_guards(tmp_path: Path) -> None:
+    path = tmp_path / "upgrade.db"
+    connection = sqlite3.connect(path, autocommit=True)
+    connection.executescript(database_module.SCHEMA_VERSION_TABLE)
+    for migration in sorted(MIGRATIONS.glob("*.sql")):
+        if int(migration.name[:4]) < 11:
+            connection.executescript(migration.read_text())
+    connection.execute(LEGACY_SPOOL, ("legacy-spool", None))
+    connection.execute(LEGACY_MOVEMENT, ("legacy-movement", "legacy-spool"))
+    amounts = connection.execute(
+        "SELECT id, spool_id, type, amount_mg, source, occurred_at, recorded_at FROM movement"
+    ).fetchall()
+    guards = connection.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type IN ('index', 'trigger') ORDER BY name"
+    ).fetchall()
+    connection.executescript(next(MIGRATIONS.glob("0011_*.sql")).read_text())
+    assert (
+        connection.execute(
+            "SELECT id, spool_id, type, amount_mg, source, occurred_at, recorded_at FROM movement"
+        ).fetchall()
+        == amounts
+    )
+    after = dict(
+        connection.execute("SELECT name, sql FROM sqlite_master WHERE type IN ('index', 'trigger')")
+    )
+    assert all(after[name] == sql for name, sql in guards)
+    assert connection.execute(
+        "SELECT opened_at, colour_known, low_stock_threshold_mg, low_stock_armed FROM spool"
+    ).fetchone() == (None, 1, None, 0)
+    assert connection.execute(
+        "SELECT opening_basis, gross_weight_mg, tare_weight_mg FROM movement"
+    ).fetchone() == (None, None, None)
+    connection.close()
+    database = await Database.open(path, run_inline)
+    try:
+        assert await database.migrate() == 11
+        assert await database.migrate() == 11
+    finally:
+        await database.close()

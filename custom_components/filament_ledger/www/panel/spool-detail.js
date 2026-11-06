@@ -4,6 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { signed } from "./format.js";
+import { colourValue, colourSample } from "./colour.js";
 import { spoolRing } from "./spool-ring.js";
 
 export class SpoolDetailViews {
@@ -54,11 +55,11 @@ export class SpoolDetailViews {
           <!-- Seen face-on: the winding, the core hole, and the figure in the middle. The
                card shows the same spool small; this is the same object, larger, not a
                different drawing of it. -->
-          <div class="detail-art" style="--coil:${esc(spool.colour)}">
+          <div class="detail-art" style="--coil:${esc(colourValue(spool))}">
             <span class="coil-base" aria-hidden="true"></span>
             <span class="coil-wind" aria-hidden="true"></span>
             <span class="coil-depth" aria-hidden="true"></span>
-            ${spoolRing("hero", spool.percentage, spool.colour)}
+            ${spoolRing("hero", spool.percentage, colourValue(spool))}
             <div class="ring-mid">
               <span class="ring-pct hero">${spool.percentage}<small>%</small></span>
             </div>
@@ -69,13 +70,16 @@ export class SpoolDetailViews {
               opening: spool.opening_weight_g,
             })}</small></div>
             <div class="barline">
-              <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
+              <div class="track"><i style="width:${spool.percentage}%;background:var(--fl-accent)"></i></div>
               <span class="pct">${spool.percentage}%</span>
             </div>
-            <div class="facts">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""} · ${esc(spool.colour)}</div>
+            <div class="facts">${colourSample(spool, this._t)} ${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""} · ${spool.colour_known === false ? t("colour.unknown") : esc(spool.colour_rgba ?? spool.colour)}</div>
             <div class="facts">${this.locationLabel(spool.location)} · ${this.stateLabel(spool.state)}${
               spool.tag_uid ? ` · ${t("dlg.tag")} ${esc(spool.tag_uid)}` : ""
             }</div>
+            <p class="facts">${t("registration.basis")}: ${t("registration.basis." + (spool.opening_basis ?? "LEGACY_UNSPECIFIED"))}</p>
+            <p class="facts">${t("lowStock.threshold")}: ${esc(spool.effective_low_stock_threshold_g ?? 100)} g · ${t(spool.low_stock_threshold_inherited !== false ? "lowStock.inherited" : "lowStock.overridden")}</p>
+            ${spool.is_low_stock ? `<p class="note">${t("lowStock.current")}</p>` : ""}
             ${this.confidenceBlock(spool)}
           </div>
         </div>
@@ -95,10 +99,12 @@ export class SpoolDetailViews {
                  </div>
                </div>`
             : `<div class="bar sp-rail">
+                 ${spool.state === "SEALED" ? `<button data-action="mark-opened" data-id="${esc(spool.id)}">${t("registration.markOpened")}</button>` : ""}
                  <button class="primary" data-action="dialog" data-id="weigh">${t("detail.weigh")}</button>
                  <button data-action="dialog" data-id="adjust">${t("detail.adjust")}</button>
                  <button data-action="dialog" data-id="discard">${t("act.discard")}</button>
                  <button data-action="dialog" data-id="edit-spool">${t("detail.edit")}</button>
+                 ${this._hass?.user?.is_admin ? `<button data-action="notification-for-spool" data-id="${esc(spool.id)}">${t("notifications.setup")}</button>` : ""}
                  <span class="sp-life">
                    ${
                      this._finishable(spool)

@@ -16,8 +16,8 @@
  */
 const UNIDENTIFIED_PRINTER = "UNIDENTIFIED";
 
-const grams = (value) => `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
-const signed = (value) => `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
+const grams = (value) => value == null || value === "" || !Number.isFinite(Number(value)) ? "—" : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} g`;
+const signed = (value) => value == null || value === "" || !Number.isFinite(Number(value)) ? "—" : `${value < 0 ? "−" : "+"} ${Math.abs(value).toFixed(1)}`;
 
 /**
  * Round to the tenth, which is the precision a single movement is known to.

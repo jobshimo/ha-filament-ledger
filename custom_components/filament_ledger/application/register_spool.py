@@ -6,21 +6,29 @@ that explains it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from uuid import UUID
 
-from ..domain.error import DuplicateTagNotConfirmedError
+from ..domain.error import DuplicateTagNotConfirmedError, InvalidValueError
 from ..domain.event import EventPublisher, SpoolRegistered
 from ..domain.model.movement import record
 from ..domain.model.spool import Spool, register
 from ..domain.port.clock import Clock
-from ..domain.port.repositories import MovementRepository, SpoolRepository
+from ..domain.port.repositories import (
+    MovementRepository,
+    RegistrationReceipt,
+    RegistrationRequestRepository,
+    SpoolRepository,
+)
 from ..domain.port.unit_of_work import UnitOfWork
+from ..domain.service.registration_quantity import registration_quantity
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
 from ..domain.value.identifiers import ReelUid, SpoolId, TagSource, TagUid
 from ..domain.value.location import Location, Storage
 from ..domain.value.material import Material
 from ..domain.value.movement_type import MovementSource, MovementType
+from .errors import IdempotencyConflictError
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +56,14 @@ class RegisterSpoolCommand:
     # AUTOMATIC, because there the figure is a configured default nobody confirmed today.
     movement_source: MovementSource = MovementSource.USER_CONFIRMED
 
+    opening_basis: str = "LEGACY_UNSPECIFIED"
+    gross_weight: Grams | None = None
+    opening_condition: str = "new"
+    colour_known: bool = True
+    actor_id: str | None = None
+    request_id: str | None = None
+    payload_fingerprint: str | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class RegisterSpool:
@@ -56,19 +72,53 @@ class RegisterSpool:
     clock: Clock
     events: EventPublisher
     uow: UnitOfWork
+    requests: RegistrationRequestRepository | None = None
+    low_stock_threshold_mg: int = 100000
 
     async def execute(self, command: RegisterSpoolCommand) -> SpoolId:
         # One unit of work from the duplicate-tag read to the movement append: the guard
         # is still true when the writes happen, and a crash between the two writes cannot
         # leave a spool behind with no movement that explains its balance.
+        if command.opening_condition not in ("new", "partly_used"):
+            raise InvalidValueError("Opening condition must be new or partly_used")
+        receipt_key = (command.actor_id, command.request_id, command.payload_fingerprint)
+        if any(value is not None for value in receipt_key):
+            if not all(receipt_key) or self.requests is None:
+                raise InvalidValueError(
+                    "Registration retry requires an authenticated actor and complete receipt"
+                )
+            try:
+                UUID(str(command.request_id))
+            except ValueError as exc:
+                raise InvalidValueError("Request ID must be a UUID") from exc
+            if len(str(command.request_id)) != 36 or len(str(command.payload_fingerprint)) != 64:
+                raise InvalidValueError("Invalid registration receipt")
         async with self.uow:
+            if (
+                command.request_id is not None
+                and command.actor_id is not None
+                and self.requests is not None
+            ):
+                previous = await self.requests.get(command.actor_id, command.request_id)
+                if previous is not None:
+                    if previous.payload_fingerprint != command.payload_fingerprint:
+                        raise IdempotencyConflictError(
+                            "Request ID already belongs to different registration input"
+                        )
+                    return previous.spool_id
+            quantity = registration_quantity(
+                command.opening_basis,
+                command.opening_weight,
+                command.gross_weight,
+                command.core_weight if command.opening_basis == "MEASURED_GROSS" else None,
+            )
             await self._guard_duplicate_tag(command)
 
             now = self.clock.now()
             spool: Spool = register(
                 material=command.material,
                 colour=command.colour,
-                opening_weight=command.opening_weight,
+                opening_weight=quantity,
                 core_weight=command.core_weight,
                 registered_at=now,
                 location=command.location if command.location is not None else Storage(),
@@ -81,17 +131,47 @@ class RegisterSpool:
                 reel_uid=command.reel_uid,
             )
 
+            spool = replace(
+                spool,
+                colour_known=command.colour_known,
+                low_stock_baseline_threshold_mg=self.low_stock_threshold_mg,
+                low_stock_armed=quantity.milligrams >= self.low_stock_threshold_mg,
+                opened_at=now if command.opening_condition == "partly_used" else None,
+            )
             await self.spools.save(spool)
             await self.movements.append(
                 record(
                     spool_id=spool.id,
                     type=MovementType.OPENING_BALANCE,
-                    amount=command.opening_weight,
+                    amount=quantity,
                     source=command.movement_source,
                     occurred_at=now,
                     note="Registered",
+                    opening_basis=command.opening_basis,
+                    gross_weight_mg=command.gross_weight.milligrams
+                    if command.gross_weight
+                    else None,
+                    tare_weight_mg=command.core_weight.milligrams
+                    if command.opening_basis == "MEASURED_GROSS"
+                    else None,
                 )
             )
+
+            if (
+                self.requests is not None
+                and command.actor_id is not None
+                and command.request_id is not None
+                and command.payload_fingerprint is not None
+            ):
+                await self.requests.save(
+                    RegistrationReceipt(
+                        command.actor_id,
+                        command.request_id,
+                        command.payload_fingerprint,
+                        spool.id,
+                        now,
+                    )
+                )
 
         # Published after the commit — an event for a write that could still roll back
         # would announce a spool that never existed.

@@ -135,12 +135,12 @@ export class StatisticsViews {
   /** The colour chart's rows, each bar painted in the colour it stands for. */
   statsColourRows(entries) {
     return (entries ?? []).map((entry) => ({
-      label: esc(entry.colour),
+      label: entry.colour == null ? this._t("colour.unknown") : esc(entry.colour),
       grams: entry.grams,
       // The one place a bar's fill is data rather than theme: the user thinks in colours,
       // and a palette of our own would be an invented answer to a question the ledger
       // already knows (docs/06 §6.7 — colour is the primary identifier).
-      style: `fill:${esc(entry.colour)}`,
+      style: `fill:${entry.colour == null ? "var(--fl-ink-dim)" : esc(entry.colour_rgba ?? entry.colour)}`,
     }));
   }
 

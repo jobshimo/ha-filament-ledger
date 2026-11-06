@@ -30,6 +30,7 @@ describe("the inventory", () => {
         aSpool({ id: "empty", name: "Used Up", state: "DEPLETED", percentage: 0 }),
         aSpool({ id: "live", name: "Still Printing" }),
       ],
+      _inventoryResults: [aSpool({ id: "live", name: "Still Printing" })],
       _stock: { total_g: 640, spool_count: 2, needs_weighing: 0 },
     });
 
@@ -88,4 +89,14 @@ describe("the statistics", () => {
     assert.doesNotMatch(html, /<svg/);
     assert.match(html, /class="st-period on"\s+data-action="stats-period" data-id="90d"/);
   });
+});
+
+
+it("keeps the spool name keyboard reachable and shows remaining percentage only once", () => {
+  const html = panelWith().spoolCard(aSpool({percentage: 64, colour_rgba: "#11223340"}));
+  assert.match(html, /<button class="spool-name name" data-action="open" data-id="/);
+  assert.equal((visibleText(html).match(/64%/g) ?? []).length, 1);
+  assert.match(html, /class="stock-track" aria-hidden="true"/);
+  assert.match(html, /#11223340/);
+  assert.match(html, /class="spool-location muted"/);
 });

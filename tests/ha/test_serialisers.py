@@ -106,6 +106,18 @@ class TestSpoolSummaryShape:
 
         assert spool_summary(summary) == {
             "id": spool_id,
+            "colour_known": True,
+            "colour_rgba": "#000000FF",
+            "opened_at": None,
+            "opening_basis": "LEGACY_UNSPECIFIED",
+            "gross_weight_g": None,
+            "tare_weight_g": None,
+            "effective_low_stock_threshold_g": 100.0,
+            "low_stock_threshold_inherited": True,
+            "low_stock_threshold_g": None,
+            "low_stock_eligible": False,
+            "is_low_stock": False,
+            "last_low_stock_occurrence_id": None,
             "name": "PLA Basic Black",
             "label": "PLA Basic Black",
             "vendor": "Bambu Lab",
@@ -241,7 +253,9 @@ class TestStatisticsRounding:
         )
 
         assert payload["consumed_g"] == 1
-        assert payload["by_colour"] == [{"colour": "#000000", "grams": 1}]
+        assert payload["by_colour"] == [
+            {"colour": "#000000", "colour_rgba": "#000000FF", "grams": 1}
+        ]
         assert payload["by_material"] == [{"material": "PLA", "grams": 1}]
         # Each print is 0.4 g on its own, and each rounds to nothing — which is exactly
         # why the total above may not be built out of these.

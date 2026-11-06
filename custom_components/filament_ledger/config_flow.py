@@ -26,14 +26,17 @@ from .const import (
     CONF_AUTO_REGISTER_ON_DETECT,
     CONF_DEFAULT_CORE_WEIGHT,
     CONF_DEFAULT_OPENING_WEIGHT,
+    CONF_LOW_STOCK_THRESHOLD,
     DEFAULT_ANOMALY_THRESHOLD_PCT,
     DEFAULT_AUTO_MOUNT_ON_RFID,
     DEFAULT_AUTO_REGISTER_ON_DETECT,
     DEFAULT_CORE_WEIGHT_G,
+    DEFAULT_LOW_STOCK_THRESHOLD_G,
     DEFAULT_OPENING_WEIGHT_G,
     DOMAIN,
 )
 from .infrastructure.ha.runtime import LedgerConfigEntry
+from .infrastructure.ha.validators import low_stock_threshold
 
 TITLE = "Filament Ledger"
 
@@ -41,6 +44,10 @@ TITLE = "Filament Ledger"
 def _schema(defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
+            vol.Required(
+                CONF_LOW_STOCK_THRESHOLD,
+                default=defaults.get(CONF_LOW_STOCK_THRESHOLD, DEFAULT_LOW_STOCK_THRESHOLD_G),
+            ): low_stock_threshold,
             vol.Required(
                 CONF_DEFAULT_OPENING_WEIGHT,
                 default=defaults.get(CONF_DEFAULT_OPENING_WEIGHT, DEFAULT_OPENING_WEIGHT_G),

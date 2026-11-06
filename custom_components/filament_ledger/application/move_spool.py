@@ -10,7 +10,7 @@ to lie.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..domain.error import DuplicateTagNotConfirmedError
 from ..domain.event import (
@@ -34,9 +34,10 @@ from ..domain.value.identifiers import (
     TagUid,
     TrayRef,
 )
-from ..domain.value.location import AmsSlot, ExternalSpool
+from ..domain.value.location import AmsSlot, ExternalSpool, Location
 from ..domain.value.material import Material
-from .errors import SpoolNotFoundError
+from .errors import AssignmentConflictError, SpoolNotFoundError
+from .low_stock import LowStock
 
 
 class _Unset:
@@ -55,6 +56,22 @@ UNSET = _Unset()
 
 # What a caller may pass for `tag`: leave unchanged, clear, or set.
 TagEdit = TagUid | None | _Unset
+
+
+async def guard_assignment(
+    spools: SpoolRepository,
+    spool: Spool,
+    destination: Location,
+    expected_source: Location | _Unset,
+    expected_destination_spool_id: SpoolId | _Unset | None,
+) -> None:
+    occupant = await spools.find_by_location(destination)
+    occupant_id = occupant.id if occupant is not None else None
+    if (not isinstance(expected_source, _Unset) and spool.location != expected_source) or (
+        not isinstance(expected_destination_spool_id, _Unset)
+        and occupant_id != expected_destination_spool_id
+    ):
+        raise AssignmentConflictError(spool.location, occupant_id)
 
 
 async def displace_and_mount(
@@ -88,11 +105,23 @@ class MountSpool:
     # displaced occupant and the mounted spool commit together or not at all.
     uow: UnitOfWork
 
-    async def execute(self, spool_id: SpoolId, tray: TrayRef) -> None:
+    async def execute(
+        self,
+        spool_id: SpoolId,
+        tray: TrayRef,
+        *,
+        expected_source: Location | _Unset = UNSET,
+        expected_destination_spool_id: SpoolId | _Unset | None = UNSET,
+    ) -> None:
         async with self.uow:
             spool = await self.spools.get(spool_id)
             if spool is None:
                 raise SpoolNotFoundError(spool_id)
+            if spool.location == AmsSlot(tray):
+                return
+            await guard_assignment(
+                self.spools, spool, AmsSlot(tray), expected_source, expected_destination_spool_id
+            )
             displaced = await displace_and_mount(self.spools, spool, tray)
 
         # Published after the commit — never for a write that could still roll back.
@@ -125,14 +154,26 @@ class MountSpoolExternally:
     uow: UnitOfWork
 
     async def execute(
-        self, spool_id: SpoolId, printer: PrinterSerial, holder: HolderIndex = FIRST_HOLDER
+        self,
+        spool_id: SpoolId,
+        printer: PrinterSerial,
+        holder: HolderIndex = FIRST_HOLDER,
+        *,
+        expected_source: Location | _Unset = UNSET,
+        expected_destination_spool_id: SpoolId | _Unset | None = UNSET,
     ) -> None:
         displaced: SpoolId | None = None
         async with self.uow:
             spool = await self.spools.get(spool_id)
             if spool is None:
                 raise SpoolNotFoundError(spool_id)
-            occupant = await self.spools.find_by_location(ExternalSpool(printer, holder))
+            destination = ExternalSpool(printer, holder)
+            if spool.location == destination:
+                return
+            await guard_assignment(
+                self.spools, spool, destination, expected_source, expected_destination_spool_id
+            )
+            occupant = await self.spools.find_by_location(destination)
             if occupant is not None and occupant.id != spool.id:
                 await self.spools.save(occupant.unmounted())
                 displaced = occupant.id
@@ -175,6 +216,7 @@ class EditSpoolDetails:
 
     spools: SpoolRepository
     uow: UnitOfWork
+    low_stock: LowStock | None = None
 
     async def execute(
         self,
@@ -187,6 +229,8 @@ class EditSpoolDetails:
         core_weight: Grams | None = None,
         tag: TagEdit = UNSET,
         confirm_duplicate_tag: bool = False,
+        colour_known: bool | None = None,
+        low_stock_threshold: Grams | _Unset | None = UNSET,
     ) -> None:
         """`tag` is tri-state: `UNSET` leaves it, `None` clears it, a `TagUid` sets it.
 
@@ -211,7 +255,20 @@ class EditSpoolDetails:
                 if tag is not None:
                     await self._guard_duplicate_tag(spool, tag, confirm_duplicate_tag)
                 edited = edited.with_tag(tag, TagSource.MANUAL if tag is not None else None)
+            if colour_known is not None or colour is not None:
+                edited = replace(
+                    edited, colour_known=colour_known if colour_known is not None else True
+                )
+            if not isinstance(low_stock_threshold, _Unset):
+                edited = replace(
+                    edited,
+                    low_stock_threshold_mg=low_stock_threshold.milligrams
+                    if low_stock_threshold is not None
+                    else None,
+                )
             await self.spools.save(edited)
+            if not isinstance(low_stock_threshold, _Unset) and self.low_stock is not None:
+                await self.low_stock.baseline(spool_id)
 
     async def _guard_duplicate_tag(self, spool: Spool, tag: TagUid, confirmed: bool) -> None:
         """UC-01's rule, for the same reason and with the same wording (docs/14 §14.2).

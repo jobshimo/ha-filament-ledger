@@ -33,7 +33,8 @@ COLUMNS = (
     "id, material, material_other, colour, vendor, label, opening_weight_mg, "
     "core_weight_mg, location_kind, location_printer, location_ams, location_slot, "
     "location_holder, "
-    "tag_uid, tag_source, reel_uid, registered_at, discarded_at, deleted_at, deleted_reason"
+    "tag_uid, tag_source, reel_uid, registered_at, discarded_at, deleted_at, deleted_reason, "
+    "opened_at, colour_known, low_stock_threshold_mg, low_stock_armed, low_stock_baseline_threshold_mg, last_low_stock_occurrence_id"
 )
 
 # Both retirements, in one predicate. Every read that means "in inventory" uses this
@@ -175,6 +176,12 @@ def _to_spool(row: sqlite3.Row) -> Spool:
         discarded_at=_parse(row["discarded_at"]),
         deleted_at=_parse(row["deleted_at"]),
         deleted_reason=row["deleted_reason"],
+        opened_at=_parse(row["opened_at"]),
+        colour_known=bool(row["colour_known"]),
+        low_stock_threshold_mg=row["low_stock_threshold_mg"],
+        low_stock_armed=bool(row["low_stock_armed"]),
+        low_stock_baseline_threshold_mg=row["low_stock_baseline_threshold_mg"],
+        last_low_stock_occurrence_id=row["last_low_stock_occurrence_id"],
     )
 
 
@@ -279,6 +286,12 @@ class SqliteSpoolRepository:
                 clauses.append("deleted_at IS NULL")
         if criteria.mounted_only:
             clauses.append("location_kind != 'STORAGE'")
+        if criteria.material:
+            clauses.append("material = ?")
+            params.append(criteria.material)
+        if criteria.location_kind:
+            clauses.append("location_kind = ?")
+            params.append(criteria.location_kind)
         if criteria.search:
             clauses.append("(COALESCE(label,'') LIKE ? OR COALESCE(vendor,'') LIKE ?)")
             needle = f"%{criteria.search}%"
@@ -298,8 +311,8 @@ class SqliteSpoolRepository:
                 opening_weight_mg, core_weight_mg, location_kind, location_printer,
                 location_ams, location_slot, location_holder,
                 tag_uid, tag_source, reel_uid,
-                registered_at, discarded_at, deleted_at, deleted_reason, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+                registered_at, discarded_at, deleted_at, deleted_reason, opened_at, colour_known, low_stock_threshold_mg, low_stock_armed, low_stock_baseline_threshold_mg, last_low_stock_occurrence_id, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 material = excluded.material,
                 material_other = excluded.material_other,
@@ -318,6 +331,12 @@ class SqliteSpoolRepository:
                 discarded_at = excluded.discarded_at,
                 deleted_at = excluded.deleted_at,
                 deleted_reason = excluded.deleted_reason,
+                opened_at = excluded.opened_at,
+                colour_known = excluded.colour_known,
+                low_stock_threshold_mg = excluded.low_stock_threshold_mg,
+                low_stock_armed = excluded.low_stock_armed,
+                low_stock_baseline_threshold_mg = excluded.low_stock_baseline_threshold_mg,
+                last_low_stock_occurrence_id = excluded.last_low_stock_occurrence_id,
                 updated_at = datetime('now')
             """,
             (
@@ -341,6 +360,12 @@ class SqliteSpoolRepository:
                 _iso(spool.discarded_at) if spool.discarded_at else None,
                 _iso(spool.deleted_at) if spool.deleted_at else None,
                 spool.deleted_reason,
+                _iso(spool.opened_at) if spool.opened_at else None,
+                spool.colour_known,
+                spool.low_stock_threshold_mg,
+                spool.low_stock_armed,
+                spool.low_stock_baseline_threshold_mg,
+                spool.last_low_stock_occurrence_id,
             ),
         )
         # The chip index follows the entity, in the same unit of work, so the two can never

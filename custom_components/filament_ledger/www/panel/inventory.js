@@ -4,7 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { fill, grams } from "./format.js";
-import { spoolRing } from "./spool-ring.js";
+import { colourSample } from "./colour.js";
 
 /** The CSS class per confidence level; the words themselves come from the table. */
 const CONFIDENCE_CLASS = { HIGH: "high", MEDIUM: "med", LOW: "low" };
@@ -51,7 +51,6 @@ export class InventoryViews {
     // sensors keep counting it, the AMS view keeps drawing it in its tray — but it is not
     // stock to choose from, so it lives in the Finished tab instead of sinking to the
     // bottom of this grid for ever.
-    const holding = this._spools.filter((s) => s.state !== "DEPLETED");
 
     // The two buttons lead the view rather than following the summary card, which is where
     // docs/06 §6.2 has always drawn them and where a pinned row has to be anyway. The
@@ -60,6 +59,7 @@ export class InventoryViews {
       `<div class="bar">
         <button class="primary" data-action="dialog" data-id="new-spool">${t("inv.newSpool")}</button>
         <button data-action="sync-trays">${t("inv.sync")}</button>
+        ${this._hass?.user?.is_admin ? `<button data-action="notification-setup">${t("notifications.setup")}</button>` : ""}
       </div>`,
       `<section class="stack">
         <div class="card summary">
@@ -68,11 +68,8 @@ export class InventoryViews {
           ${stat(t("inv.needsWeighing"), esc(this._stock?.needs_weighing ?? 0), this._stock?.needs_weighing)}
         </div>
         ${this.syncStrip()}
-        ${
-          holding.length
-            ? `<div class="grid">${holding.map((s) => this.spoolCard(s)).join("")}</div>`
-            : `<div class="empty"><p>${t("inv.allFinished")}</p></div>`
-        }
+        ${this.inventoryFilters()}
+        <div data-inventory-results>${this.inventoryResults()}</div>
       </section>`,
     );
   }
@@ -148,7 +145,7 @@ export class InventoryViews {
     const slot = `<span class="sync-slot">${t("sync.slot", { slot: outcome.slot })}</span>`;
     const hints = [outcome.name_hint, outcome.material_hint].filter(Boolean).map(esc).join(" · ");
     const swatch = outcome.colour_hint
-      ? `<span class="sync-dot" style="background:${esc(outcome.colour_hint)}"></span>`
+      ? `<span class="sync-dot" style="background:${esc(outcome.colour_hint_rgba ?? outcome.colour_hint)}"></span>`
       : "";
     switch (outcome.status) {
       case "empty":
@@ -199,29 +196,22 @@ export class InventoryViews {
     return `
       <article class="card spool ${spool.has_anomaly ? "anomaly" : ""} ${depleted ? "depleted" : ""}"
         data-action="open" data-id="${esc(spool.id)}">
-        <span class="shim" aria-hidden="true"></span>
-        <div class="swatch" style="background:${esc(spool.colour)}"></div>
-        <div class="spool-art">
-          <span class="hatch" aria-hidden="true"></span>
-          ${spoolRing("card", sealed ? 100 : spool.percentage, spool.colour)}
-          <div class="ring-mid">
-            <span class="ring-pct">${sealed ? 100 : spool.percentage}<small>%</small></span>
-          </div>
-        </div>
         <div class="spool-body">
           <div class="spool-head">
+            ${colourSample(spool, t)}
             <div class="spool-id">
-              <div class="name">${esc(spool.name)}</div>
-              <div class="sub">${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
+              <button class="spool-name name" data-action="open" data-id="${esc(spool.id)}">${esc(spool.name)}</button>
+              <div class="sub">${spool.colour_known === false ? `<span class="muted">${t("colour.unknown")}</span> · ` : ""}${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
             </div>
             ${this.spoolMenu(spool)}
           </div>
-          <div class="big">${spool.balance_g}<small> g</small></div>
+          <div class="spool-quantity"><div class="big">${spool.balance_g}<small> g</small></div>${gauge}</div>
+          <div class="stock-track" aria-hidden="true"><span style="width: ${spool.percentage}%"></span></div>
           <div class="foot">
-            ${gauge}
+            ${spool.is_low_stock ? `<span class="badge">${t("lowStock.current")}</span>` : ""}
             ${this.confidenceChip(spool.confidence)}
-            <span class="muted">· ${this.locationLabel(spool.location)}</span>
           </div>
+          <div class="spool-location muted">${this.locationLabel(spool.location)}</div>
           ${spool.needs_weighing ? `<div class="cta">${t("inv.weighThis")}</div>` : ""}
         </div>
       </article>`;

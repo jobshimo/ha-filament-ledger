@@ -20,8 +20,8 @@ const TABS = {
 
 describe("every tab, freshly opened", () => {
   for (const [method, tab] of Object.entries(TABS)) {
-    it(`draws the ${tab} tab in both languages`, () => {
-      for (const language of ["en", "es"]) {
+    it(`draws the ${tab} tab in all supported languages`, () => {
+      for (const language of ["en", "es", "tr"]) {
         // Drawn without throwing, into the panel's frame. Some tabs are deliberately blank
         // before their first read (Finished leaves the error bar to speak), so the frame is
         // what is asserted, not text.
@@ -68,4 +68,10 @@ describe("one spool in full", () => {
     assert.match(text, /− 110\.0/);
     assert.match(html, /bracket &lt;v3&gt;/);
   });
+});
+
+it("renders populated Trash with an Unknown spool without borrowing a movement variable",()=>{
+  const panel=panelWith({_trash:{spools:[aSpool({state:"DELETED",deleted_at:"2026-11-01T12:00:00Z",colour_known:false})],movements:[]}});
+  assert.match(panel.trashView(),/Unknown colour/);
+  assert.match(panel.trashView(),/Galaxy Black/);
 });

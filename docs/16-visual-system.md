@@ -520,3 +520,22 @@ rather than as a differently-spaced region, so the vertical scale stays the one 
 and no new spacing token is introduced. Density is unchanged: two machines is twice the cards,
 not smaller ones — the tray grid already reflows on its own `auto-fit` track, and the phone
 tier keeps every label and every 44 px target it had.
+
+---
+
+## System-aware appearance amendment (2026-11-06)
+
+ADR-0011 supersedes the fixed-dark-only rule above for this feature. Automatic follows device system appearance independently of Home Assistant; explicit Light/Dark is device-local, persisted when storage permits. Apply semantic host tokens without replacing task DOM. Cover native controls, charts, overlays, errors and focus in both themes. Retain local fonts and the product identity, but simplify decorative glows/ambient motion that compete with tasks.
+
+Filament RGB/RGBA is a bounded sample on a neutral substrate with a perceivable keyline; never use it as the colour of quantity/status text. Unknown has a labelled neutral pattern, distinct from black. Text contrast is at least 4.5:1 (normal), 3:1 (large); essential controls/focus/graphics meet 3:1. Primary touch targets are 44 px; respect reduced motion and preserve keyboard/focus semantics.
+
+**Implementation evidence (2026-11-06).** Both semantic palettes, host-only device appearance, local fonts, restrained controls and bounded RGB/RGBA/Unknown samples are implemented. Appearance never rebuilds task DOM. preview.html is a clearly labelled read-only fixture; styleguide.html includes the nine-colour matrix and notification review. Local screenshots and AX observations are evidence for these fixtures only, not live HA deployment or physical mobile accessibility.
+
+
+## Interface refinement (2026-11-06)
+
+The refinement uses quieter graphite surfaces, restrained teal actions and soft structural dividers. Inventory replaces repeated circular gauges with a neutral progress rail and a prominent true-colour sample. Quantity and status use semantic ink; both themes retain sample keylines. Registration groups identity and quantity responsively without changing draft or validation behavior.
+
+**Refinement verification.** Local illustrative preview checked at 360, 900 and 1280 px with Light/Dark inventory, desktop/phone registration and light AMS. No inventory card overflow was measured; phone inventory buttons meet 44 px. All 54 panel tests pass. This does not verify live Home Assistant, physical touch/screen readers or notification delivery.
+
+Colour entry uses one shared editor in registration and editing: named basic colours, native RGB picker and optional RGB/RGBA code. Unknown is an option within the colour selection or an empty code, without a separate known/unknown control. RGB picker changes preserve an existing alpha byte.

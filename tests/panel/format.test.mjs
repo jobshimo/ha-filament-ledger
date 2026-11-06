@@ -86,3 +86,10 @@ describe("the spool ring", () => {
     assert.doesNotMatch(full, /<script>/);
   });
 });
+
+it("does not turn absent or invalid quantities into zero",()=>{
+  for(const value of [null,undefined,"",NaN,Infinity]) {
+    assert.equal(grams(value),"—");
+    assert.equal(signed(value),"—");
+  }
+});

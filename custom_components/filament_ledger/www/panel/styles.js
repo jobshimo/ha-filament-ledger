@@ -38,27 +38,27 @@ export const STYLES = `
   container-type: inline-size;
   container-name: panel;
 
-  /* The panel renders its own identity and no longer follows the HA theme (ADR-0008).
-     Telling the browser so keeps form controls and scrollbars from arriving in light. */
+  /* Device appearance and explicit panel choice (ADR-0011). */
   color-scheme: dark;
 
   --fl-font-sans: "Space Grotesk", system-ui, sans-serif;
   --fl-font-mono: "IBM Plex Mono", ui-monospace, "Roboto Mono", Menlo, monospace;
 
-  --fl-bg: #05070a;
-  --fl-surface: #0b1016;
-  --fl-surface-raised: #0e151d;
-  --fl-surface-sunken: #080d13;
-  --fl-line: #1f2a36;
-  --fl-line-soft: #161f2a;
-  --fl-line-strong: #2b3947;
+  --fl-bg: #11171c;
+  --fl-surface: #192127;
+  --fl-surface-raised: #202a32;
+  --fl-surface-sunken: #141c22;
+  --fl-line: #607487;
+  --fl-line-soft: #34434f;
+  --fl-line-strong: #8296aa;
 
   --fl-ink: #e6edf3;
   --fl-ink-bright: #ffffff;
   --fl-ink-dim: #8b9aab;
-  --fl-ink-faint: #6d7f91;
+  --fl-ink-faint: #9aaaba;
 
-  --fl-accent: #00e0c6;
+  --fl-on-accent: #052820;
+  --fl-accent: #5de0c6;
   --fl-accent-bright: #7ff5e7;
   --fl-accent-soft: rgba(0, 224, 198, .16);
   --fl-accent-line: rgba(0, 224, 198, .42);
@@ -93,6 +93,60 @@ export const STYLES = `
   background: var(--fl-bg);
   color: var(--fl-ink);
 }
+:host([data-theme="light"]) {
+  color-scheme: light;
+  --fl-bg: #f4f6f8;
+  --fl-surface: #ffffff;
+  --fl-surface-raised: #eaf0f4;
+  --fl-surface-sunken: #e2e9ee;
+  --fl-line: #738494;
+  --fl-line-soft: #ccd6de;
+  --fl-line-strong: #5b6e7e;
+  --fl-ink: #233646;
+  --fl-ink-bright: #102534;
+  --fl-ink-dim: #4b6072;
+  --fl-ink-faint: #526576;
+  --fl-on-accent: #ffffff;
+  --fl-accent: #006e63;
+  --fl-accent-bright: #005b53;
+  --fl-accent-soft: #d8eeea;
+  --fl-accent-line: #297f73;
+  --fl-accent-glow: transparent;
+  --fl-ok: #176b3b;
+  --fl-ok-soft: #dfefe5;
+  --fl-warn: #815100;
+  --fl-warn-soft: #fff0d4;
+  --fl-bad: #a02c46;
+  --fl-bad-soft: #fbe4e9;
+  --fl-shadow-1: 0 8px 24px rgba(22, 42, 58, .10);
+  --fl-shadow-2: 0 14px 40px rgba(22, 42, 58, .16);
+}
+:host { accent-color: var(--fl-accent); scrollbar-color: var(--fl-ink-dim) var(--fl-surface); scrollbar-width: thin; }
+::selection { background: var(--fl-accent); color: var(--fl-bg); }
+input, textarea { caret-color: var(--fl-accent); }
+input::placeholder, textarea::placeholder { color: var(--fl-ink-dim); opacity: 1; }
+:focus-visible { outline: 2px solid var(--fl-accent); outline-offset: 3px; }
+[hidden] { display: none !important; }
+fieldset { border: 1px solid var(--fl-line-soft); border-radius: var(--fl-radius-m); padding: 16px; margin: 0 0 20px; min-width: 0; }
+legend { color: var(--fl-ink-bright); font-weight: 600; padding: 0 6px; }
+fieldset label + label { margin-top: 12px; }
+.inventory-filters { padding: 8px 0; }
+.inventory-filters summary { min-height: 44px; display: list-item; align-content: center; cursor: pointer; }
+[data-inventory-results] > p[role="status"] { margin: 0 0 16px; color: var(--fl-ink-dim); font-size: 13px; }
+.appearance-settings { padding: 16px 0; }
+.filter-fields { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; padding-top: 16px; }
+.filter-fields label { min-width: 140px; flex: 1; }
+.check { display: flex; align-items: center; gap: 10px; }
+input[type="checkbox"] { width: 20px; height: 20px; }
+.colour-sample { display: inline-grid; place-items: center; vertical-align: middle; width: 24px; height: 24px; flex-shrink: 0; border-radius: 6px; background: var(--filament-colour); font-size: 14px; font-weight: 600; }
+.colour-sample, .hist-dot { border: 1px solid var(--fl-ink-dim); box-shadow: 0 0 0 2px var(--fl-surface); }
+.colour-unknown { --filament-colour: var(--fl-surface-sunken); background: var(--fl-surface-sunken); color: var(--fl-ink-dim); }
+:host([data-theme="light"]) .ambient { display: none; }
+@media (forced-colors: active) {
+  :host { --fl-bg: Canvas; --fl-surface: Canvas; --fl-surface-raised: Canvas; --fl-surface-sunken: Canvas; --fl-ink: CanvasText; --fl-ink-bright: CanvasText; --fl-ink-dim: CanvasText; --fl-ink-faint: CanvasText; --fl-line: ButtonBorder; --fl-line-strong: ButtonBorder; --fl-accent: Highlight; --fl-warn: CanvasText; --fl-bad: CanvasText; }
+  .colour-sample { forced-color-adjust: none; }
+  button, input, select { border: 1px solid ButtonBorder; }
+}
 * { box-sizing: border-box; }
 
 /* ---- The layout shell (06 §6.1) -----------------------------------------------------
@@ -114,11 +168,7 @@ export const STYLES = `
    which is the whole reason the header keeps a sticky rule it no longer needs here. */
 #root { height: 100%; display: flex; flex-direction: column;
   color: var(--fl-ink); font-family: var(--fl-font-sans);
-  background:
-    radial-gradient(1100px 520px at 82% -8%, rgba(0, 224, 198, .07), transparent 60%),
-    radial-gradient(900px 460px at -6% 4%, rgba(131, 35, 255, .06), transparent 58%),
-    var(--fl-bg);
-  background-attachment: fixed; }
+  background: var(--fl-bg); }
 
 /* A hairline and a wash, not a coloured slab. The header used to be HA's app bar wearing
    the theme's primary colour; it is now part of the same surface as everything under it.
@@ -167,7 +217,7 @@ nav.fade-start.fade-end {
   -webkit-mask-image: linear-gradient(to right, transparent, #000 26px, #000 calc(100% - 26px), transparent);
   mask-image: linear-gradient(to right, transparent, #000 26px, #000 calc(100% - 26px), transparent); }
 nav .count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px;
-  margin-left: 7px; border-radius: 9px; background: var(--fl-bad); color: #23070d;
+  margin-left: 7px; border-radius: 9px; background: var(--fl-bad); color: var(--fl-bg);
   font-family: var(--fl-font-mono); font-size: 11px; font-weight: 700;
   box-shadow: 0 0 14px rgba(255, 84, 112, .35); }
 
@@ -214,7 +264,7 @@ main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
   padding-bottom: max(22px, env(safe-area-inset-bottom)); }
 
 .stack { display: flex; flex-direction: column; gap: 16px; }
-.card { background: linear-gradient(165deg, var(--fl-surface-raised), #0a0f14);
+.card { background: var(--fl-surface);
   border-radius: var(--fl-radius-l); box-shadow: var(--fl-shadow-1);
   border: 1px solid var(--fl-line); }
 .muted { color: var(--fl-ink-dim); }
@@ -231,16 +281,15 @@ main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
 .empty.teach h2 { color: var(--fl-ink); font-weight: 600; margin: 0 0 10px; letter-spacing: -.01em; }
 .empty.teach p { max-width: 46ch; margin: 0 auto 14px; line-height: 1.6; }
 
-button { font: inherit; font-size: 14px; font-weight: 500; padding: 9px 16px;
+button { min-height: var(--fl-tap); font: inherit; font-size: 14px; font-weight: 500; padding: 9px 16px;
   border-radius: var(--fl-radius-s); border: 1px solid var(--fl-line-strong);
   background: transparent; color: var(--fl-ink-dim); cursor: pointer;
   transition: color var(--fl-dur-fast) var(--fl-ease), border-color var(--fl-dur-fast) var(--fl-ease),
     background var(--fl-dur-fast) var(--fl-ease); }
 button:hover { color: var(--fl-ink); border-color: var(--fl-ink-faint); }
-button.primary { color: var(--fl-accent-bright); border-color: var(--fl-accent-line); font-weight: 600;
-  background: linear-gradient(180deg, rgba(0, 224, 198, .2), rgba(0, 224, 198, .07));
-  box-shadow: 0 0 22px var(--fl-accent-glow); }
-button.primary:hover { color: var(--fl-ink-bright); border-color: var(--fl-accent); }
+button.primary { color: var(--fl-on-accent); border-color: var(--fl-accent); font-weight: 600;
+  background: var(--fl-accent); }
+button.primary:hover { color: var(--fl-on-accent); background: var(--fl-accent-bright); border-color: var(--fl-accent-bright); }
 button.link { background: none; border: 0; color: var(--fl-accent); padding: 0; align-self: flex-start; }
 button.link:hover { color: var(--fl-accent-bright); }
 :where(button, input, select, textarea):focus-visible { outline: 2px solid var(--fl-accent);
@@ -249,23 +298,22 @@ button.link:hover { color: var(--fl-accent-bright); }
 
 /* A hairline grid: one background showing through 1px gaps, rather than nine borders that
    have to agree with each other at every corner. */
-.summary { display: flex; flex-wrap: wrap; gap: 1px; background: var(--fl-line);
+.summary { display: flex; flex-wrap: wrap; gap: 1px; background: var(--fl-line-soft);
   border-radius: var(--fl-radius-l); overflow: hidden; }
 .stat { padding: 18px 22px; flex: 1 1 150px; background: var(--fl-surface); }
-.stat .k { font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+.stat .k { font-size: 13px; letter-spacing: 0;
   color: var(--fl-ink-faint); font-weight: 700; }
 .stat .v { font-family: var(--fl-font-mono); font-size: 28px; font-weight: 600;
   font-variant-numeric: tabular-nums; margin-top: 4px; letter-spacing: -.02em;
   color: var(--fl-ink-bright); }
 .stat .v.alert { color: var(--fl-warn); }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 16px; }
-.spool { display: flex; overflow: hidden; cursor: pointer; position: relative;
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.spool { display: flex; overflow: hidden; cursor: pointer; position: relative; border-color: var(--fl-line-soft);
   transition: transform var(--fl-dur-base) var(--fl-ease), border-color var(--fl-dur-base) var(--fl-ease),
     box-shadow var(--fl-dur-base) var(--fl-ease); }
-.spool:hover { transform: translateY(-2px); border-color: var(--fl-accent-line);
-  box-shadow: var(--fl-shadow-2), 0 0 26px var(--fl-accent-glow); }
-.spool.anomaly { border-left: 3px solid var(--fl-warn); }
+.spool:hover { border-color: var(--fl-accent); background: var(--fl-surface-raised); }
+.spool.anomaly { border-left: 1px solid var(--fl-warn); }
 /* The swatch is the primary identifier (06 §6.8), so it glows with its own colour rather
    than sitting as a flat strip: the filament colour is data, and it leads. */
 .swatch { width: 12px; flex: none; box-shadow: 0 0 18px -2px currentColor; }
@@ -274,8 +322,6 @@ button.link:hover { color: var(--fl-accent-bright); }
    An arc of the filament's own colour, at three sizes. Geometry lives in RING_SIZES;
    this is only how it is painted. Not the Ring/Profile/3D switcher — 16 §16.6 keeps that
    out as a new capability; this is how a spool is drawn from data the ledger already has. */
-.spool-art { position: relative; width: 106px; height: 106px; flex: none; align-self: center;
-  margin: 16px 0 16px 16px; }
 .tray-art { position: relative; width: 130px; height: 130px; margin: 8px auto 4px; }
 .detail-art { position: relative; width: 178px; height: 178px; flex: none; }
 /* The winding, behind the arc: a hatch of fine spokes turning slowly. It is what stops a
@@ -308,8 +354,7 @@ button.link:hover { color: var(--fl-accent-bright); }
      as a fill;
    - the depth, an inset shadow so the winding sits inside the reel instead of on it.
 
-   The card shows the same spool small, with a spoke hatch instead: at 106px the turns
-   would collapse into a moiré, and a texture that fights its own size is worse than none. */
+   Inventory uses bounded colour samples and a neutral stock rail instead. */
 .coil-base { position: absolute; inset: 0; border-radius: 50%;
   background: radial-gradient(circle, #131b24 26%, #0c1218 27%);
   border: 1px solid var(--fl-line); }
@@ -326,10 +371,20 @@ button.link:hover { color: var(--fl-accent-bright); }
 .ring-hub { width: 34px; height: 34px; border-radius: 50%; display: block;
   box-shadow: 0 0 20px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
   border: 2px solid var(--fl-surface); }
-.spool-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.spool-body { padding: 20px; display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
 /* The name and the rail's collapsed control share one row, so the control is part of the
    card's grid rather than floating over its corner — see the rail's own block below. */
-.spool-head { display: flex; align-items: center; gap: 8px; }
+.spool-head { display: flex; align-items: center; gap: 12px; }
+.spool-head .colour-sample { width: 44px; height: 44px; border-radius: var(--fl-radius-s); }
+.spool-name { display: block; text-align: start; padding: 0; border: 0; border-radius: 2px; min-height: 44px; width: 100%; color: var(--fl-ink-bright); font-size: 16px; line-height: 1.35; }
+.spool-name:hover { color: var(--fl-accent); }
+.spool-quantity { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.spool-quantity .big { margin: 0; }
+.spool-quantity .chip { align-self: center; }
+.stock-track { height: 4px; border-radius: 4px; background: var(--fl-line-soft); overflow: hidden; }
+.stock-track span { display: block; height: 100%; max-width: 100%; background: var(--fl-ink-dim); }
+.spool-location { font-size: 12.5px; line-height: 1.5; }
+.spool .foot { margin-top: 6px; min-height: 24px; }
 .spool-id { flex: 1; min-width: 0; }
 .name { font-weight: 600; letter-spacing: -.01em; }
 .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
@@ -363,7 +418,7 @@ button.link:hover { color: var(--fl-accent-bright); }
 .conf-anchor { margin-top: 5px; font-size: 12px; color: var(--fl-ink-faint); }
 
 .note { background: var(--fl-surface); border: 1px solid var(--fl-line);
-  border-left: 3px solid var(--fl-accent); padding: 12px 16px;
+  border-left: 1px solid var(--fl-accent); padding: 12px 16px;
   border-radius: 0 var(--fl-radius-m) var(--fl-radius-m) 0; font-size: 13.5px; color: var(--fl-ink-dim); }
 
 .trays { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
@@ -487,7 +542,7 @@ table.ledger tr.hist-job .hj-count { margin-left: 10px; color: var(--fl-ink-dim)
 .checksum b { color: var(--fl-ink); }
 
 .sync-strip { padding: 13px 16px; display: flex; flex-direction: column; gap: 7px;
-  border-left: 3px solid var(--fl-accent); }
+  border-left: 1px solid var(--fl-accent); }
 .sync-head { display: flex; align-items: center; gap: 10px; }
 .sync-head b { font-weight: 500; }
 .sync-dismiss { margin-left: auto; padding: 4px 10px; font-size: 12.5px; }
@@ -558,7 +613,7 @@ table.ledger td.src { padding-left: 14px; }
 .rv-card .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
 .rv-hms { font-family: var(--fl-font-mono); }
 .rv-est { font-size: 12.5px; color: var(--fl-ink-dim); font-style: italic; }
-.rv-nodata { border-left: 3px solid var(--fl-bad); padding: 8px 12px;
+.rv-nodata { border-left: 1px solid var(--fl-bad); padding: 8px 12px;
   background: var(--fl-surface-sunken); border-radius: 0 8px 8px 0; }
 .rv-nodata .t { font-weight: 500; }
 .rv-rows { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
@@ -614,7 +669,7 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
 
 .scrim { position: fixed; inset: 0; background: rgba(3, 5, 8, .68); display: grid; place-items: center;
   padding: 16px; z-index: 20; backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
-.modal { background: linear-gradient(160deg, #0f1720, #0a0f15); border: 1px solid var(--fl-line);
+.modal { background: var(--fl-surface-raised); border: 1px solid var(--fl-line);
   border-radius: var(--fl-radius-xl); padding: 24px; box-shadow: var(--fl-shadow-2);
   width: min(440px, 100%); max-height: 86vh; overflow-y: auto;
   animation: fl-pop var(--fl-dur-slow) var(--fl-ease) both; }
@@ -691,7 +746,7 @@ input.num { font: inherit; font-size: 14px; width: 88px; padding: 6px 9px; borde
    and dims, but it does not leave — and in the AMS view it must not, because the reel is
    still physically in the tray. The swatch keeps full strength: colour is the identifier,
    and an empty spool is the one most worth recognising before reaching for it. */
-.spool.depleted .spool-art, .tray.depleted .tray-art { opacity: .45; }
+.tray.depleted .tray-art { opacity: .45; }
 .spool.depleted .big, .tray.depleted .big { color: var(--fl-ink-dim); }
 
 /* Corrections — docs/14 §14.3, §14.4. */
@@ -741,7 +796,7 @@ table.ledger tr.voided td.what span { text-decoration: none; }
   background: var(--fl-line); overflow: hidden; display: block; }
 .pr-bar .track i { display: block; height: 100%; background: var(--fl-accent); }
 .pr-error { padding: 11px 15px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  border-left: 3px solid var(--fl-bad); }
+  border-left: 1px solid var(--fl-bad); }
 /* The accumulated total, with the sentence that keeps it from reading as an odometer.
    The caveat is not fine print here — it is the difference between a fact and a claim, so
    it sits in the same card as the figure and never below the fold. */
@@ -751,7 +806,7 @@ table.ledger tr.voided td.what span { text-decoration: none; }
 /* Which machines are followed, and any this version could not tell apart. Marked with the
    warning rule rather than the error one: nothing is broken — and the card only exists at
    all when there is a second machine to name or one that could not be named. */
-.pr-tracking { padding: 15px 18px 16px; border-left: 3px solid var(--fl-warn); }
+.pr-tracking { padding: 15px 18px 16px; border-left: 1px solid var(--fl-warn); }
 .pr-tracking p { margin: 0; }
 .pr-tracking p + p { margin-top: 8px; }
 .pr-trays { display: flex; flex-direction: column; }
@@ -802,7 +857,7 @@ table.ledger tr.voided td.what span { text-decoration: none; }
   color: var(--fl-ink-dim); font-weight: 700; margin-right: 2px; }
 .st-period { padding: 6px 14px; font-size: 13px; }
 .st-period.on { background: var(--fl-accent); border-color: var(--fl-accent);
-  color: #fff; font-weight: 500; }
+  color: var(--fl-on-accent); font-weight: 500; }
 .st-period:disabled { opacity: .6; cursor: progress; }
 .st-card { padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 10px; }
 .st-card h3 { margin: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
@@ -922,8 +977,9 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
   nav .count { margin-left: 5px; }
   .st-period { padding: 10px 12px; }
   .grid { grid-template-columns: 1fr; gap: 12px; }
-  .stat { flex-basis: calc(50% - 1px); padding: 15px 16px; }
-  .stat .v { font-size: 24px; }
+  .stat { flex: 1 1 0; min-width: 0; padding: 14px 12px; }
+  .stat .k { font-size: 12px; }
+  .stat .v { font-size: 20px; }
   .big { font-size: 26px; }
   .tray-actions button, .trash-acts button, .rowact { min-height: var(--fl-tap); }
   /* The rail wraps at this width anyway, so the two that end a spool's life take a line of
@@ -947,4 +1003,80 @@ table.ledger.st-top td.what { overflow-wrap: anywhere; }
   main { padding: 28px max(32px, env(safe-area-inset-right)) 0 max(32px, env(safe-area-inset-left)); }
   .view-scroll { padding-bottom: max(80px, env(safe-area-inset-bottom)); }
 }
+
+/* Quantity labels use theme ink; filament samples alone carry material colour. */
+.ring-arc { filter: none; }
+.ring-pct, .ring-pct.hero, .ring-mid, .big, .amt, .bal { color: var(--fl-ink-bright); font-variant-numeric: tabular-nums; }
+.coil-base, .coil-wind, .coil-depth { display: none; }
+.ambient { display: none; }
+.card { box-shadow: none; }
+.modal { box-shadow: var(--fl-shadow-2); }
+@container panel (max-width: 600px) {
+  .filter-fields { display: grid; grid-template-columns: 1fr; }
+  .modal { width: 100%; max-width: 100%; }
+}
+
+.nav-more { display: none; }
+.notification-settings { padding: 20px 0; }
+.notification-settings form { display: grid; gap: 16px; max-width: 46rem; }
+.notification-settings label { display: grid; gap: 6px; }
+.notification-settings input, .notification-settings select { min-height: 44px; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-s); background: var(--fl-surface-sunken); color: var(--fl-ink); padding: 8px 12px; font: inherit; }
+.notification-settings select[multiple] { min-height: 110px; }
+.notification-rules { padding: 0; list-style: none; }
+.notification-rules li { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 16px 0; border-bottom: 1px solid var(--fl-line-soft); }
+.notification-rules small { flex-basis: 100%; color: var(--fl-ink-dim); }
+a { color: var(--fl-accent); text-underline-offset: .2em; }
+button:disabled { cursor: not-allowed; opacity: .65; }
+@container panel (max-width: 600px) {
+  nav { overflow: visible; gap: 2px; }
+  nav > button { padding: 8px; font-size: 12px; flex: 1; }
+  nav > .nav-secondary { display: none; }
+  .nav-more { display: block; position: relative; }
+  .nav-more summary { min-width: 44px; min-height: 44px; max-width: 88px; padding: 8px; font-size: 12px; cursor: pointer; }
+  .nav-more > div { position: absolute; right: 0; top: 100%; display: grid; min-width: 200px; background: var(--fl-surface-raised); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-m); padding: 8px; z-index: 40; box-shadow: var(--fl-shadow-1); }
+  .scrim { padding: 8px; align-items: end; }
+  .modal { max-height: calc(100dvh - 16px); padding: 18px; }
+}
+
+/* Shared task controls and both-theme chrome, verified together in the experience pass. */
+header { background: var(--fl-bg); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.strand, .hatch { display: none; }
+nav button.on { background: var(--fl-accent-soft); box-shadow: none; }
+.ring-hub, .conf i, .spool:hover, .tray .reel { box-shadow: none; }
+.ring-hub { border: 1px solid var(--fl-ink-dim); }
+.note, .spool.anomaly { border-left-width: 1px; border-radius: var(--fl-radius-m); }
+.filter-fields input:not([type="checkbox"]), .filter-fields select, .appearance-settings select {
+  min-height: 44px; width: 100%; padding: 9px 12px; font: inherit;
+  color: var(--fl-ink); background: var(--fl-surface); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-s);
+}
+.filter-fields label, .appearance-settings label { display: grid; gap: 6px; }
+.filter-fields .check { display: flex; min-height: 44px; }
+.appearance-settings select { max-width: 30rem; }
+.modal input:not([type="checkbox"]), .modal select { min-height: 44px; }
+.modal { scrollbar-gutter: stable; }
+.registration-modal { width: min(760px, 100%); }
+.colour-editor { display: grid; gap: 12px; margin-top: 12px; }
+.colour-controls { display: grid; grid-template-columns: minmax(0, 1fr) 76px; gap: 12px; align-items: end; }
+.modal .colour-controls label { margin: 0; min-width: 0; }
+.modal .colour-controls input[type="color"] { width: 100%; min-height: 44px; cursor: pointer; }
+.registration-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.registration-sections fieldset { border: 0; border-radius: 0; padding: 0; margin: 0; }
+.registration-sections legend { padding: 0; margin-bottom: 16px; font-size: 15px; }
+.registration-sections [data-preview] { padding: 14px; border-radius: var(--fl-radius-s); background: var(--fl-accent-soft); color: var(--fl-ink); line-height: 1.5; }
+.registration-modal details { border-top: 1px solid var(--fl-line-soft); padding-top: 16px; }
+.registration-modal summary { cursor: pointer; min-height: 44px; }
+.registration-modal .actions { position: sticky; bottom: -1px; background: var(--fl-surface-raised); padding: 16px 0 0; border-top: 1px solid var(--fl-line-soft); }
+.modal input, .modal select { font-size: 16px; }
+@container panel (max-width: 600px) {
+  .registration-sections { grid-template-columns: 1fr; gap: 28px; }
+}
+.spool-body { min-width: 0; }
+.name { overflow-wrap: anywhere; }
+@container panel (max-width: 600px) {
+  .filter-fields { grid-template-columns: 1fr; }
+  .head-top { gap: 8px; }
+  header h1 { font-size: 20px; }
+}
+button:disabled, input:disabled, select:disabled, .st-period:disabled,
+.modal input:disabled, .set-card input:disabled { opacity: 1; color: var(--fl-ink-dim); background: var(--fl-surface-sunken); }
 `;

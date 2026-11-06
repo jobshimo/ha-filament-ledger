@@ -37,6 +37,7 @@ class SpoolState(StrEnum):
         balance: Grams,
         movement_count: int,
         deleted_at: datetime | None = None,
+        opened_at: datetime | None = None,
     ) -> SpoolState:
         """Total function: every spool lands on exactly one state.
 
@@ -54,7 +55,7 @@ class SpoolState(StrEnum):
             return cls.DISCARDED
         if not balance.is_positive:
             return cls.DEPLETED
-        if movement_count <= 1:
+        if movement_count <= 1 and opened_at is None:
             return cls.SEALED
         return cls.ACTIVE
 

@@ -1,0 +1,805 @@
+{
+  "description": "Illustrative 100-spool fixture; no real household data.",
+  "spools": [
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 50,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 60,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#808080FF",
+      "opening_g": 70,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFE0FF",
+      "opening_g": 80,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FF0000FF",
+      "opening_g": 90,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#11223340",
+      "opening_g": 100,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": null,
+      "opening_g": 110,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#000000FF",
+      "opening_g": 120,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFFFFF",
+      "opening_g": 130,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#808080FF",
+      "opening_g": 140,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFE0FF",
+      "opening_g": 150,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FF0000FF",
+      "opening_g": 160,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#11223340",
+      "opening_g": 170,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": null,
+      "opening_g": 180,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 190,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 200,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#808080FF",
+      "opening_g": 210,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFE0FF",
+      "opening_g": 220,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FF0000FF",
+      "opening_g": 230,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#11223340",
+      "opening_g": 240,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": null,
+      "opening_g": 250,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#000000FF",
+      "opening_g": 260,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFFFFF",
+      "opening_g": 270,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#808080FF",
+      "opening_g": 280,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFE0FF",
+      "opening_g": 290,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FF0000FF",
+      "opening_g": 300,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#11223340",
+      "opening_g": 310,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": null,
+      "opening_g": 320,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 330,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 340,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#808080FF",
+      "opening_g": 350,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFE0FF",
+      "opening_g": 360,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FF0000FF",
+      "opening_g": 370,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#11223340",
+      "opening_g": 380,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": null,
+      "opening_g": 390,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#000000FF",
+      "opening_g": 400,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFFFFF",
+      "opening_g": 410,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#808080FF",
+      "opening_g": 420,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFE0FF",
+      "opening_g": 430,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FF0000FF",
+      "opening_g": 440,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#11223340",
+      "opening_g": 450,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": null,
+      "opening_g": 460,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 470,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 480,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#808080FF",
+      "opening_g": 490,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFE0FF",
+      "opening_g": 500,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FF0000FF",
+      "opening_g": 510,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#11223340",
+      "opening_g": 520,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": null,
+      "opening_g": 530,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#000000FF",
+      "opening_g": 540,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFFFFF",
+      "opening_g": 550,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#808080FF",
+      "opening_g": 560,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFE0FF",
+      "opening_g": 570,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FF0000FF",
+      "opening_g": 580,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#11223340",
+      "opening_g": 590,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": null,
+      "opening_g": 600,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 610,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 620,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#808080FF",
+      "opening_g": 630,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFE0FF",
+      "opening_g": 640,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FF0000FF",
+      "opening_g": 650,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#11223340",
+      "opening_g": 660,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": null,
+      "opening_g": 670,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#000000FF",
+      "opening_g": 680,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFFFFF",
+      "opening_g": 690,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#808080FF",
+      "opening_g": 700,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFE0FF",
+      "opening_g": 710,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FF0000FF",
+      "opening_g": 720,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#11223340",
+      "opening_g": 730,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": null,
+      "opening_g": 740,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 750,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 760,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#808080FF",
+      "opening_g": 770,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFE0FF",
+      "opening_g": 780,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FF0000FF",
+      "opening_g": 790,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#11223340",
+      "opening_g": 800,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": null,
+      "opening_g": 810,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#000000FF",
+      "opening_g": 820,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFFFFF",
+      "opening_g": 830,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#808080FF",
+      "opening_g": 840,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFE0FF",
+      "opening_g": 850,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FF0000FF",
+      "opening_g": 860,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#11223340",
+      "opening_g": 870,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": null,
+      "opening_g": 880,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 890,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 900,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#808080FF",
+      "opening_g": 910,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFE0FF",
+      "opening_g": 920,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FF0000FF",
+      "opening_g": 930,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#11223340",
+      "opening_g": 940,
+      "opened": true
+    },
+    {
+      "label": "Workshop 00",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": null,
+      "opening_g": 950,
+      "opened": true
+    },
+    {
+      "label": "Workshop 01",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#000000FF",
+      "opening_g": 960,
+      "opened": true
+    },
+    {
+      "label": "Workshop 02",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFFFFF",
+      "opening_g": 970,
+      "opened": true
+    },
+    {
+      "label": "Workshop 03",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#808080FF",
+      "opening_g": 980,
+      "opened": true
+    },
+    {
+      "label": "Workshop 04",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#FFFFE0FF",
+      "opening_g": 990,
+      "opened": true
+    },
+    {
+      "label": "Workshop 05",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FF0000FF",
+      "opening_g": 1000,
+      "opened": true
+    },
+    {
+      "label": "Workshop 06",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#11223340",
+      "opening_g": 1010,
+      "opened": true
+    },
+    {
+      "label": "Workshop 07",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": null,
+      "opening_g": 1020,
+      "opened": true
+    },
+    {
+      "label": "Workshop 08",
+      "vendor": "Bambu Lab",
+      "material": "PETG",
+      "colour": "#000000FF",
+      "opening_g": 1030,
+      "opened": true
+    },
+    {
+      "label": "Workshop 09",
+      "vendor": "Custom brand",
+      "material": "PLA",
+      "colour": "#FFFFFFFF",
+      "opening_g": 1040,
+      "opened": true
+    }
+  ]
+}

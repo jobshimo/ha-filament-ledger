@@ -2,6 +2,7 @@
 //
 // Installed on the panel by `mixIn` (./mixin.js, ADR-0010); `this` is the panel.
 
+import { colourValue } from "./colour.js";
 import { esc } from "../i18n.js";
 import { fill, grams, hms, holderWord, round1, typedGrams } from "./format.js";
 
@@ -275,7 +276,7 @@ export class ReviewViews {
           ? this.spoolChoiceBody(spool)
           : `<span class="sf-empty">${charge.spool_id ? t("review.unknownSpool") : t("review.chooseSpool")}</span>`;
         const who = named
-          ? `<span class="rv-dot" style="background:${esc(spool?.colour ?? "transparent")}"></span>
+          ? `<span class="rv-dot" style="background:${esc(spool ? colourValue(spool) : "transparent")}"></span>
              <span class="rv-spool">${spool ? esc(spool.name) : t("review.unknownSpool")}</span>`
           : `<span class="rv-warn">${charge.spool_id ? "" : "⚠"}</span>
              <span class="rv-pickline">${single ? t("review.whichSpool") : ""}

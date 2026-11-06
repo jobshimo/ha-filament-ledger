@@ -407,3 +407,11 @@ backups with no extra work.
 A JSON export of the full ledger is a Phase 5 feature, for portability rather than backup —
 and it is also the natural place for the optional Spoolman export
 ([ADR-0002](adr/0002-reject-spoolman-as-foundation.md)) to plug in.
+
+---
+
+## Filament experience additive migration (2026-11-06)
+
+The next migration after 0010 adds spool opened_at, colour_known, optional per-spool threshold and durable armed/baseline/latest-occurrence fields. Add nullable opening-basis/gross/tare fields to immutable movements at insert time; existing null basis means LEGACY_UNSPECIFIED and historical amounts/IDs are untouched. Add actor/request UUID receipts with canonical-intent fingerprint and resulting spool ID. No remaining-balance cache, notification-rule copy or delivery outbox is introduced. Preserve position indexes, foreign keys and append-only triggers.
+
+**Implementation evidence (2026-11-06).** Migration 0011 is additive and records its own schema version. Existing movement IDs, amounts and append-only/index guards are preserved. Registration receipts use the authenticated actor plus UUID and a canonical intent fingerprint before runtime defaults. New RGB/RGBA facts are additive; Unknown is never grouped with actual black in consumption summaries.

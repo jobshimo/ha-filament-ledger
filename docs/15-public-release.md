@@ -391,3 +391,13 @@ early ([06 §6.7](06-ui-spec.md)), and only its cost figures still want §15.1 �
 multi-printer** last, behind its own design pass. Every item is independently
 shippable; the roadmap's phase test — stop anywhere and what exists is worth having —
 applies within the release too ([10 — Roadmap](10-roadmap.md)).
+
+---
+
+## Low-stock contract amendment (2026-11-06)
+
+For this feature, the armed/threshold-baseline contract supersedes §15.2's proposed fired-at-only storage and repair-issue surface. Household default is 100 g with optional per-spool positive overrides. Initially-low registration, rule edits and restart refresh current status without emitting/replaying events. Recovery to or above threshold re-arms; only eligible real downward crossings publish. Persist latch and latest occurrence identity atomically with movements, then publish through the existing post-commit bridge. A crash before publication may lose an event and startup does not replay it; SC-005 counts published system occurrence IDs in uninterrupted operation, not destination messages.
+
+Current shortage is visible in inventory and a per-spool binary sensor. Guided notifications and custom actions share one local versioned HA blueprint; native HA configuration is the only rule store. User-edited blueprint/config content is never silently overwritten. Service acceptance and observed destination receipt are verified separately. No exactly-once external-delivery claim is made.
+
+**Implementation evidence (2026-11-06).** The bundled v1 blueprint listens only to committed low-stock occurrences, uses queued capacity 100 and never broadens missing selected targets to all spools. Setup compares complete native metadata and sentinel substitution before use and never overwrites an existing blueprint. Native save/readback and automation-entity activation are separate from notification-action acceptance and destination receipt. The explicit commit-to-bus interruption window has no outbox or startup replay.

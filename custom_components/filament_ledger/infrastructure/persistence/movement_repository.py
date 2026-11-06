@@ -23,7 +23,7 @@ COLUMNS = (
     # Migration 0003's link columns. Written here at INSERT and nowhere else, ever — which
     # is what keeps the immutability triggers from ever being confronted by a correction
     # (docs/14 §14.7, docs/adr/0007).
-    "reassigns_movement_id, reinstates_movement_id"
+    "reassigns_movement_id, reinstates_movement_id, opening_basis, gross_weight_mg, tare_weight_mg"
 )
 
 
@@ -43,6 +43,9 @@ def _to_movement(row: sqlite3.Row) -> Movement:
         note=row["note"],
         job_id=PrintJobId(row["job_id"]) if row["job_id"] else None,
         review_id=ReviewId(row["review_id"]) if row["review_id"] else None,
+        opening_basis=row["opening_basis"] or "LEGACY_UNSPECIFIED",
+        gross_weight_mg=row["gross_weight_mg"],
+        tare_weight_mg=row["tare_weight_mg"],
         reassigns_movement_id=(
             MovementId(row["reassigns_movement_id"]) if row["reassigns_movement_id"] else None
         ),
@@ -85,7 +88,9 @@ def _where(criteria: MovementFilter) -> tuple[str, list[object]]:
         # A movement has no colour; the spool it names has one. Sorted so that the same
         # filter is always the same statement with the same parameter order.
         placeholders = ",".join("?" * len(criteria.colours))
-        clauses.append(f"spool_id IN (SELECT id FROM spool WHERE colour IN ({placeholders}))")
+        clauses.append(
+            f"spool_id IN (SELECT id FROM spool WHERE colour_known = 1 AND colour IN ({placeholders}))"
+        )
         params.extend(sorted(colour.hex8 for colour in criteria.colours))
     if criteria.min_magnitude is not None:
         # **abs, not the stored value.** Amounts are signed — a print consumption is
@@ -116,7 +121,7 @@ class SqliteMovementRepository:
 
     async def append(self, movement: Movement) -> None:
         await self.database.execute(
-            f"INSERT INTO movement ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO movement ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 movement.id,
                 movement.spool_id,
@@ -130,6 +135,9 @@ class SqliteMovementRepository:
                 movement.note,
                 movement.reassigns_movement_id,
                 movement.reinstates_movement_id,
+                movement.opening_basis,
+                movement.gross_weight_mg,
+                movement.tare_weight_mg,
             ),
         )
 

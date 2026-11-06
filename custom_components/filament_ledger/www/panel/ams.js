@@ -4,6 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { fill, holderWord, UNIDENTIFIED_PRINTER } from "./format.js";
+import { colourValue, colourSample } from "./colour.js";
 import { spoolRing } from "./spool-ring.js";
 
 export class AmsViews {
@@ -173,10 +174,13 @@ export class AmsViews {
         // The printer snapshot says so, and the card repeats it — the same [ Mount ]
         // button then does for a third-party reel what the chip does for a Bambu one,
         // because consumption already charges by location, not by tag.
-        const chipless = this._trayStatus(printer, ams, slot) === "NO_TAG";
+        const status = this._trayStatus(printer, ams, slot)?.toLowerCase();
+        const unavailable = this._machineSnapshot(printer)?.online === false;
+        const label = unavailable ? "position.stale" : !status ? "position.notReported"
+          : status === "empty" ? "ams.empty" : status === "no_tag" ? "ams.chipless" : "ams.occupied";
         return this.emptyPositionCard(
           t("ams.slot", { slot }),
-          t(chipless ? "ams.chipless" : "ams.empty"),
+          t(label),
           `<button data-action="mount-slot" data-slot="${slot}" data-ams="${esc(ams)}"
                   data-printer="${machine}">${t("act.mount")}</button>`,
         );
@@ -215,10 +219,12 @@ export class AmsViews {
       // that the ledger has no row for is the holder's form of `ams.chipless`, and the
       // [ Mount ] button beside it is how the user says which spool it is. Null — the
       // printer did not say — reads as the ledger's own word, never as an occupied holder.
-      const occupied = reported.find((h) => h.holder === holder)?.empty === false;
+      const empty = reported.find((h) => h.holder === holder)?.empty;
+      const label = this._machineSnapshot(printer)?.online === false ? "position.stale"
+        : empty == null ? "position.notReported" : empty ? "ams.empty" : "ams.occupied";
       return this.emptyPositionCard(
         heading,
-        t(occupied ? "ams.occupied" : "ams.empty"),
+        t(label),
         `<button data-action="mount-external" data-holder="${esc(holder)}"
                 data-printer="${machine}">${t("act.mount")}</button>`,
       );
@@ -248,15 +254,15 @@ export class AmsViews {
         ${this.spoolMenu(spool)}
       </div>
       <div class="tray-art">
-        ${spoolRing("slot", spool.percentage, spool.colour)}
+        ${spoolRing("slot", spool.percentage, colourValue(spool))}
         <div class="ring-mid">
-          <span class="ring-hub" style="background:${esc(spool.colour)}"></span>
+          <span class="ring-hub" style="background:${esc(colourValue(spool))}"></span>
         </div>
       </div>
       <div class="name">${esc(spool.name)}</div>
       <div class="big">${spool.balance_g}<small> g</small></div>
       <div class="barline">
-        <div class="track"><i style="width:${spool.percentage}%;background:${esc(spool.colour)}"></i></div>
+        <div class="track"><i style="width:${spool.percentage}%;background:var(--fl-accent)"></i></div>
         <span class="pct">${spool.percentage}%</span>
       </div>
       <div class="foot">${this.confidenceChip(spool.confidence)}</div>

@@ -10,6 +10,8 @@ from typing import Final
 DOMAIN: Final = "filament_ledger"
 
 # Configuration
+CONF_LOW_STOCK_THRESHOLD: Final = "low_stock_threshold_g"
+DEFAULT_LOW_STOCK_THRESHOLD_G: Final = 100
 CONF_DEFAULT_OPENING_WEIGHT: Final = "default_opening_weight"
 CONF_DEFAULT_CORE_WEIGHT: Final = "default_core_weight"
 CONF_ANOMALY_THRESHOLD: Final = "anomaly_threshold"

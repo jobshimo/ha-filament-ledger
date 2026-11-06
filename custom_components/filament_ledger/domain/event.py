@@ -7,6 +7,7 @@ not know Home Assistant consumes them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from .service.anomaly_detector import Anomaly
@@ -23,6 +24,7 @@ from .value.identifiers import (
     TagUid,
     TrayRef,
 )
+from .value.location import Location
 from .value.movement_type import MovementType
 from .value.review import ReviewReason, ReviewState
 
@@ -231,3 +233,20 @@ class EventPublisher(Protocol):
     """
 
     async def publish(self, event: DomainEvent) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class LowStockCrossed(DomainEvent):
+    occurrence_id: str
+    spool_id: SpoolId
+    display_name: str
+    vendor: str | None
+    material: str
+    colour_rgba: str | None
+    balance: Grams
+    threshold: Grams
+    confidence: Confidence
+    opening_basis: str
+    quantity_basis: str
+    location: Location
+    occurred_at: datetime

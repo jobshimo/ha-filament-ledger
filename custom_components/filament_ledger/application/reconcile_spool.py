@@ -20,6 +20,7 @@ from ..domain.value.grams import Grams
 from ..domain.value.identifiers import SpoolId
 from ..domain.value.movement_type import MovementSource, MovementType
 from .errors import SpoolNotFoundError
+from .low_stock import LowStock
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,12 +45,15 @@ class ReconcileSpool:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, command: ReconcileSpoolCommand) -> ReconcileResult:
         # The unit of work spans the read-compute-append sequence. Two concurrent
         # reconciliations of the same spool would otherwise both read the same history,
         # both compute the same delta, and both append it — doubling the correction.
-        async with self.uow:
+        async with (
+            self.low_stock.transaction(self.uow, [command.spool_id]) if self.low_stock else self.uow
+        ):
             spool = await self.spools.get(command.spool_id)
             if spool is None:
                 raise SpoolNotFoundError(command.spool_id)

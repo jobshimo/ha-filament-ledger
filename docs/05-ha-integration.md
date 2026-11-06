@@ -557,3 +557,15 @@ This section is the price of [ADR-0002](adr/0002-reject-spoolman-as-foundation.m
 because it consumes `ha-bambulab` instead of reimplementing MQTT, and the cost of that is one
 carefully drawn boundary. Drawing it here, once, is cheaper than drawing it accidentally in
 nine places.
+
+---
+
+## Filament experience interface amendment (2026-11-06)
+
+Extend existing list/create/update/mount commands additively; retain legacy request/response fields. Add authenticated ordinary-user spools/preview_registration (read-only) and spools/open (idempotent metadata). Inventory search/material/location/low-only/order selection is owned by application read models, not JavaScript. Global threshold writes remain admin-only; per-device appearance requires no global permission.
+
+One current-state low-stock binary sensor belongs to each physical spool. Only filament_ledger_low_stock occurrences trigger the local versioned automation blueprint, never startup/availability/threshold-state transitions. Resolve entity IDs through the registry and preserve physical spool IDs. Native admin blueprint/config routes own notification rules; never write HA automation files from Python or bypass session permissions. Tests send only a marked selected notification action. Native acceptance, activation and destination receipt are separate outcomes.
+
+Request shapes and error semantics are defined in the [WebSocket API](../custom_components/filament_ledger/infrastructure/ha/websocket_api.py) and covered by the registration, assignment and notification tests.
+
+**Implementation evidence (2026-11-06).** The binary_sensor platform entry point delegates to infrastructure/ha/binary_sensor.py, keeping HA imports at the existing infrastructure boundary. Each physical spool has a registry-resolved low-stock entity; filament_ledger_low_stock includes occurrence identity, exact remaining grams, threshold, current confidence anchor, opening basis and complete location. Native admin routes own blueprint and automation persistence.
