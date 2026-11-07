@@ -5,6 +5,19 @@ export function colourValue(spool) {
   return spool.colour_rgba ?? spool.colour ?? "var(--fl-ink-dim)";
 }
 
+/** The nearest preset's word for a spool's colour ("Red"), so the card can say it, not only show it. */
+export function colourName(spool, t) {
+  const m = /^#?([0-9a-f]{6})/i.exec(String(spool.colour_rgba ?? spool.colour ?? ""));
+  if (spool.colour_known === false || !m) return t("colour.unknown");
+  const rgb = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+  let best = null, bestD = Infinity;
+  for (const [name, hex] of COLOUR_PRESETS) {
+    const d = [1, 3, 5].reduce((a, i, k) => a + (parseInt(hex.slice(i, i + 2), 16) - rgb[k]) ** 2, 0);
+    if (d < bestD) { bestD = d; best = name; }
+  }
+  return t("colour." + best);
+}
+
 export function colourSample(spool, t) {
   const known = spool.colour_known !== false;
   const label = known ? spool.colour_rgba ?? spool.colour : t("colour.unknown");

@@ -4,7 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { fill, grams } from "./format.js";
-import { colourSample } from "./colour.js";
+import { colourSample, colourName, colourValue } from "./colour.js";
 
 /** The CSS class per confidence level; the words themselves come from the table. */
 const CONFIDENCE_CLASS = { HIGH: "high", MEDIUM: "med", LOW: "low" };
@@ -195,17 +195,18 @@ export class InventoryViews {
         : `<span class="pct">${spool.percentage}%</span>`;
     return `
       <article class="card spool ${spool.has_anomaly ? "anomaly" : ""} ${depleted ? "depleted" : ""}"
+        style="--filament-colour:${esc(colourValue(spool))}"
         data-action="open" data-id="${esc(spool.id)}">
         <div class="spool-body">
           <div class="spool-head">
             ${colourSample(spool, t)}
             <div class="spool-id">
               <button class="spool-name name" data-action="open" data-id="${esc(spool.id)}">${esc(spool.name)}</button>
-              <div class="sub">${spool.colour_known === false ? `<span class="muted">${t("colour.unknown")}</span> · ` : ""}${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
+              <div class="spool-colour"><b>${esc(colourName(spool, t))}</b> · ${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</div>
             </div>
             ${this.spoolMenu(spool)}
           </div>
-          <div class="spool-quantity"><div class="big">${spool.balance_g}<small> g</small></div>${gauge}</div>
+          <div class="spool-quantity"><div class="big">${spool.balance_g}<small> g${spool.opening_weight_g ? ` / ${spool.opening_weight_g} g` : ""}</small></div>${gauge}</div>
           <div class="stock-track" aria-hidden="true"><span style="width: ${spool.percentage}%"></span></div>
           <div class="foot">
             ${spool.is_low_stock ? `<span class="badge">${t("lowStock.current")}</span>` : ""}

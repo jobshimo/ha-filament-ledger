@@ -312,7 +312,9 @@ button.link:hover { color: var(--fl-accent-bright); }
 .spool { display: flex; overflow: hidden; cursor: pointer; position: relative; border-color: var(--fl-line-soft);
   transition: transform var(--fl-dur-base) var(--fl-ease), border-color var(--fl-dur-base) var(--fl-ease),
     box-shadow var(--fl-dur-base) var(--fl-ease); }
-.spool:hover { border-color: var(--fl-accent); background: var(--fl-surface-raised); }
+.spool { background-image: linear-gradient(180deg, color-mix(in srgb, var(--filament-colour) 16%, transparent), transparent 90px); }
+.spool::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--filament-colour); }
+.spool:hover { border-color: var(--fl-accent); background-color: var(--fl-surface-raised); transform: translateY(-2px); }
 .spool.anomaly { border-left: 1px solid var(--fl-warn); }
 /* The swatch is the primary identifier (06 §6.8), so it glows with its own colour rather
    than sitting as a flat strip: the filament colour is data, and it leads. */
@@ -375,20 +377,25 @@ button.link:hover { color: var(--fl-accent-bright); }
 /* The name and the rail's collapsed control share one row, so the control is part of the
    card's grid rather than floating over its corner — see the rail's own block below. */
 .spool-head { display: flex; align-items: center; gap: 12px; }
-.spool-head .colour-sample { width: 44px; height: 44px; border-radius: var(--fl-radius-s); }
+.spool-head .colour-sample { width: 56px; height: 56px; border-radius: 50%; border-width: 2px;
+  box-shadow: 0 0 0 3px var(--fl-surface), 0 6px 22px -4px var(--filament-colour);
+  background-image: radial-gradient(circle at 50% 50%, var(--fl-surface) 0 17%, transparent 18%),
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,.28), transparent 55%); }
+.spool-colour { font-size: 12.5px; color: var(--fl-ink-dim); }
+.spool-colour b { color: var(--fl-ink); font-weight: 600; }
 .spool-name { display: block; text-align: start; padding: 0; border: 0; border-radius: 2px; min-height: 44px; width: 100%; color: var(--fl-ink-bright); font-size: 16px; line-height: 1.35; }
 .spool-name:hover { color: var(--fl-accent); }
 .spool-quantity { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 12px; }
 .spool-quantity .big { margin: 0; }
 .spool-quantity .chip { align-self: center; }
-.stock-track { height: 4px; border-radius: 4px; background: var(--fl-line-soft); overflow: hidden; }
-.stock-track span { display: block; height: 100%; max-width: 100%; background: var(--fl-ink-dim); }
+.stock-track { height: 8px; border-radius: 8px; background: var(--fl-line-soft); overflow: hidden; }
+.stock-track span { display: block; height: 100%; max-width: 100%; border-radius: 8px; background: var(--filament-colour, var(--fl-ink-dim)); box-shadow: 0 0 10px -1px var(--filament-colour); }
 .spool-location { font-size: 12.5px; line-height: 1.5; }
 .spool .foot { margin-top: 6px; min-height: 24px; }
 .spool-id { flex: 1; min-width: 0; }
 .name { font-weight: 600; letter-spacing: -.01em; }
 .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
-.big { font-family: var(--fl-font-mono); font-size: 30px; font-weight: 600;
+.big { font-family: var(--fl-font-mono); font-size: 34px; font-weight: 600;
   font-variant-numeric: tabular-nums; margin: 8px 0 4px; letter-spacing: -.03em;
   color: var(--fl-ink-bright); }
 .big small { font-family: var(--fl-font-sans); font-size: 13px; font-weight: 500; color: var(--fl-ink-dim); }
