@@ -44,12 +44,12 @@ export const STYLES = `
   --fl-font-sans: "Space Grotesk", system-ui, sans-serif;
   --fl-font-mono: "IBM Plex Mono", ui-monospace, "Roboto Mono", Menlo, monospace;
 
-  --fl-bg: #11171c;
-  --fl-surface: #192127;
-  --fl-surface-raised: #202a32;
-  --fl-surface-sunken: #141c22;
-  --fl-line: #607487;
-  --fl-line-soft: #34434f;
+  --fl-bg: #0e1418;
+  --fl-surface: #161e24;
+  --fl-surface-raised: #1d2830;
+  --fl-surface-sunken: #111a20;
+  --fl-line: #4a5d6c;
+  --fl-line-soft: #2a3943;
   --fl-line-strong: #8296aa;
 
   --fl-ink: #e6edf3;
@@ -71,10 +71,10 @@ export const STYLES = `
   --fl-bad: #ff8fa3;
   --fl-bad-soft: rgba(255, 84, 112, .16);
 
-  --fl-radius-s: 8px;
-  --fl-radius-m: 12px;
-  --fl-radius-l: 16px;
-  --fl-radius-xl: 18px;
+  --fl-radius-s: 10px;
+  --fl-radius-m: 14px;
+  --fl-radius-l: 20px;
+  --fl-radius-xl: 24px;
 
   /* The floor for anything tappable (16 §16.6). A labelled button reaches it through its
      padding and never has to say so; an icon-only control has no label to grow its box, so
@@ -82,8 +82,8 @@ export const STYLES = `
      picking a number of its own. */
   --fl-tap: 44px;
 
-  --fl-shadow-1: 0 8px 24px rgba(0, 0, 0, .35);
-  --fl-shadow-2: 0 14px 40px rgba(0, 0, 0, .4);
+  --fl-shadow-1: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px -8px rgba(0, 0, 0, .45);
+  --fl-shadow-2: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 24px 56px -12px rgba(0, 0, 0, .6);
 
   --fl-ease: cubic-bezier(.2, .8, .2, 1);
   --fl-dur-fast: .2s;
@@ -118,8 +118,8 @@ export const STYLES = `
   --fl-warn-soft: #fff0d4;
   --fl-bad: #a02c46;
   --fl-bad-soft: #fbe4e9;
-  --fl-shadow-1: 0 8px 24px rgba(22, 42, 58, .10);
-  --fl-shadow-2: 0 14px 40px rgba(22, 42, 58, .16);
+  --fl-shadow-1: 0 1px 2px rgba(22, 42, 58, .08), 0 10px 28px -10px rgba(22, 42, 58, .16);
+  --fl-shadow-2: 0 24px 56px -14px rgba(22, 42, 58, .26);
 }
 :host { accent-color: var(--fl-accent); scrollbar-color: var(--fl-ink-dim) var(--fl-surface); scrollbar-width: thin; }
 ::selection { background: var(--fl-accent); color: var(--fl-bg); }
@@ -168,7 +168,7 @@ input[type="checkbox"] { width: 20px; height: 20px; }
    which is the whole reason the header keeps a sticky rule it no longer needs here. */
 #root { height: 100%; display: flex; flex-direction: column;
   color: var(--fl-ink); font-family: var(--fl-font-sans);
-  background: var(--fl-bg); }
+  background: radial-gradient(120% 60% at 50% -10%, color-mix(in srgb, var(--fl-accent) 7%, transparent), transparent 70%), var(--fl-bg); }
 
 /* A hairline and a wash, not a coloured slab. The header used to be HA's app bar wearing
    the theme's primary colour; it is now part of the same surface as everything under it.
@@ -177,12 +177,12 @@ input[type="checkbox"] { width: 20px; height: 20px; }
    height, where the shell collapses back to one scrolling document — see #root. z-index
    applies to a flex item whether or not it is positioned, and it is what keeps the strand
    overhanging the header's bottom edge above the content beneath. */
-header { background: linear-gradient(180deg, rgba(11, 16, 22, .92), rgba(5, 7, 10, .72));
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  color: var(--fl-ink); padding: 16px 22px 0; flex: none;
+header { background: color-mix(in srgb, var(--fl-bg) 78%, transparent);
+  backdrop-filter: blur(14px) saturate(1.2); -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  color: var(--fl-ink); padding: 18px 28px 0; flex: none;
   position: sticky; top: 0; z-index: 5;
   border-bottom: 1px solid var(--fl-line-soft); }
-header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+header h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -.03em; }
 .head-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .whoami { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 12.5px;
   color: var(--fl-ink-dim); }
@@ -190,17 +190,19 @@ header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em
 .who-admin { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
   border: 1px solid var(--fl-accent-line); color: var(--fl-accent-bright);
   border-radius: 999px; padding: 1px 7px; }
-nav { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; padding-bottom: 10px; }
+nav { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; padding-bottom: 0; }
 nav::-webkit-scrollbar { display: none; }
-nav button { background: transparent; border: 1px solid transparent; cursor: pointer;
+nav button { position: relative; background: transparent; border: 0; border-radius: var(--fl-radius-s) var(--fl-radius-s) 0 0; cursor: pointer;
   color: var(--fl-ink-dim); font: inherit; font-size: 14px; font-weight: 600;
-  padding: 10px 18px; border-radius: 10px; white-space: nowrap;
-  transition: color var(--fl-dur-base) var(--fl-ease), background var(--fl-dur-base) var(--fl-ease),
-    border-color var(--fl-dur-base) var(--fl-ease), box-shadow var(--fl-dur-base) var(--fl-ease); }
-nav button:hover { color: var(--fl-ink); background: rgba(255, 255, 255, .03); }
-nav button.on { color: var(--fl-ink-bright); border-color: var(--fl-accent-line);
-  background: linear-gradient(180deg, rgba(0, 224, 198, .18), rgba(0, 224, 198, .05));
-  box-shadow: 0 0 22px var(--fl-accent-glow), inset 0 1px 0 rgba(255, 255, 255, .06); }
+  padding: 12px 16px 14px; white-space: nowrap;
+  transition: color var(--fl-dur-base) var(--fl-ease), background var(--fl-dur-base) var(--fl-ease); }
+nav button::after { content: ""; position: absolute; inset: auto 12px -1px; height: 2px; border-radius: 2px 2px 0 0;
+  background: var(--fl-accent); box-shadow: 0 0 14px var(--fl-accent-glow), 0 -4px 18px var(--fl-accent-glow);
+  transform: scaleX(0); transition: transform var(--fl-dur-base) var(--fl-ease); }
+nav button:hover { color: var(--fl-ink); background: color-mix(in srgb, var(--fl-ink) 5%, transparent); }
+nav button.on { color: var(--fl-ink-bright);
+  background: linear-gradient(180deg, transparent 30%, var(--fl-accent-glow)); }
+nav button.on::after { transform: scaleX(1); }
 
 /* The overflow affordance: a fade at whichever end still has tabs beyond it, toggled from
    the strip's own scroll position. A mask rather than an overlay, because a mask is
@@ -232,7 +234,7 @@ nav .count { display: inline-grid; place-items: center; min-width: 18px; height:
 
    The width is stated explicitly, because as a flex item an auto cross-size with auto
    margins resolves to fit-content and would shrink the column to its widest card. */
-main { padding: 22px max(22px, env(safe-area-inset-right)) 0 max(22px, env(safe-area-inset-left));
+main { padding: 26px max(28px, env(safe-area-inset-right)) 0 max(28px, env(safe-area-inset-left));
   width: 100%; max-width: 1320px; margin: 0 auto;
   flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* Only on arriving at a view. An update that lands while you are reading one must not
@@ -266,7 +268,7 @@ main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .card { background: var(--fl-surface);
   border-radius: var(--fl-radius-l); box-shadow: var(--fl-shadow-1);
-  border: 1px solid var(--fl-line); }
+  border: 1px solid var(--fl-line-soft); }
 .muted { color: var(--fl-ink-dim); }
 .small { font-size: 12.5px; }
 
@@ -282,13 +284,14 @@ main.entering { animation: fl-view var(--fl-dur-slow) var(--fl-ease) both; }
 .empty.teach p { max-width: 46ch; margin: 0 auto 14px; line-height: 1.6; }
 
 button { min-height: var(--fl-tap); font: inherit; font-size: 14px; font-weight: 500; padding: 9px 16px;
-  border-radius: var(--fl-radius-s); border: 1px solid var(--fl-line-strong);
-  background: transparent; color: var(--fl-ink-dim); cursor: pointer;
+  border-radius: var(--fl-radius-s); border: 1px solid var(--fl-line-soft);
+  background: var(--fl-surface-raised); color: var(--fl-ink); cursor: pointer;
   transition: color var(--fl-dur-fast) var(--fl-ease), border-color var(--fl-dur-fast) var(--fl-ease),
     background var(--fl-dur-fast) var(--fl-ease); }
-button:hover { color: var(--fl-ink); border-color: var(--fl-ink-faint); }
+button:hover { color: var(--fl-ink-bright); border-color: var(--fl-line-strong); background: color-mix(in srgb, var(--fl-surface-raised) 80%, var(--fl-ink) 6%); }
 button.primary { color: var(--fl-on-accent); border-color: var(--fl-accent); font-weight: 600;
-  background: var(--fl-accent); }
+  background: linear-gradient(180deg, var(--fl-accent-bright), var(--fl-accent));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .35) inset, 0 6px 18px -6px var(--fl-accent-line); }
 button.primary:hover { color: var(--fl-on-accent); background: var(--fl-accent-bright); border-color: var(--fl-accent-bright); }
 button.link { background: none; border: 0; color: var(--fl-accent); padding: 0; align-self: flex-start; }
 button.link:hover { color: var(--fl-accent-bright); }
@@ -299,22 +302,23 @@ button.link:hover { color: var(--fl-accent-bright); }
 /* A hairline grid: one background showing through 1px gaps, rather than nine borders that
    have to agree with each other at every corner. */
 .summary { display: flex; flex-wrap: wrap; gap: 1px; background: var(--fl-line-soft);
-  border-radius: var(--fl-radius-l); overflow: hidden; }
-.stat { padding: 18px 22px; flex: 1 1 150px; background: var(--fl-surface); }
-.stat .k { font-size: 13px; letter-spacing: 0;
-  color: var(--fl-ink-faint); font-weight: 700; }
-.stat .v { font-family: var(--fl-font-mono); font-size: 28px; font-weight: 600;
+  border-radius: var(--fl-radius-l); overflow: hidden; box-shadow: var(--fl-shadow-1);
+  border: 1px solid var(--fl-line-soft); }
+.stat { padding: 22px 26px; flex: 1 1 150px; background: var(--fl-surface); }
+.stat .k { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fl-ink-dim); font-weight: 600; }
+.stat .v { font-family: var(--fl-font-mono); font-size: 36px; font-weight: 600;
   font-variant-numeric: tabular-nums; margin-top: 4px; letter-spacing: -.02em;
   color: var(--fl-ink-bright); }
 .stat .v.alert { color: var(--fl-warn); }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
 .spool { display: flex; overflow: hidden; cursor: pointer; position: relative; border-color: var(--fl-line-soft);
   transition: transform var(--fl-dur-base) var(--fl-ease), border-color var(--fl-dur-base) var(--fl-ease),
     box-shadow var(--fl-dur-base) var(--fl-ease); }
-.spool, .tray, .detail { background-image: linear-gradient(180deg, color-mix(in srgb, var(--filament-colour) 16%, transparent), transparent 90px); }
-.spool::before, .tray::before, .detail::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--filament-colour); }
-.spool:hover { border-color: var(--fl-accent); background-color: var(--fl-surface-raised); transform: translateY(-2px); }
+.spool, .tray, .detail { background-image: radial-gradient(90% 70% at 0% 0%, color-mix(in srgb, var(--filament-colour) 20%, transparent), transparent 70%); }
+.spool::before, .tray::before, .detail::before { content: ""; position: absolute; inset: 0 22px auto 22px; height: 2px; border-radius: 0 0 2px 2px; background: var(--filament-colour); opacity: .9; box-shadow: 0 2px 16px var(--filament-colour); }
+.spool:hover { border-color: var(--fl-accent-line); background-color: var(--fl-surface-raised); transform: translateY(-3px); box-shadow: var(--fl-shadow-2); }
 .spool.anomaly { border-left: 1px solid var(--fl-warn); }
 /* The swatch is the primary identifier (06 §6.8), so it glows with its own colour rather
    than sitting as a flat strip: the filament colour is data, and it leads. */
@@ -373,7 +377,7 @@ button.link:hover { color: var(--fl-accent-bright); }
 .ring-hub { width: 34px; height: 34px; border-radius: 50%; display: block;
   box-shadow: 0 0 20px -4px currentColor, inset 0 1px 0 rgba(255, 255, 255, .16);
   border: 2px solid var(--fl-surface); }
-.spool-body { padding: 20px; display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
+.spool-body { padding: 24px 22px 20px; display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
 /* The name and the rail's collapsed control share one row, so the control is part of the
    card's grid rather than floating over its corner — see the rail's own block below. */
 .spool-head { display: flex; align-items: center; gap: 12px; }
@@ -384,19 +388,19 @@ button.link:hover { color: var(--fl-accent-bright); }
     radial-gradient(circle at 32% 28%, rgba(255,255,255,.28), transparent 55%); }
 .spool-colour { font-size: 12.5px; color: var(--fl-ink-dim); }
 .spool-colour b { color: var(--fl-ink); font-weight: 600; }
-.spool-name { display: block; text-align: start; padding: 0; border: 0; border-radius: 2px; min-height: 44px; width: 100%; color: var(--fl-ink-bright); font-size: 16px; line-height: 1.35; }
-.spool-name:hover { color: var(--fl-accent); }
+.spool-name { display: block; text-align: start; padding: 0; border: 0; background: none; border-radius: 2px; min-height: 44px; width: 100%; color: var(--fl-ink-bright); font-size: 16px; line-height: 1.35; }
+.spool-name:hover { color: var(--fl-accent);background: transparent; }
 .spool-quantity { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 12px; }
 .spool-quantity .big { margin: 0; }
 .spool-quantity .chip { align-self: center; }
-.stock-track { height: 8px; border-radius: 8px; background: var(--fl-line-soft); overflow: hidden; }
+.stock-track { height: 6px; border-radius: 6px; background: var(--fl-surface-sunken); box-shadow: inset 0 0 0 1px var(--fl-line-soft); overflow: hidden; }
 .stock-track span { display: block; height: 100%; max-width: 100%; border-radius: 8px; background: var(--filament-colour, var(--fl-ink-dim)); box-shadow: 0 0 10px -1px var(--filament-colour); }
 .spool-location { font-size: 12.5px; line-height: 1.5; }
 .spool .foot { margin-top: 6px; min-height: 24px; }
 .spool-id { flex: 1; min-width: 0; }
 .name { font-weight: 600; letter-spacing: -.01em; }
 .sub { font-size: 12.5px; color: var(--fl-ink-dim); }
-.big { font-family: var(--fl-font-mono); font-size: 34px; font-weight: 600;
+.big { font-family: var(--fl-font-mono); font-size: 40px; font-weight: 600;
   font-variant-numeric: tabular-nums; margin: 8px 0 4px; letter-spacing: -.03em;
   color: var(--fl-ink-bright); }
 .big small { font-family: var(--fl-font-sans); font-size: 13px; font-weight: 500; color: var(--fl-ink-dim); }
