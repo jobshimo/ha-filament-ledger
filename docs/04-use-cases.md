@@ -445,3 +445,19 @@ overhead with no payoff.
 
 **Exactly one automatic path changes a balance: UC-04.** UC-02 and UC-03 move spools without
 moving grams, and UC-05 opens a question without answering it. Everything else asks first.
+
+---
+
+## Registration and assignment amendment (2026-11-06)
+
+PreviewRegistration validates net or gross-minus-tare using the same synchronous domain calculation as RegisterSpool, without writes, IDs, receipts or events. Registration accepts any brand without RFID; quantity changes invalidate preview, and create revalidates independently. Actor-scoped UUID request receipts are committed with spool/opening movement; identical retries return the original spool, changed intent fails. Opening a sealed spool records no quantity movement.
+
+Registration and assignment remain separate recoverable operations. Mount compares optional expected source/destination inside its transaction before displacement; current-panel calls always send expectations, while legacy callers retain their existing semantics. A failed assignment leaves one saved spool in Storage. Moving filament never consumes it.
+
+**Implementation evidence (2026-11-06).** Implemented PreviewRegistration (synchronous, read-only), actor-scoped durable registration retries, OpenSpool (metadata only), guarded AMS/external assignment, server-owned inventory criteria and transaction-end low-stock decisions. Moving filament still creates no quantity movement.
+
+### Automatic registration without RFID
+
+With automatic registration and mounting enabled, an occupied, unassigned AMS slot reporting material and colour registers a spool of any brand and assigns it atomically to that slot. Repeated and concurrent readings create one opening balance. Existing assignments, including manual ones, are preserved. No vendor is inferred from the absence of RFID.
+
+Opening quantity uses reported nominal weight or the configured default and remains LOW confidence until reconciliation. It is not measured remaining weight. Empty readings release the assignment. Without a physical identifier the system cannot recognise a reel moved between slots or distinguish an identical replacement without an empty reading; do not merge spools by product name, material or colour.

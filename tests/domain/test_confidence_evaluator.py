@@ -6,6 +6,8 @@ never fire. Two implementers reading it produced different dots for the same spo
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -22,6 +24,13 @@ from .conftest import estimated, opening, printed, reconciled
 
 OPENING_WEIGHT = Grams.of(1000)
 evaluator = ConfidenceEvaluator()
+
+
+def test_unmeasured_automatic_opening_requires_weighing_until_reconciled() -> None:
+    for basis in ("CONFIGURED_DEFAULT", "DETECTED_NOMINAL"):
+        history = [replace(opening(1000), opening_basis=basis)]
+        assert confidence_of(history) is Confidence.LOW
+        assert confidence_of([*history, reconciled(-100)]) is Confidence.HIGH
 
 
 def confidence_of(movements: list[Movement]) -> Confidence:

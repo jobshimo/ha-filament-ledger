@@ -16,12 +16,12 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 import pytest
 import voluptuous as vol
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.core import Event, HassJob, HomeAssistant, ServiceCall, State
+from homeassistant.core import Event, HomeAssistant, ServiceCall, State
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.hass_dict import HassDict
 
@@ -97,6 +97,34 @@ class FakeStates:
         return self.by_entity_id.get(entity_id)
 
 
+@dataclass(frozen=True)
+class FakeDeviceEntry:
+    """The slice of `dr.DeviceEntry` discovery reads (ADR-0009).
+
+    `name` and `name_by_user` are both here because the distinction is load-bearing: the
+    AMS ordinal is read from `name` precisely so a household's rename — which Home
+    Assistant writes to `name_by_user` — cannot move it, while the printer's display name
+    prefers the rename because that is what a rename is for.
+    """
+
+    id: str
+    identifiers: frozenset[tuple[str, str]] = field(default_factory=frozenset)
+    name: str | None = None
+    name_by_user: str | None = None
+    via_device_id: str | None = None
+
+
+class FakeDeviceRegistry:
+    """`dr.async_get` returns whatever `hass.data[dr.DATA_REGISTRY]` holds; planting this
+    there is the same seam `FakeEntityRegistry` uses one registry over."""
+
+    def __init__(self, entries: list[FakeDeviceEntry]) -> None:
+        self.devices = {entry.id: entry for entry in entries}
+
+    def async_get(self, device_id: str) -> FakeDeviceEntry | None:
+        return self.devices.get(device_id)
+
+
 @dataclass
 class FakeConfigEntry:
     """What the adapters read off a config entry: `runtime_data`, identity, settings."""
@@ -107,10 +135,28 @@ class FakeConfigEntry:
     options: dict[str, object] = field(default_factory=dict)
     runtime_data: LedgerRuntime | None = None
     unload_callbacks: list[Callable[[], None]] = field(default_factory=list)
+    background_tasks: list[asyncio.Task[None]] = field(default_factory=list)
 
     def async_on_unload(self, func: Callable[[], None]) -> Callable[[], None]:
         self.unload_callbacks.append(func)
         return func
+
+    def async_create_background_task(
+        self,
+        hass: FakeHass,
+        target: Coroutine[object, object, None],
+        name: str,
+        eager_start: bool = True,
+    ) -> asyncio.Task[None]:
+        """A task Home Assistant cancels when it unloads this entry.
+
+        Delegates to `hass` and then records it, exactly as the real
+        `ConfigEntry.async_create_background_task` does — so a caller that went straight to
+        `hass` instead leaves this list empty, which is the difference the tests assert on.
+        """
+        task = hass.async_create_background_task(target, name, eager_start)
+        self.background_tasks.append(task)
+        return task
 
 
 class FakeFlowProgress:
@@ -187,6 +233,18 @@ class FakeHttp:
         self.static_paths.extend(configs)
 
 
+#: What `async_run_hass_job` may be handed. The state-change tracker's job takes one event;
+#: a `Debouncer`'s takes none — which is the whole reason this is a union rather than one
+#: signature, and why the runner below dispatches on whether it was given an argument.
+type _JobTarget = Callable[[Event[dict[str, object]]], object] | Callable[[], object]
+
+
+class _RunnableJob(Protocol):
+    """The slice of `HassJob` this fake runs — its target, and nothing else."""
+
+    target: _JobTarget
+
+
 class FakeHass:
     """The minimum HomeAssistant surface the adapter layer actually touches.
 
@@ -203,13 +261,38 @@ class FakeHass:
         self.http = FakeHttp()
         self.background_tasks: list[asyncio.Task[None]] = []
 
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """What `Debouncer._schedule_timer` calls `call_later` on. The running loop is the
+        real one a test is already driving, so a cooldown a test shortens actually
+        elapses."""
+        return asyncio.get_running_loop()
+
     def async_run_hass_job(
-        self, job: HassJob[[Event[dict[str, object]]], object], event: Event[dict[str, object]]
-    ) -> None:
-        """Where the state-change tracker dispatches each matched event. The gateway's
-        action is a `@callback`, so production runs it synchronously in the loop — and
-        so does this."""
-        job.target(event)
+        self,
+        job: _RunnableJob,
+        event: Event[dict[str, object]] | None = None,
+        *,
+        background: bool = False,
+    ) -> object:
+        """Where the state-change tracker dispatches each matched event, and where a
+        `Debouncer` runs its function.
+
+        Both targets here are `@callback`s, so production runs them synchronously in the
+        loop and so does this. `background` is accepted and ignored for the same reason
+        production ignores it for a callback job: there is no coroutine to schedule.
+        """
+        if event is None:
+            return cast("Callable[[], object]", job.target)()
+        return cast("Callable[[Event[dict[str, object]]], object]", job.target)(event)
+
+    def async_create_task(
+        self, target: Coroutine[object, object, None], name: str = "", eager_start: bool = True
+    ) -> asyncio.Task[None]:
+        """Where a `Debouncer` schedules its own timer-finish handler, and where the
+        websocket subscription schedules a push. Tracked beside the background tasks so
+        `drain` waits for both."""
+        return self.async_create_background_task(target, name, eager_start)
 
     def async_create_background_task(
         self, target: Coroutine[object, object, None], name: str, eager_start: bool = True

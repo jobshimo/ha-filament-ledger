@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-07T18:29:11.413107Z",
+  "title": "Design System: Filament Ledger",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Filament Teal",
+        "canonical": "#5de0c6",
+        "tonalRamp": [
+          "oklch(15% 0.061 178)",
+          "oklch(27% 0.082 178)",
+          "oklch(39% 0.103 178)",
+          "oklch(51% 0.124 178)",
+          "oklch(63% 0.135 178)",
+          "oklch(75% 0.114 178)",
+          "oklch(85% 0.096 178)",
+          "oklch(95% 0.079 178)"
+        ]
+      },
+      "ok": {
+        "role": "secondary",
+        "displayName": "Signal Green",
+        "canonical": "#3ddc84",
+        "tonalRamp": [
+          "oklch(15% 0.074 155)",
+          "oklch(27% 0.1 155)",
+          "oklch(39% 0.125 155)",
+          "oklch(51% 0.151 155)",
+          "oklch(63% 0.164 155)",
+          "oklch(75% 0.138 155)",
+          "oklch(85% 0.117 155)",
+          "oklch(95% 0.096 155)"
+        ]
+      },
+      "warn": {
+        "role": "secondary",
+        "displayName": "Amber Warning",
+        "canonical": "#ffb340",
+        "tonalRamp": [
+          "oklch(15% 0.07 75)",
+          "oklch(27% 0.094 75)",
+          "oklch(39% 0.118 75)",
+          "oklch(51% 0.142 75)",
+          "oklch(63% 0.154 75)",
+          "oklch(75% 0.13 75)",
+          "oklch(85% 0.11 75)",
+          "oklch(95% 0.09 75)"
+        ]
+      },
+      "bad": {
+        "role": "secondary",
+        "displayName": "Soft Coral",
+        "canonical": "#ff8fa3",
+        "tonalRamp": [
+          "oklch(15% 0.066 10)",
+          "oklch(27% 0.088 10)",
+          "oklch(39% 0.111 10)",
+          "oklch(51% 0.133 10)",
+          "oklch(63% 0.144 10)",
+          "oklch(75% 0.122 10)",
+          "oklch(85% 0.103 10)",
+          "oklch(95% 0.084 10)"
+        ]
+      },
+      "bg": {
+        "role": "neutral",
+        "displayName": "Night Slate",
+        "canonical": "#11171c",
+        "tonalRamp": [
+          "oklch(15% 0.009 240)",
+          "oklch(27% 0.012 240)",
+          "oklch(39% 0.015 240)",
+          "oklch(51% 0.018 240)",
+          "oklch(63% 0.019 240)",
+          "oklch(75% 0.016 240)",
+          "oklch(85% 0.014 240)",
+          "oklch(95% 0.011 240)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Bench Slate",
+        "canonical": "#192127",
+        "tonalRamp": [
+          "oklch(15% 0.009 240)",
+          "oklch(27% 0.012 240)",
+          "oklch(39% 0.015 240)",
+          "oklch(51% 0.018 240)",
+          "oklch(63% 0.019 240)",
+          "oklch(75% 0.016 240)",
+          "oklch(85% 0.014 240)",
+          "oklch(95% 0.011 240)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Mist Ink",
+        "canonical": "#e6edf3",
+        "tonalRamp": [
+          "oklch(15% 0.004 240)",
+          "oklch(27% 0.006 240)",
+          "oklch(39% 0.007 240)",
+          "oklch(51% 0.009 240)",
+          "oklch(63% 0.01 240)",
+          "oklch(75% 0.008 240)",
+          "oklch(85% 0.007 240)",
+          "oklch(95% 0.006 240)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display-figure": {
+        "displayName": "Display figure",
+        "purpose": "Big gram balance."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "View and empty-state headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Controls and prose."
+      },
+      "small": {
+        "displayName": "Small",
+        "purpose": "Metadata and table cells."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Chips and badges, uppercase."
+      }
+    },
+    "shadows": [
+      {
+        "name": "card-lift",
+        "value": "0 8px 24px rgba(0,0,0,.35)",
+        "purpose": "Default card."
+      },
+      {
+        "name": "overlay-lift",
+        "value": "0 14px 40px rgba(0,0,0,.4)",
+        "purpose": "Dialogs and popovers."
+      },
+      {
+        "name": "tab-glow",
+        "value": "0 0 22px rgba(0,224,198,.14)",
+        "purpose": "Active tab only."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(.2,.8,.2,1)",
+        "purpose": "All state transitions."
+      },
+      {
+        "name": "dur-fast",
+        "value": ".2s",
+        "purpose": "Buttons."
+      },
+      {
+        "name": "dur-base",
+        "value": ".25s",
+        "purpose": "Tabs."
+      },
+      {
+        "name": "dur-slow",
+        "value": ".55s",
+        "purpose": "Larger reveals."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "panel-narrow",
+        "value": "@container panel (max-width: 600px)"
+      },
+      {
+        "name": "panel-wide",
+        "value": "@container panel (min-width: 1000px)"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Main action in a card or dialog.",
+      "html": "<button class=\"ds-btn ds-primary\">Save weight</button>",
+      "css": ".ds-btn{min-height:44px;font:500 14px 'Space Grotesk',system-ui,sans-serif;padding:9px 16px;border-radius:8px;border:1px solid #8296aa;background:transparent;color:#8b9aab;cursor:pointer;transition:all .2s cubic-bezier(.2,.8,.2,1)}.ds-btn:hover{color:#e6edf3;border-color:#9aaaba}.ds-primary{background:#5de0c6;border-color:#5de0c6;color:#052820;font-weight:600}.ds-primary:hover{background:#7ff5e7;border-color:#7ff5e7;color:#052820}.ds-btn:focus-visible{outline:2px solid #5de0c6;outline-offset:2px}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Outlined, lower-emphasis action.",
+      "html": "<button class=\"ds-btn\">Cancel</button>",
+      "css": ".ds-btn{min-height:44px;font:500 14px 'Space Grotesk',system-ui,sans-serif;padding:9px 16px;border-radius:8px;border:1px solid #8296aa;background:transparent;color:#8b9aab;cursor:pointer;transition:all .2s cubic-bezier(.2,.8,.2,1)}.ds-btn:hover{color:#e6edf3;border-color:#9aaaba}.ds-btn:focus-visible{outline:2px solid #5de0c6;outline-offset:2px}"
+    },
+    {
+      "name": "Tab",
+      "kind": "nav",
+      "refersTo": "tab-active",
+      "description": "Navigation strip item; active state is teal-lit.",
+      "html": "<div class=\"ds-nav\"><button class=\"ds-tab on\">Inventory</button><button class=\"ds-tab\">History</button><button class=\"ds-tab\">Review</button></div>",
+      "css": ".ds-nav{display:flex;gap:4px}.ds-tab{font:600 14px 'Space Grotesk',system-ui,sans-serif;padding:10px 18px;border-radius:10px;border:1px solid transparent;background:transparent;color:#8b9aab;cursor:pointer;transition:all .25s cubic-bezier(.2,.8,.2,1)}.ds-tab:hover{color:#e6edf3;background:rgba(255,255,255,.03)}.ds-tab.on{color:#fff;border-color:rgba(0,224,198,.42);background:linear-gradient(180deg,rgba(0,224,198,.18),rgba(0,224,198,.05));box-shadow:0 0 22px rgba(0,224,198,.14),inset 0 1px 0 rgba(255,255,255,.06)}.ds-tab:focus-visible{outline:2px solid #5de0c6;outline-offset:3px}"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Surface for a spool, review or stat.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-big\">742<small> g</small></div><span class=\"ds-chip\">PLA</span></div>",
+      "css": ".ds-card{background:#192127;border:1px solid #607487;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.35);padding:16px 18px;color:#e6edf3;font-family:'Space Grotesk',system-ui,sans-serif;display:flex;flex-direction:column;gap:8px;width:200px}.ds-big{font:600 32px 'IBM Plex Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums;letter-spacing:-.03em;color:#fff}.ds-big small{font:500 13px 'Space Grotesk',sans-serif;color:#8b9aab}.ds-chip{align-self:flex-start;font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;border:1px solid #8296aa;border-radius:999px;padding:2px 10px;color:#8b9aab}"
+    },
+    {
+      "name": "Badge",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Pill label; user variant is teal.",
+      "html": "<span class=\"ds-badge\">System</span> <span class=\"ds-badge user\">User</span>",
+      "css": ".ds-badge{font:700 10.5px 'Space Grotesk',sans-serif;letter-spacing:.06em;text-transform:uppercase;border-radius:999px;padding:2px 9px;border:1px solid #607487;color:#8b9aab}.ds-badge.user{color:#5de0c6;border-color:currentColor}"
+    },
+    {
+      "name": "Number Input",
+      "kind": "input",
+      "refersTo": "button",
+      "description": "Compact numeric field for grams.",
+      "html": "<input class=\"ds-num\" type=\"number\" value=\"742\" aria-label=\"grams\">",
+      "css": ".ds-num{font:14px 'Space Grotesk',system-ui,sans-serif;width:88px;padding:6px 9px;border-radius:8px;border:1px solid #8296aa;background:#141c22;color:#e6edf3;caret-color:#5de0c6}.ds-num:focus-visible{outline:2px solid #5de0c6;outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Workshop Ledger",
+    "overview": "The panel is a precision instrument for a maker's bench: slate surfaces, one cool teal light, and figures set like gauge readings. It carries its own palette, type and motion, inside a shadow root HA's styling cannot reach. Numbers are the hero; colour is reserved for state.",
+    "keyCharacteristics": [
+      "One accent (teal) plus three state colours.",
+      "Semantic token names.",
+      "Tabular monospaced numerals.",
+      "44px minimum tap target.",
+      "Layout answers the panel's own width."
+    ],
+    "rules": [
+      {
+        "name": "The One Light Rule",
+        "body": "Teal is the only brand colour and marks interactive or live things; if something is teal it can be acted on or is current.",
+        "section": "colors"
+      },
+      {
+        "name": "The Honest State Rule",
+        "body": "Green, amber and coral appear only when the ledger asserts that state. They are never used for decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mirror Rule",
+        "body": "The light variant remaps every token (accent becomes #006e63, bg #f4f6f8, surface #ffffff, ink #233646); no component may hard-code a colour outside the token set.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "Any number that can be compared or summed is monospaced with tabular figures.",
+        "section": "typography"
+      },
+      {
+        "name": "The Decoration Is Mute Rule",
+        "body": "Ambient motes, the dashed strand and the card sweep never carry data and are hidden when prefers-reduced-motion is set or the panel is narrow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do read every colour, radius and duration from the --fl-* tokens.",
+      "Do use --fl-tap (44px) as the floor for tappable targets.",
+      "Do ask the container (@container panel), not the viewport.",
+      "Do keep copy and any new string in English, Spanish and Turkish together."
+    ],
+    "donts": [
+      "Don't add a framework, bundler or build step to the panel (ADR-0006).",
+      "Don't use literal colour names or hard-coded hex values in components.",
+      "Don't use teal for non-interactive decoration, or state colours for emphasis.",
+      "Don't let ambient decoration run under reduced motion."
+    ]
+  }
+}

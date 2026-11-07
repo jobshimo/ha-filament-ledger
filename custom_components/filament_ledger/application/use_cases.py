@@ -6,12 +6,14 @@ the problem. That is the point of the layout in docs/03-architecture.md §3.5.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .adjust_spool import AdjustSpool, DiscardFilament
 from .delete_spool import DeleteSpool, RestoreSpool
 from .detect_spool import DetectSpool
 from .move_spool import EditSpoolDetails, MountSpool, MountSpoolExternally, UnmountSpool
+from .open_spool import OpenSpool
+from .preview_registration import PreviewRegistration
 from .query import Queries
 from .reassign_movement import ReassignMovement
 from .reconcile_spool import ReconcileSpool
@@ -47,3 +49,5 @@ class UseCases:
     delete_spool: DeleteSpool
     restore_spool: RestoreSpool
     queries: Queries
+    preview_registration: PreviewRegistration = field(default_factory=PreviewRegistration)
+    open_spool: OpenSpool | None = None

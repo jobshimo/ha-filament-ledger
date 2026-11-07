@@ -30,6 +30,8 @@ from ...application.register_spool import RegisterSpoolCommand
 from ...application.review_queue import ApproveReviewCommand, DismissReviewCommand
 from ...const import (
     DOMAIN,
+    MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
     SERVICE_ADJUST_SPOOL,
     SERVICE_APPROVE_REVIEW,
     SERVICE_DISCARD_FILAMENT,
@@ -45,12 +47,16 @@ from ...domain.model.pending_review import ReviewCharge
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
+    FIRST_HOLDER,
     MAX_AMS_SLOT,
+    MAX_EXTERNAL_HOLDER,
     MIN_AMS_INDEX,
     MIN_AMS_SLOT,
+    MIN_EXTERNAL_HOLDER,
     AmsIndex,
     ExternalFeed,
     Feed,
+    HolderIndex,
     PrinterSerial,
     ReviewId,
     SlotIndex,
@@ -59,7 +65,7 @@ from ...domain.value.identifiers import (
     TrayRef,
 )
 from ...domain.value.material import Material, MaterialKind
-from .bambu_gateway import TRACKED_AMS
+from .bambu_discovery import FIRST_AMS
 from .runtime import LedgerRuntime, runtimes
 
 # A tray as it arrives in service data — the three parts of `TrayRef`. YAML gives integers,
@@ -76,6 +82,9 @@ from .runtime import LedgerRuntime, runtimes
 # `feed: external` names the printer's direct feed instead of a tray (v2.8), and then no
 # slot is given: the spool holder beside the AMS has none. Absent, or `ams`, means a tray —
 # the shape every automation written before the direct feed had a key still sends.
+#
+# `holder` says which direct feed on a machine that has two (v2.9), and absent means the
+# first — the same terms `printer` and `ams` are on, and for the same reason.
 _TRAY = vol.Schema(
     {
         vol.Optional("printer"): vol.Any(cv.string, None),
@@ -83,6 +92,13 @@ _TRAY = vol.Schema(
         vol.Optional("ams"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX))),
         vol.Optional("slot"): vol.Any(
             None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
+        ),
+        vol.Optional("holder"): vol.Any(
+            None,
+            vol.All(
+                vol.Coerce(int),
+                vol.Range(min=MIN_EXTERNAL_HOLDER, max=MAX_EXTERNAL_HOLDER),
+            ),
         ),
     }
 )
@@ -119,15 +135,19 @@ _CHARGE = vol.Schema(
     }
 )
 
+# Free text is bounded at the schema, on the websocket's terms (see `MAX_NAME_LENGTH`).
+_NAME = vol.All(cv.string, vol.Length(max=MAX_NAME_LENGTH))
+_NOTE = vol.All(cv.string, vol.Length(max=MAX_NOTE_LENGTH))
+
 REGISTER_SCHEMA = vol.Schema(
     {
         vol.Required("material"): vol.In([kind.value for kind in MaterialKind]),
         vol.Required("colour"): cv.string,
         vol.Required("opening_weight"): vol.Coerce(float),
         vol.Optional("core_weight"): vol.Coerce(float),
-        vol.Optional("material_other"): cv.string,
-        vol.Optional("vendor"): cv.string,
-        vol.Optional("label"): cv.string,
+        vol.Optional("material_other"): _NAME,
+        vol.Optional("vendor"): _NAME,
+        vol.Optional("label"): _NAME,
         vol.Optional("tag_uid"): cv.string,
         vol.Optional("confirm_duplicate_tag", default=False): cv.boolean,
     }
@@ -138,7 +158,7 @@ RECONCILE_SCHEMA = vol.Schema(
         vol.Required("spool_id"): cv.string,
         vol.Required("measured_g"): vol.Coerce(float),
         vol.Optional("includes_core", default=True): cv.boolean,
-        vol.Optional("note"): cv.string,
+        vol.Optional("note"): _NOTE,
     }
 )
 
@@ -146,7 +166,7 @@ DISCARD_SCHEMA = vol.Schema(
     {
         vol.Required("spool_id"): cv.string,
         vol.Required("mode"): vol.In([mode.value for mode in DiscardMode]),
-        vol.Required("reason"): cv.string,
+        vol.Required("reason"): _NOTE,
         vol.Optional("amount_g"): vol.Coerce(float),
     }
 )
@@ -155,12 +175,13 @@ ADJUST_SCHEMA = vol.Schema(
     {
         vol.Required("spool_id"): cv.string,
         vol.Required("amount_g"): vol.Coerce(float),
-        vol.Required("reason"): cv.string,
+        vol.Required("reason"): _NOTE,
     }
 )
 
 # `external: true` mounts on the printer's direct feed rather than in a tray, and then the
-# slot is left out — the same terms the panel's mount uses (docs/05 §5.4, v2.8).
+# slot is left out — the same terms the panel's mount uses (docs/05 §5.4, v2.8). `holder`
+# rides in from `_TRAY`, so a dual-nozzle machine's second feed is expressible here too.
 MOUNT_SCHEMA = vol.All(
     _TRAY.extend({vol.Required("spool_id"): cv.string, vol.Optional("external"): cv.boolean}),
     _mount_names_a_position,
@@ -181,14 +202,14 @@ APPROVE_REVIEW_SCHEMA = vol.Schema(
         ],
         vol.Optional("assign"): [_position({vol.Required("spool_id"): cv.string})],
         vol.Optional("charges"): [_position({vol.Required("charges"): [_CHARGE]})],
-        vol.Optional("note"): cv.string,
+        vol.Optional("note"): _NOTE,
     }
 )
 
 DISMISS_REVIEW_SCHEMA = vol.Schema(
     {
         vol.Required("review_id"): cv.string,
-        vol.Optional("note"): cv.string,
+        vol.Optional("note"): _NOTE,
     }
 )
 
@@ -227,7 +248,7 @@ def _feed(runtime: LedgerRuntime, data: dict[str, Any]) -> Feed:
     means; `feed: external` is the direct feed, and a tray without a slot named neither."""
     printer = _printer(runtime, data)
     if data.get("feed") == "external":
-        return ExternalFeed(printer)
+        return ExternalFeed(printer, _holder(data))
     slot = data.get("slot")
     if slot is None:
         msg = "a tray needs a slot; the external spool is named by feed: external"
@@ -235,9 +256,17 @@ def _feed(runtime: LedgerRuntime, data: dict[str, Any]) -> Feed:
     ams = data.get("ams")
     return TrayRef(
         printer=printer,
-        ams=AmsIndex(int(ams if ams is not None else TRACKED_AMS.value)),
+        ams=AmsIndex(int(ams if ams is not None else FIRST_AMS.value)),
         slot=SlotIndex(int(slot)),
     )
+
+
+def _holder(data: dict[str, Any]) -> HolderIndex:
+    """Which direct feed a call names, or the first when it names none — the same rule
+    `_printer` and the absent `ams` follow: an automation written before a machine could
+    have two holders meant the one it had."""
+    holder = data.get("holder")
+    return HolderIndex(int(holder)) if holder is not None else FIRST_HOLDER
 
 
 def _by_tray[T](
@@ -336,7 +365,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         async with _translated_errors():
             if data.get("external"):
                 await runtime.use_cases.mount_spool_externally.execute(
-                    spool_id, _printer(runtime, data)
+                    spool_id, _printer(runtime, data), _holder(data)
                 )
             else:
                 feed = _feed(runtime, data)

@@ -60,6 +60,7 @@ from ..domain.value.grams import Grams
 from ..domain.value.identifiers import MovementId
 from ..domain.value.movement_type import MovementSource, MovementType
 from .errors import MovementNotFoundError, SpoolNotFoundError
+from .low_stock import LowStock
 
 # The two types that never leave the history the user sees, each for its own stated reason
 # (docs/14 §14.4.1). Kept as data rather than an `if` chain so the refusal and its
@@ -101,6 +102,7 @@ class VoidMovement:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, command: VoidMovementCommand) -> Grams | None:
         """Returns the grams that came back, or `None` for a void without restitution."""
@@ -109,7 +111,7 @@ class VoidMovement:
         # One unit of work: the void row and the reversal commit together or not at all.
         # Half of this pair is the worst outcome available — a chapter recorded with no
         # grams returned, or grams returned with nothing saying why.
-        async with self.uow:
+        async with self.low_stock.transaction(self.uow) if self.low_stock else self.uow:
             movement = await self.movements.get(command.movement_id)
             if movement is None:
                 raise MovementNotFoundError(command.movement_id)
@@ -293,12 +295,13 @@ class RestoreMovement:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, movement_id: MovementId) -> Grams:
         """Returns the grams deducted again. One unit of work; events after the commit."""
         to_publish: list[DomainEvent] = []
 
-        async with self.uow:
+        async with self.low_stock.transaction(self.uow) if self.low_stock else self.uow:
             chapter = await self.voids.get(movement_id)
             if chapter is None:
                 msg = f"movement {movement_id} was never deleted, so there is nothing to restore"

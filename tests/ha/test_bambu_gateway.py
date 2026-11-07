@@ -14,6 +14,7 @@ end-to-end tests run the same real ledger the application suite uses.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -24,9 +25,16 @@ from typing import cast
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import State
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from custom_components.filament_ledger import async_unload_entry
+from custom_components.filament_ledger import (
+    _adopt_and_sync,
+    _schedule_adopt_and_sync,
+    async_unload_entry,
+)
+from custom_components.filament_ledger.application.query import LedgerSnapshot
 from custom_components.filament_ledger.domain.event import (
     ReviewOpened,
     SpoolMounted,
@@ -37,13 +45,16 @@ from custom_components.filament_ledger.domain.model.print_job import PrintJob
 from custom_components.filament_ledger.domain.value.colour import Colour
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    FIRST_HOLDER,
     UNIDENTIFIED_PRINTER,
     AmsIndex,
     ExternalFeed,
+    HolderIndex,
     PrinterSerial,
     ReelUid,
     SpoolId,
     TagUid,
+    TrayRef,
 )
 from custom_components.filament_ledger.domain.value.location import AmsSlot, Location
 from custom_components.filament_ledger.domain.value.percentage import Percentage
@@ -57,18 +68,26 @@ from custom_components.filament_ledger.domain.value.print_event import (
 from custom_components.filament_ledger.domain.value.print_job_state import PrintJobState
 from custom_components.filament_ledger.domain.value.review import ReviewReason
 from custom_components.filament_ledger.domain.value.tray_reading import TrayReading
+from custom_components.filament_ledger.infrastructure.ha import bambu_gateway
 from custom_components.filament_ledger.infrastructure.ha.bambu_gateway import BambuLabGateway
 from custom_components.filament_ledger.infrastructure.ha.job_sync import JobSync
 from custom_components.filament_ledger.infrastructure.ha.runtime import LedgerConfigEntry
+from custom_components.filament_ledger.infrastructure.ha.tray_sync import (
+    TraySync,
+)
+from custom_components.filament_ledger.infrastructure.persistence import printer_adoption
 from custom_components.filament_ledger.infrastructure.persistence.print_job_repository import (
     SqlitePrintJobRepository,
 )
 from custom_components.filament_ledger.infrastructure.persistence.review_repository import (
     SqliteReviewRepository,
 )
+from custom_components.filament_ledger.infrastructure.persistence.spool_repository import (
+    SqliteSpoolRepository,
+)
 
 from ..application.conftest import A_PRINTER, ANOTHER_PRINTER, Ledger, a_tray
-from .conftest import FakeHass, Harness, a_spool, as_hass
+from .conftest import FakeDeviceEntry, FakeDeviceRegistry, FakeHass, Harness, a_spool, as_hass
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "bambu"
 
@@ -186,6 +205,79 @@ SECOND_STATUS = SECOND_SENSORS["print_status"]
 SECOND_TRAYS = [f"sensor.p1s_00000000otherser_ams_1_bandeja_{n}" for n in range(1, 5)]
 
 
+# A second AMS unit on the *reference* machine — the configuration v2.9 exists for, and one
+# the A1 in the capture does not have. Its tray `unique_id`s carry the same printer serial
+# behind a different AMS serial, exactly as upstream writes them.
+SECOND_UNIT_DEVICE = "00000000000000000000000000zzzzams"
+SECOND_UNIT_TRAYS = [f"sensor.a1_00000000testser_ams_2_bandeja_{n}" for n in range(1, 5)]
+
+# The two holder devices of a dual-nozzle machine, and their sensors. Read off the live X2D
+# on 2026-09-23 and planted here rather than written into the frozen A1 capture: that file
+# is what one real machine held, and it published no holder sensor at all.
+HOLDER_1_DEVICE = "00000000000000000000000000testxs1"
+HOLDER_2_DEVICE = "00000000000000000000000000testxs2"
+HOLDER_1 = "sensor.a1_00000000testser_bobina_externa"
+HOLDER_2 = "sensor.a1_00000000testser_bobina_externa_2"
+
+
+#: The registry event upstream fires for every entity it registers, as a plain string.
+#: `er.EVENT_ENTITY_REGISTRY_UPDATED` is an `EventType` — a `str` at runtime and its own
+#: class to a type checker — and `FakeBus` speaks the runtime form.
+REGISTRY_UPDATED = str(er.EVENT_ENTITY_REGISTRY_UPDATED)
+
+#: The active-tray sensor of the capture, and the name sensor that is not in it. The
+#: capture carries `active_tray` but no state for it; every test that means one plants it.
+ACTIVE_TRAY = "sensor.a1_00000000testser_bandeja_activa"
+PRINTER_NAME = "sensor.a1_00000000testser_nombre"
+
+
+def printer_name_row() -> dict[str, str]:
+    """The name sensor's registry row. **Its `unique_id` is `<serial>_name`**, because
+    upstream's entity description reads `key="name"` — the irregularity `_UNIQUE_ID_KEY`
+    exists for, read off the live instances on 2026-09-23."""
+    return {
+        "entity_id": PRINTER_NAME,
+        "platform": "bambu_lab",
+        "unique_id": f"{A_PRINTER.value}_name",
+        "translation_key": "printer_name",
+        "device_id": PRINTER_DEVICE,
+    }
+
+
+def second_unit_rows() -> list[dict[str, str]]:
+    """Four more tray rows, on a second AMS unit of the machine in the capture."""
+    return [
+        {
+            "entity_id": entity_id,
+            "platform": "bambu_lab",
+            "unique_id": f"A1_00000000TESTSER_AMS_00000000ZZZZAMS_tray_{n}",
+            "translation_key": "tray",
+            "device_id": SECOND_UNIT_DEVICE,
+        }
+        for n, entity_id in enumerate(SECOND_UNIT_TRAYS, start=1)
+    ]
+
+
+def both_holder_rows() -> list[dict[str, str]]:
+    """The two holder sensors of a dual-nozzle machine, in upstream's own shape."""
+    return [
+        holder_row(HOLDER_1_DEVICE, HOLDER_1),
+        holder_row(HOLDER_2_DEVICE, HOLDER_2, suffix="2"),
+    ]
+
+
+def holder_state(entity_id: str, attributes: dict[str, object]) -> State:
+    """One holder sensor, whose state is the filament's name — `?` for an empty one, and
+    `Generic PETG` for the X2D's second holder on the day this was captured."""
+    return State(entity_id, str(attributes.get("name", "?")), attributes)
+
+
+def second_printer_rows_without_trays() -> list[dict[str, str]]:
+    """The second machine's job sensors alone, for the scenarios that give it an AMS of
+    their own shape."""
+    return [row for row in second_printer_rows() if row["translation_key"] != "tray"]
+
+
 def second_printer_rows() -> list[dict[str, str]]:
     """The second machine's registry rows — job sensors on its printer, trays on its AMS."""
     name = ANOTHER_PRINTER.value
@@ -276,8 +368,112 @@ class RecordingPrintListener:
 
 
 def plant_registry(hass: FakeHass, rows: list[dict[str, str]]) -> None:
-    registry = FakeEntityRegistry([FakeRegistryEntry(**row) for row in rows])
-    hass.data[er.DATA_REGISTRY] = cast(er.EntityRegistry, registry)
+    """Install, or re-fill, the entity registry `er.async_get` reads.
+
+    **A registry already planted is filled in place rather than replaced**, and that is not
+    a convenience: `er.async_get` is `@singleton`-cached per hass, so a second object
+    assigned into `hass.data` would never be seen. It is also what production does — Home
+    Assistant keeps one `EntityRegistry` for the life of the instance and entities arrive
+    into it — which is exactly the shape the late-binding tests need to reproduce.
+    """
+    entries = {row["entity_id"]: FakeRegistryEntry(**row) for row in rows}
+    planted = cast("FakeEntityRegistry | None", hass.data.get(er.DATA_REGISTRY))
+    if planted is not None:
+        planted.entities = entries
+        return
+    hass.data[er.DATA_REGISTRY] = cast(
+        "er.EntityRegistry", FakeEntityRegistry(list(entries.values()))
+    )
+
+
+def watched_events(hass: FakeHass) -> list[str]:
+    """Which bus events the gateway is listening for, in registration order.
+
+    A dormant gateway holds exactly one — the registry watcher that is late binding —
+    where before v2.9 it held none at all, so the assertions that used to read
+    `bus.listeners == []` read this instead.
+    """
+    return [entry.event_type for entry in hass.bus.listeners]
+
+
+def plant_devices(hass: FakeHass, entries: list[FakeDeviceEntry]) -> None:
+    """Install a device registry, the seam `dr.async_get` reads (ADR-0009).
+
+    Planted only by the tests that mean it. The rest run with **no** device registry at
+    all, which is deliberate: that is the shape every fallback in `_ams_printer` and
+    `_holder_of` exists for, and a suite that always planted one would stop exercising it.
+    """
+    hass.data[dr.DATA_REGISTRY] = cast(dr.DeviceRegistry, FakeDeviceRegistry(entries))
+
+
+def printer_device(
+    device_id: str = PRINTER_DEVICE,
+    serial: str = "00000000TESTSER",
+    name: str = "A1_00000000TESTSER",
+    name_by_user: str | None = None,
+) -> FakeDeviceEntry:
+    """The printer's own device row, shaped like `/config/.storage/core.device_registry`:
+    one `(bambu_lab, <serial>)` identifier, no `via_device`."""
+    return FakeDeviceEntry(
+        id=device_id,
+        identifiers=frozenset({("bambu_lab", serial)}),
+        name=name,
+        name_by_user=name_by_user,
+    )
+
+
+def ams_device(
+    device_id: str = AMS_DEVICE,
+    ams_serial: str = "00000000TESTAMS",
+    name: str = "A1_00000000TESTSER_AMS_1",
+    via: str = PRINTER_DEVICE,
+) -> FakeDeviceEntry:
+    """One AMS unit's device row: its *own* serial as the identifier, the printer's device
+    as `via_device`, and the ordinal in the trailing `_AMS_<n>` of the name."""
+    return FakeDeviceEntry(
+        id=device_id,
+        identifiers=frozenset({("bambu_lab", ams_serial)}),
+        name=name,
+        via_device_id=via,
+    )
+
+
+def holder_device(
+    device_id: str,
+    serial: str = "00000000TESTSER",
+    suffix: str = "",
+    via: str = PRINTER_DEVICE,
+) -> FakeDeviceEntry:
+    """One direct feed's device row: `<serial>_ExternalSpool<suffix>` as the identifier —
+    read off the live X2D on 2026-09-23, where the second holder's suffix is `2`."""
+    return FakeDeviceEntry(
+        id=device_id,
+        identifiers=frozenset({("bambu_lab", f"{serial}_ExternalSpool{suffix}")}),
+        name=f"X2D_{serial}_ExternalSpool{suffix}",
+        via_device_id=via,
+    )
+
+
+def holder_row(
+    device_id: str,
+    entity_id: str,
+    serial: str = "00000000TESTSER",
+    suffix: str = "",
+) -> dict[str, str]:
+    """The holder sensor's registry row, in upstream's own shape:
+    `<device_type>_<serial>_ExternalSpool<suffix>_external_spool` (`sensor.py:207`).
+
+    Planted rather than written into the frozen capture, the way the second machine's rows
+    and the object-count row are: that file is what one real A1 held, and it published no
+    holder sensor.
+    """
+    return {
+        "entity_id": entity_id,
+        "platform": "bambu_lab",
+        "unique_id": f"X2D_{serial}_ExternalSpool{suffix}_external_spool",
+        "translation_key": "external_spool",
+        "device_id": device_id,
+    }
 
 
 def tray_state(entity_id: str, attributes: dict[str, object] | None = None) -> State:
@@ -456,25 +652,180 @@ class TestDiscovery:
 
         assert gateway.current_job_status(A_PRINTER).name == GCODE_NAME_VALUE
 
-    async def test_the_first_ams_wins_when_the_registry_holds_two(self) -> None:
-        """v1 tracks a single printer. Only the first unit's states exist here, so four
-        readings prove the second group was never consulted."""
-        second_unit = [
-            {
-                "entity_id": f"sensor.a1_00000000testser_ams_2_bandeja_{n}",
-                "platform": "bambu_lab",
-                "unique_id": f"A1_00000000TESTSER_AMS_00000000ZZZZAMS_tray_{n}",
-                "translation_key": "tray",
-            }
-            for n in range(1, 5)
-        ]
+    async def test_every_ams_the_registry_describes_is_followed(self) -> None:
+        """v2.9's whole point: a second AMS unit stops being dropped.
 
-        readings = await BambuLabGateway(
-            as_hass(bambu_hass(rows=REGISTRY_ROWS + second_unit))
-        ).current_trays()
+        The registry names each unit's ordinal on the unit's own device — `…_AMS_1`,
+        `…_AMS_2` — so each one's trays are keyed under the number the printer gives it and
+        eight trays live in one mapping without colliding. Until the device registry was
+        read there was no ordinal to be had and the first group by identity was all that
+        was ever followed.
+        """
+        hass = bambu_hass(rows=REGISTRY_ROWS + second_unit_rows())
+        plant_devices(
+            hass,
+            [
+                printer_device(),
+                ams_device(),
+                ams_device(
+                    device_id=SECOND_UNIT_DEVICE,
+                    ams_serial="00000000ZZZZAMS",
+                    name="A1_00000000TESTSER_AMS_2",
+                ),
+            ],
+        )
+        for entity_id in SECOND_UNIT_TRAYS:
+            hass.states.by_entity_id[entity_id] = tray_state(
+                entity_id, {**TRAY_ATTRIBUTES[TRAY_1], "empty": True, "tag_uid": None}
+            )
+
+        gateway = BambuLabGateway(as_hass(hass))
+        readings = await gateway.current_trays()
+
+        assert len(readings) == 8
+        assert {tray.ams for tray in readings} == {AmsIndex(1), AmsIndex(2)}
+        assert readings[a_tray(1)].colour == Colour(0x5E, 0x43, 0xB7, 0xFF)
+        assert readings[a_tray(1, ams=2)].empty is True
+        assert gateway.ams_units(A_PRINTER) == (AmsIndex(1), AmsIndex(2))
+
+    async def test_a_second_ams_with_no_resolvable_ordinal_keeps_the_first_and_says_so(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Today's behaviour, kept where the registry cannot number the units.
+
+        With no device registry to ask — or an upstream that stopped writing `_AMS_<n>` —
+        there is no least-wrong ordinal for a second unit, so the first by identity is
+        followed as AMS 1 and the rest are named in a warning rather than dropped in
+        silence. Only the first unit's states exist here, so four readings prove the second
+        group was never consulted.
+        """
+        hass = bambu_hass(rows=REGISTRY_ROWS + second_unit_rows())
+
+        with caplog.at_level(logging.WARNING):
+            readings = await BambuLabGateway(as_hass(hass)).current_trays()
 
         assert len(readings) == 4
         assert readings[a_tray(1)].colour == Colour(0x5E, 0x43, 0xB7, 0xFF)
+        assert "numbers none of" in caplog.text
+
+    async def test_an_ams_is_attributed_by_its_via_device_not_by_a_substring(self) -> None:
+        """The registry decides, and the `unique_id` is only the fallback (ADR-0009).
+
+        This AMS's `unique_id` mentions the *first* machine's serial while its device hangs
+        off the *second* machine — the shape a substring rule gets wrong, and one a user
+        could plausibly have after a printer was replaced. The registry says outright whose
+        it is, so the trays land on the machine that actually holds them.
+        """
+        misleading = [
+            {
+                "entity_id": f"sensor.p1s_00000000otherser_ams_1_bandeja_{n}",
+                "platform": "bambu_lab",
+                "unique_id": f"A1_{A_PRINTER.value}_AMS_00000000ZZZZAMS_tray_{n}",
+                "translation_key": "tray",
+                "device_id": SECOND_AMS_DEVICE,
+            }
+            for n in range(1, 5)
+        ]
+        rows = [row for row in REGISTRY_ROWS if row["translation_key"] != "tray"]
+        rows += second_printer_rows_without_trays() + misleading
+        hass = bambu_hass(rows=rows)
+        plant_devices(
+            hass,
+            [
+                printer_device(),
+                printer_device(
+                    device_id=SECOND_DEVICE,
+                    serial=ANOTHER_PRINTER.value,
+                    name=f"P1S_{ANOTHER_PRINTER.value}",
+                ),
+                ams_device(
+                    device_id=SECOND_AMS_DEVICE,
+                    ams_serial="00000000ZZZZAMS",
+                    name=f"P1S_{ANOTHER_PRINTER.value}_AMS_1",
+                    via=SECOND_DEVICE,
+                ),
+            ],
+        )
+        for entity_id in (row["entity_id"] for row in misleading):
+            hass.states.by_entity_id[entity_id] = tray_state(entity_id, TRAY_ATTRIBUTES[TRAY_1])
+
+        readings = await BambuLabGateway(as_hass(hass)).current_trays()
+
+        assert {tray.printer for tray in readings} == {ANOTHER_PRINTER}
+
+    async def test_a_renamed_ams_keeps_its_ordinal(self) -> None:
+        """Home Assistant writes a rename to `name_by_user` and leaves `name` as the
+        integration wrote it, so the ordinal is read from the one a user cannot touch. A
+        household that called its unit *Downstairs AMS* must not find its trays renumbered.
+        """
+        hass = bambu_hass()
+        plant_devices(
+            hass,
+            [
+                printer_device(),
+                FakeDeviceEntry(
+                    id=AMS_DEVICE,
+                    identifiers=frozenset({("bambu_lab", "00000000TESTAMS")}),
+                    name="A1_00000000TESTSER_AMS_1",
+                    name_by_user="Downstairs AMS",
+                    via_device_id=PRINTER_DEVICE,
+                ),
+            ],
+        )
+
+        readings = await BambuLabGateway(as_hass(hass)).current_trays()
+
+        assert {tray.ams for tray in readings} == {AmsIndex(1)}
+
+    async def test_both_holders_of_a_dual_nozzle_printer_are_discovered(self) -> None:
+        """The X2D, as read on 2026-09-23: two holder devices, identified
+        `<serial>_ExternalSpool` and `<serial>_ExternalSpool2`, both hanging off the
+        printer. Two positions a reel can be on at the same time."""
+        hass = bambu_hass(rows=REGISTRY_ROWS + both_holder_rows())
+        plant_devices(
+            hass,
+            [
+                printer_device(),
+                ams_device(),
+                holder_device(HOLDER_1_DEVICE),
+                holder_device(HOLDER_2_DEVICE, suffix="2"),
+            ],
+        )
+
+        gateway = BambuLabGateway(as_hass(hass))
+
+        assert gateway.holders(A_PRINTER) == (FIRST_HOLDER, HolderIndex(2))
+
+    async def test_a_single_nozzle_printer_has_one_holder(self) -> None:
+        """The A1: one holder entity, one holder — and the suffix-less identifier is the
+        first one, which is the same statement the domain's default makes."""
+        hass = bambu_hass(rows=[*REGISTRY_ROWS, both_holder_rows()[0]])
+        plant_devices(hass, [printer_device(), ams_device(), holder_device(HOLDER_1_DEVICE)])
+
+        gateway = BambuLabGateway(as_hass(hass))
+
+        assert gateway.holders(A_PRINTER) == (FIRST_HOLDER,)
+
+    async def test_a_printer_with_no_holder_entity_reports_none_rather_than_inventing_one(
+        self,
+    ) -> None:
+        """The frozen capture published no holder sensor, and this reader says exactly
+        that. It is not a claim the machine has no holder — the AMS view floors its own
+        card list at the first, because a physical holder exists whether or not upstream
+        describes it."""
+        assert BambuLabGateway(as_hass(bambu_hass())).holders(A_PRINTER) == ()
+
+    async def test_a_holder_resolves_by_its_unique_id_when_there_is_no_device_registry(
+        self,
+    ) -> None:
+        """The fallback, on the same terms the trays' is: the sensor's own `unique_id`
+        carries `_ExternalSpool2_external_spool`, so an upstream that stopped writing
+        holder devices costs this ledger nothing."""
+        hass = bambu_hass(rows=REGISTRY_ROWS + both_holder_rows())
+
+        gateway = BambuLabGateway(as_hass(hass))
+
+        assert gateway.holders(A_PRINTER) == (FIRST_HOLDER, HolderIndex(2))
 
     async def test_the_serial_is_read_off_the_job_sensors_unique_ids(self) -> None:
         """The stable identity a tray reference needs, from evidence already frozen here.
@@ -617,6 +968,254 @@ class TestDiscovery:
         sentence is ambiguous and the gateway declines to resolve it — the runtime turns
         that `None` into a message rather than a mount somewhere plausible."""
         assert BambuLabGateway(as_hass(two_printer_hass())).default_printer is None
+
+
+class TestLateBinding:
+    """A machine that appears after this entry loaded is followed, without a reload.
+
+    `ha-bambulab` sets its entities up asynchronously, and whether it finishes before or
+    after this integration is a race nobody controls. Until v2.9 losing it meant a dormant
+    gateway until the user reloaded the entry — which nothing told them to do.
+
+    The rescan is debounced, so these tests shorten the cooldown to nothing and let the
+    loop turn. `_REDISCOVERY_COOLDOWN_S` is read when the gateway is built, which is why
+    each one patches before constructing.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_cooldown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bambu_gateway, "_REDISCOVERY_COOLDOWN_S", 0)
+
+    async def settle(self, hass: FakeHass) -> None:
+        """Let the debouncer's timer fire and its handler run, the way the loop would.
+
+        Three turns because there are three hops: the callback schedules the debouncer's
+        call, the call schedules a timer, and the timer schedules the handler that runs
+        the rescan. With the cooldown patched to nothing each hop is one loop iteration.
+        """
+        for _ in range(3):
+            await hass.drain()
+            await asyncio.sleep(0)
+        await hass.drain()
+
+    async def test_a_gateway_built_against_an_empty_registry_is_dormant(self) -> None:
+        hass = FakeHass()
+        plant_registry(hass, [])
+
+        gateway = BambuLabGateway(as_hass(hass))
+
+        assert gateway.dormant is True
+        assert gateway.printers == ()
+        assert await gateway.current_trays() == {}
+
+    async def test_a_printer_appearing_later_is_followed_without_a_reload(self) -> None:
+        """The whole feature, in one scenario: build dormant, plant the machine, fire the
+        registry event upstream fires, and the gateway answers."""
+        hass = FakeHass()
+        plant_registry(hass, [])
+        gateway = BambuLabGateway(as_hass(hass))
+
+        for entity_id in TRAY_ATTRIBUTES:
+            hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        for entity_id in PRINT_SENSORS:
+            hass.states.by_entity_id[entity_id] = print_sensor_state(entity_id)
+        plant_registry(hass, REGISTRY_ROWS)
+        hass.bus.async_fire(REGISTRY_UPDATED, {"action": "create"})
+        await self.settle(hass)
+
+        assert gateway.dormant is False
+        assert gateway.printers == (A_PRINTER,)
+        assert sorted(await gateway.current_trays()) == [a_tray(n) for n in (1, 2, 3, 4)]
+
+    async def test_a_listener_subscribed_while_dormant_starts_hearing_tray_changes(
+        self,
+    ) -> None:
+        """A subscription made before discovery found anything is kept and armed later.
+        Dropping it — which is what the old no-op did — left the reconciliation pass deaf
+        for the life of the entry."""
+        hass = FakeHass()
+        plant_registry(hass, [])
+        gateway = BambuLabGateway(as_hass(hass))
+        listener = RecordingListener()
+        gateway.subscribe(listener)
+
+        for entity_id in TRAY_ATTRIBUTES:
+            hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        plant_registry(hass, REGISTRY_ROWS)
+        hass.bus.async_fire(REGISTRY_UPDATED, {"action": "create"})
+        await self.settle(hass)
+        fire_tray_change(hass, TRAY_2, tray_state(TRAY_2))
+        await hass.drain()
+
+        assert [reading.tray for reading in listener.received] == [a_tray(2)]
+
+    async def test_a_registry_event_that_changes_nothing_notifies_nobody(self) -> None:
+        """The comparison is the guard. Every entity in the house fires one of these, and
+        a rescan that found the same machines must cost exactly one registry read."""
+        hass = bambu_hass()
+        gateway = BambuLabGateway(as_hass(hass))
+        told: list[int] = []
+        gateway.subscribe_discovery(lambda: told.append(1))
+
+        hass.bus.async_fire(REGISTRY_UPDATED, {"action": "update"})
+        await self.settle(hass)
+
+        assert told == []
+
+    async def test_a_burst_of_registry_events_re_discovers_once(self) -> None:
+        """Setting up an integration registers dozens of entities within a second, each
+        one an event. The debouncer is what stops that being dozens of rebuilds and dozens
+        of pushes to the panel."""
+        hass = FakeHass()
+        plant_registry(hass, [])
+        gateway = BambuLabGateway(as_hass(hass))
+        told: list[int] = []
+        gateway.subscribe_discovery(lambda: told.append(1))
+
+        plant_registry(hass, REGISTRY_ROWS)
+        for _ in range(5):
+            hass.bus.async_fire(REGISTRY_UPDATED, {"action": "create"})
+        await self.settle(hass)
+
+        assert told == [1]
+
+    async def test_a_held_plan_survives_a_re_discovery_mid_print(self) -> None:
+        """Re-arming must not throw away what has already been observed: the figures a
+        machine published during the job it is running are what its ending is charged
+        with, and a rescan that happened to land mid-print would otherwise lose them."""
+        hass = bambu_hass()
+        gateway = BambuLabGateway(as_hass(hass))
+        listener = RecordingPrintListener()
+        gateway.subscribe_jobs(listener)
+        fire_job_event(hass, "event_print_started")
+        await hass.drain()
+        fire_weight_change(hass, {"AMS 1 Tray 1": 28.4})
+        await hass.drain()
+
+        plant_registry(hass, [*REGISTRY_ROWS, objects_row()])
+        hass.bus.async_fire(REGISTRY_UPDATED, {"action": "create"})
+        await self.settle(hass)
+        fire_job_event(hass, "event_print_finished")
+        await hass.drain()
+
+        ended = listener.lifecycle[-1]
+        assert isinstance(ended, PrintEnded)
+        assert ended.reported_usage == {a_tray(1): Grams.of("28.4")}
+
+    async def test_detach_leaves_no_listener_behind(self) -> None:
+        """Including the registry watcher itself: a gateway that went on re-discovering
+        after unload would notify listeners whose runtime has been closed."""
+        hass = bambu_hass()
+        gateway = BambuLabGateway(as_hass(hass))
+        gateway.subscribe(RecordingListener())
+        gateway.subscribe_jobs(RecordingPrintListener())
+
+        gateway.detach()
+        gateway.detach()
+
+        assert hass.bus.listeners == []
+
+
+class TestActiveFeed:
+    """Which position is feeding, read off the attributes the printer actually uses.
+
+    The sensor's *state* is a filament name — `Generic PETG`, or `?` — and until v2.9 the
+    gateway parsed it as an integer, so the Printer tab's active-tray field was a dash on
+    every machine, always (docs/12-field-notes.md, 2026-09-23). Both live indexes were
+    captured the same day: the A1 printing from its holder reported
+    `{ams_index: 255, tray_index: 0}`, and the X2D's second holder `{254, 3}`.
+    """
+
+    def feed(self, attributes: dict[str, object], state: str = "Generic PETG") -> object:
+        hass = bambu_hass()
+        hass.states.by_entity_id[ACTIVE_TRAY] = State(ACTIVE_TRAY, state, attributes)
+        return BambuLabGateway(as_hass(hass)).active_feed(A_PRINTER)
+
+    async def test_an_ams_position_is_the_printers_own_numbering(self) -> None:
+        """Both indexes are zero-based, so `{0, 1}` is AMS 1 tray 2 — the number a user
+        reads on the machine, which is what every tray reference here is keyed by."""
+        assert self.feed({"ams_index": 0, "tray_index": 1}) == a_tray(2)
+
+    async def test_a_second_unit_is_named_by_its_own_ordinal(self) -> None:
+        assert self.feed({"ams_index": 1, "tray_index": 3}) == a_tray(4, ams=2)
+
+    async def test_the_first_holder_is_index_255(self) -> None:
+        """The A1's live reading on the day this was captured."""
+        assert self.feed({"ams_index": 255, "tray_index": 0}) == ExternalFeed(A_PRINTER)
+
+    async def test_the_second_holder_is_index_254(self) -> None:
+        """The X2D's, from the same capture — `external_spool[255 - i]`, upstream's own
+        indexing, so the second holder is one *below* the first."""
+        assert self.feed({"ams_index": 254, "tray_index": 3}) == ExternalFeed(
+            A_PRINTER, HolderIndex(2)
+        )
+
+    async def test_nothing_loaded_is_no_position(self) -> None:
+        """255 means two different things one attribute apart: the first holder in
+        `ams_index`, and *nothing is loaded* in `tray_index`. Read together or not at all.
+        """
+        assert self.feed({"ams_index": 255, "tray_index": 255}) is None
+
+    async def test_a_sensor_with_no_attributes_says_nothing(self) -> None:
+        """Upstream publishes an empty attribute dictionary when there is no active tray,
+        and an absence is never a position."""
+        assert self.feed({}, state="none") is None
+
+    async def test_an_index_no_position_could_have_is_dropped_not_invented(self) -> None:
+        assert self.feed({"ams_index": -5, "tray_index": 0}) is None
+        assert self.feed({"ams_index": 0, "tray_index": 9}) is None
+
+    async def test_the_state_string_is_never_parsed(self) -> None:
+        """The defect this reader replaced: a filament name is not a slot number, and a
+        state that happens to *look* like one must not become a position either."""
+        assert self.feed({}, state="2") is None
+        assert self.feed({"ams_index": 0, "tray_index": 0}, state="2") == a_tray(1)
+
+    async def test_an_attribute_that_is_not_an_integer_is_dropped(self) -> None:
+        """A `True` reading as position 1 would be a position invented out of a flag."""
+        assert self.feed({"ams_index": True, "tray_index": 0}) is None
+        assert self.feed({"ams_index": "0", "tray_index": "1"}) is None
+
+
+class TestPrinterName:
+    """What a machine is called, for display — never for identity (docs/14 §14.5)."""
+
+    async def test_the_printers_own_sensor_wins(self) -> None:
+        """Upstream writes this one's `unique_id` as `<serial>_name`, not
+        `<serial>_printer_name`, which is the correction `_UNIQUE_ID_KEY` carries: added
+        without it, discovery would resolve no serial from the row at all."""
+        hass = bambu_hass(rows=[*REGISTRY_ROWS, printer_name_row()])
+        hass.states.by_entity_id[PRINTER_NAME] = State(PRINTER_NAME, "Workshop A1", {})
+
+        gateway = BambuLabGateway(as_hass(hass))
+
+        assert gateway.printers == (A_PRINTER,)
+        assert gateway.printer_name(A_PRINTER) == "Workshop A1"
+
+    async def test_the_serial_still_resolves_from_the_name_sensors_unique_id(self) -> None:
+        """The row alone, without any other job sensor: `<serial>_name` has to yield the
+        serial, or a machine discovered only through this row would be nameless."""
+        hass = bambu_hass(rows=[printer_name_row()])
+
+        assert BambuLabGateway(as_hass(hass)).printers == (A_PRINTER,)
+
+    async def test_no_name_sensor_falls_back_to_the_device_registry(self) -> None:
+        """A rename *should* win here, unlike the AMS ordinal: `name_by_user` is where
+        Home Assistant puts what the household decided to call the thing."""
+        hass = bambu_hass()
+        plant_devices(hass, [printer_device(name_by_user="The loud one"), ams_device()])
+
+        assert BambuLabGateway(as_hass(hass)).printer_name(A_PRINTER) == "The loud one"
+
+    async def test_an_unrenamed_device_answers_with_its_integration_name(self) -> None:
+        hass = bambu_hass()
+        plant_devices(hass, [printer_device(), ams_device()])
+
+        assert BambuLabGateway(as_hass(hass)).printer_name(A_PRINTER) == "A1_00000000TESTSER"
+
+    async def test_neither_source_speaking_is_no_name_at_all(self) -> None:
+        """And the panel then shows the serial alone, which is what it has always shown."""
+        assert BambuLabGateway(as_hass(bambu_hass())).printer_name(A_PRINTER) is None
 
 
 class TestRemainingTime:
@@ -841,7 +1440,7 @@ class TestCurrentTrays:
         ],
     )
     async def test_an_unusable_weight_is_dropped_never_fabricated(self, unusable: object) -> None:
-        """The reading stays whole and the figure goes missing: `_read` is total by
+        """The reading stays whole and the figure goes missing: `read_tray` is total by
         construction, and the domain refuses a non-positive opening weight anyway."""
         hass = bambu_hass()
         hass.states.by_entity_id[TRAY_2] = tray_state(
@@ -1023,8 +1622,11 @@ class TestSubscription:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """`ha-bambulab` installed but no tray entities — same as not installed at all:
-        nothing watched, nothing reported, one debug line saying so. Late binding is a
-        documented non-goal; reloading the entry re-runs discovery."""
+        no tray watched, nothing reported, one debug line saying so.
+
+        The registry watcher is the one listener a dormant gateway *does* hold, and it is
+        the whole of late binding: trays appearing later arm the tracker for the listener
+        subscribed here, without the entry being reloaded."""
         hass = FakeHass()
         plant_registry(hass, [row for row in REGISTRY_ROWS if row["translation_key"] != "tray"])
         gateway = BambuLabGateway(as_hass(hass))
@@ -1034,7 +1636,7 @@ class TestSubscription:
             gateway.subscribe(listener)
 
         assert await gateway.current_trays() == {}
-        assert hass.bus.listeners == []
+        assert watched_events(hass) == [REGISTRY_UPDATED]
         assert "dormant" in caplog.text
 
 
@@ -1235,14 +1837,15 @@ class TestJobEventTranslation:
             pytest.param(float("-inf"), id="negative-infinity"),
             pytest.param(1e30, id="a-figure-too-large-to-quantise"),
             pytest.param(float("nan"), id="not-a-number"),
+            pytest.param("1e999999", id="text-that-overflows-when-scaled"),
         ],
     )
     async def test_a_figure_no_quantity_can_hold_is_skipped_not_raised(
-        self, unusable: float
+        self, unusable: float | str
     ) -> None:
-        """All four are floats, so a type check waves them through and `Grams.of` raises
-        — `InvalidOperation` for the first three, `ValueError` for the last. This runs on
-        every republish now, from a callback that promised the event loop it never
+        """Every one passes the type check — four floats and a decimal string, which
+        upstream writes too — and `Grams.of` raises `InvalidValueError` for each. This runs
+        on every republish now, from a callback that promised the event loop it never
         raises, so the guard is the difference between a skipped key and an exception
         unwinding the bus dispatch."""
         hass = bambu_hass()
@@ -1260,8 +1863,11 @@ class TestJobEventTranslation:
         assert ended.reported_usage == {a_tray(2): Grams.of("9.4")}
 
     async def test_malformed_per_tray_figures_are_skipped_not_invented(self) -> None:
-        """Strings in an attribute dictionary, no schema, no version: a textual figure, a
-        negative one and a second AMS are all noise — only honest rows survive."""
+        """Strings in an attribute dictionary, no schema, no version: a textual figure and
+        a negative one are noise, and only the honest rows survive.
+
+        A second AMS is *not* noise any more — since v2.9 every ordinal the printer names
+        is charged — so it stands beside the figures from the first unit."""
         hass = bambu_hass()
         listener = self.subscribed(hass)
         fire_job_event(hass, "event_print_started")
@@ -1281,7 +1887,10 @@ class TestJobEventTranslation:
 
         ended = listener.received[-1]
         assert isinstance(ended, PrintEnded)
-        assert ended.reported_usage == {a_tray(3): Grams.of(5)}
+        assert ended.reported_usage == {
+            a_tray(3): Grams.of(5),
+            a_tray(1, ams=2): Grams.of("7.5"),
+        }
 
     async def test_a_start_discards_the_previous_jobs_figures(self) -> None:
         """The measured race (docs/12-field-notes.md): upstream updates the weight sensor
@@ -1438,19 +2047,45 @@ class TestJobEventTranslation:
             Grams.of("7.5"),
         ]
 
-    async def test_a_second_ams_is_named_once_per_reading_not_once_per_republish(
+    async def test_a_second_ams_is_charged_rather_than_dropped(self) -> None:
+        """Every ordinal the printer names is charged, discovered or not (v2.9).
+
+        Until then a figure keyed `AMS 2 Tray 1` was dropped with a warning, because one
+        unit per machine was followed and there was no tray to land it on. The figure now
+        travels; if no spool is at that position, UC-04 opens the review line that exists
+        for exactly this, which is grams a user is told about rather than grams nobody is.
+        """
+        hass = bambu_hass()
+        listener = self.subscribed(hass)
+
+        fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "AMS 2 Tray 1": 7.5})
+        await hass.drain()
+
+        observed = [event for event in listener.received if isinstance(event, PrintPlanObserved)]
+        assert observed[-1].plan == {
+            a_tray(1): Grams.of("28.4"),
+            a_tray(1, ams=2): Grams.of("7.5"),
+        }
+
+    async def test_a_key_naming_no_position_is_reported_once_per_reading(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """One AMS per printer is tracked, and a household with two hears so — once for
-        the reading, not once for every republish of it."""
+        """A key shaped like a position that resolves to none is the surprising case now,
+        and it is said out loud once for the reading rather than once per republish — which
+        is how a real warning becomes scenery. The grams are not charged, because there is
+        nothing to charge them to."""
         hass = bambu_hass()
-        self.subscribed(hass)
+        listener = self.subscribed(hass)
 
         with caplog.at_level(logging.WARNING):
             for _ in range(3):
-                fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "AMS 2 Tray 1": 7.5})
+                fire_weight_change(hass, {"AMS 1 Tray 1": 28.4, "AMS 0 Tray 9": 7.5})
+        await hass.drain()
 
-        assert caplog.text.count("one AMS per printer is tracked") == 1
+        assert caplog.text.count("AMS 0 Tray 9") == 1
+        assert "Please report this key" in caplog.text
+        observed = [event for event in listener.received if isinstance(event, PrintPlanObserved)]
+        assert observed[-1].plan == {a_tray(1): Grams.of("28.4")}
 
     async def test_a_cancellation_captures_the_moments_figures(self) -> None:
         """Layers, progress and the raw state, read at the moment the event fires —
@@ -1672,8 +2307,9 @@ class TestJobEventTranslation:
     async def test_without_print_sensors_job_events_stay_dormant(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Same policy as the trays: nothing discovered, nothing watched, one debug line.
-        Reloading the entry after `ha-bambulab` appears re-runs discovery."""
+        """Same policy as the trays: nothing discovered, nothing watched but the registry
+        itself, one debug line. Print sensors appearing later arm the bus listener for the
+        listener subscribed here."""
         hass = FakeHass()
         plant_registry(hass, [row for row in REGISTRY_ROWS if row["translation_key"] == "tray"])
         gateway = BambuLabGateway(as_hass(hass))
@@ -1682,7 +2318,7 @@ class TestJobEventTranslation:
         with caplog.at_level(logging.DEBUG):
             gateway.subscribe_jobs(listener)
 
-        assert hass.bus.listeners == []
+        assert watched_events(hass) == [REGISTRY_UPDATED]
         assert "dormant" in caplog.text
 
     async def test_detach_unsubscribes_job_events_too(self) -> None:
@@ -2297,6 +2933,124 @@ class TestJobSync:
 
         [job] = await SqlitePrintJobRepository(harness.ledger.database).list_recent(10)
         assert job.state is PrintJobState.RUNNING
+
+
+class TestTheRediscoveryPass:
+    """What the composition root re-runs for a machine that appeared after setup (v2.9).
+
+    The gateway's discovery listener cannot do the work inline — it fires inside the event
+    loop — so the pass goes on a task, and a task is where two failures hide: an exception
+    that surfaces only as an unretrieved traceback, and a task that outlives the entry that
+    created it and runs against a closed database.
+    """
+
+    def wired(self, harness: Harness) -> tuple[BambuLabGateway, TraySync]:
+        plant_registry(harness.hass, REGISTRY_ROWS)
+        for entity_id in TRAY_ATTRIBUTES:
+            harness.hass.states.by_entity_id[entity_id] = tray_state(entity_id)
+        gateway = BambuLabGateway(as_hass(harness.hass))
+        return gateway, TraySync(
+            gateway=gateway,
+            detect_spool=harness.ledger.use_cases.detect_spool,
+            spools=SqliteSpoolRepository(harness.ledger.database),
+        )
+
+    async def test_the_task_belongs_to_the_config_entry(self, harness: Harness) -> None:
+        """Home Assistant cancels an entry's background tasks when it unloads the entry.
+
+        A task created on `hass` instead outlives it, so a machine appearing at the moment
+        of a reload would leave one holding this entry's database, gateway and coordinator
+        — running adoption against the connection `async_close` has just shut.
+        """
+        gateway, sync_trays = self.wired(harness)
+
+        _schedule_adopt_and_sync(
+            as_hass(harness.hass),
+            cast(LedgerConfigEntry, harness.entry),
+            harness.ledger.database,
+            gateway,
+            sync_trays,
+            cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+        )
+
+        assert len(harness.entry.background_tasks) == 1
+        await harness.hass.drain()
+
+    async def test_a_failed_adoption_is_logged_and_the_reconciliation_still_runs(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The pass is what mounts the spools this machine is actually holding, so an
+        adoption that fails must not take it down — the AMS view would otherwise show empty
+        trays over a full printer because a rename went wrong. And nothing propagates: on a
+        detached task an exception is a traceback with no sentence and no remedy."""
+        gateway, sync_trays = self.wired(harness)
+        await a_spool(harness.ledger, tag_uid=TRAY_1_TAG)
+
+        async def explode(*_args: object, **_kwargs: object) -> None:
+            msg = "the registry moved under us"
+            raise RuntimeError(msg)
+
+        # `_adopt_and_sync` imports the function inside its own body, so the module it
+        # imports *from* is the only seam — and the one production actually resolves.
+        monkeypatch.setattr(printer_adoption, "adopt_unidentified_trays", explode)
+
+        with caplog.at_level(logging.ERROR):
+            await _adopt_and_sync(
+                harness.ledger.database,
+                gateway,
+                sync_trays,
+                cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+            )
+
+        assert "adopting the rows of a machine that just appeared failed" in caplog.text
+        assert "the registry moved under us" in caplog.text
+        # The pass ran anyway: tray 1's spool is mounted where the printer says it is.
+        (summary,) = await harness.ledger.use_cases.queries.overview()
+        assert summary.spool.location == AmsSlot(a_tray(1))
+
+    async def test_a_failed_reconciliation_is_logged_rather_than_raised(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        gateway, sync_trays = self.wired(harness)
+
+        # The realistic cause, not a stubbed method: `TraySync` guards each *tray* itself,
+        # so what reaches this guard is the read that finds the trays at all.
+        async def explode() -> dict[TrayRef, TrayReading]:
+            msg = "the printer went away mid-pass"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(gateway, "current_trays", explode)
+
+        with caplog.at_level(logging.ERROR):
+            await _adopt_and_sync(
+                harness.ledger.database,
+                gateway,
+                sync_trays,
+                cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+            )
+
+        assert "reconciling the trays of a machine that just appeared failed" in caplog.text
+
+    async def test_cancellation_is_never_swallowed(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`asyncio.CancelledError` is a `BaseException`, so `except Exception` lets it
+        through — which is what makes the entry's cancellation on unload actually stop the
+        work rather than merely ask it to."""
+        gateway, sync_trays = self.wired(harness)
+
+        async def cancelled(*_args: object, **_kwargs: object) -> None:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(printer_adoption, "adopt_unidentified_trays", cancelled)
+
+        with pytest.raises(asyncio.CancelledError):
+            await _adopt_and_sync(
+                harness.ledger.database,
+                gateway,
+                sync_trays,
+                cast("DataUpdateCoordinator[LedgerSnapshot]", harness.coordinator),
+            )
 
 
 class TestUnload:

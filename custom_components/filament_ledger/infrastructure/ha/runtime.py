@@ -45,6 +45,10 @@ class LedgerRuntime:
     printer: ReadPrinterState | None = None
 
     @property
+    def low_stock_threshold_g(self) -> float:
+        return self.use_cases.queries.low_stock_threshold_mg / 1000
+
+    @property
     def tray_printer(self) -> PrinterSerial:
         """The machine a caller that named no printer means — **or a refusal.**
 

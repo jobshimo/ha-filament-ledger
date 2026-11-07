@@ -387,7 +387,7 @@ says so before you press it. **Admin only for writing** — these values change 
 ledger behaves, which *is* an administrative act. Non-admins see the values read-only with a line
 explaining why, because a hidden tab invites "it's broken".
 
-The tab also carries the **language override**: Auto, English or Español. It is stored per
+The tab also carries the **language override**: Auto, English, Español or Türkçe. It is stored per
 device, because the language of this panel on this phone is a device preference and not ledger
 state. Left on Auto, the panel follows your Home Assistant profile language.
 
@@ -444,8 +444,8 @@ afterwards — the balance is the one thing the ledger genuinely cannot recover 
 
 **My Home Assistant is not in English. Do I need to change anything?**
 No. Filament Ledger resolves the printer's entities through the device registry, never by their
-entity ids, so localised entity names are irrelevant to it. The panel itself speaks English and
-Spanish and follows your profile language; anything else falls back to English, and the Settings
+entity ids, so localised entity names are irrelevant to it. The panel itself speaks English, Spanish and
+Turkish and follows your profile language; anything else falls back to English. The Settings
 tab lets you override it per device.
 
 **The Printer tab says "No printer connected".**
@@ -496,7 +496,7 @@ uv run pytest -q              # the whole suite: 898 tests
 ```
 
 The design is written down before it is built. [docs/](docs/) holds the contract — sixteen
-numbered documents and eight ADRs — and it is the document, not the code, that is amended first
+numbered documents and nine ADRs — and it is the document, not the code, that is amended first
 when something changes:
 
 | Document | Contents |

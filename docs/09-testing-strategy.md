@@ -190,3 +190,13 @@ exists to cover, and it decides whether the LAN-only setup can be recommended at
 Results are written back into [01 §1.6](01-vision.md), and the provisional rules that depend on
 them are then either confirmed or replaced. **No estimator accuracy figure is published until
 Q2 and Q3 are answered with real measurements.**
+
+---
+
+## Filament experience verification (2026-11-06)
+
+Cover model/migration defaults and immutable-history preservation, preview/create parity/no writes, durable retries, guarded mount concurrency, server list selection, transaction-wide low-stock rearming and native blueprint/rule contracts. Node 24 tests cover theme/storage/stale-response/markup behaviour; they do not establish rendered contrast or hardware success. Run existing Ruff/strict mypy/pytest, no-HA subsets, panel tests and CI hassfest/HACS gates unchanged.
+
+Exercise registration, position assignment, filtering, appearance and low-stock automation scenarios, recording real evidence or explicit unverified status. Each www/ PR includes actual initials for touched-dialog dismissal, missing values, EN/ES/TR, phone width and escaping checks. Visual verification is bounded; destination receipt and five-user usability require real observation rather than inferred passes.
+
+**Implementation evidence (2026-11-06).** Tests use real SQLite and the pinned HA schemas; an independently synchronized environment without Home Assistant runs the domain/application and domain/architecture commands. Browser fixtures are illustrative and cannot establish physical printer behaviour, real notification receipt, VoiceOver results or five-user usability outcomes.

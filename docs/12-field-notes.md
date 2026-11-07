@@ -534,3 +534,72 @@ with no usable figure is silence, not an empty plan; and an ending with an empty
 back to the row's figures exactly as an ending with none does. The live database still held no
 spool on the holder, so every external print will keep opening a review — now with the
 holder's line and figure on it — until one is mounted there.
+
+---
+
+## 2026-09-23 — What a second machine actually reports
+
+The household gained an X2D (`20P5BJ661800330`) beside the A1 (`03900D640729564`), and this
+release was designed against what both of them were read to say rather than against what one
+of them had been assumed to. `ha-bambulab` 2.2.25, read from `/config/custom_components/bambu_lab/`
+and `/config/.storage/core.device_registry` on the live host.
+
+**`External Spool 2` is a key, and it is the whole reason a holder needs a number.**
+`pybambu/models.py::get_print_weights` writes `values["External Spool"]`,
+`values["External Spool 2"]` or `values[f"AMS {i//4+1} Tray {i%4+1}"]` for `i in range(16)`,
+and the three are mutually exclusive — upstream branches between them
+(`if ext[0].active … elif ext[1].active … else: the AMS loop`). The X2D's own weight sensor
+carried `{"AMS 1 Tray 2": 113.66}` at the moment of capture; the A1's carried
+`{"External Spool": 53.92}`.
+
+**`active_tray`'s state is a filament name, and the position is in its attributes.**
+`definitions.py:602-627`: `value_fn = ams.active_tray.name` — or the literal `"none"` — with
+`ams_index` and `tray_index` as attributes, and `{}` for attributes when there is no active
+tray at all. `pybambu/models.py:2637-2661` maps `ams_index == 255` to `external_spool[0]`,
+`254` to `external_spool[1]`, `tray_index == 255` to nothing loaded, and anything else to
+`data[ams_index].tray[tray_index]` — **both zero-based**. Observed: the X2D read state `"?"`
+with `{ams_index: 254, tray_index: 3}`; the A1, printing from its holder, read
+`{ams_index: 255, tray_index: 0}`.
+
+This ledger had been parsing that sensor's *state* as an integer since the key was frozen,
+so the Printer tab's **Active tray** field had shown a dash for every user, always. Not a
+missing sensor — a misread one, and the kind of defect that hides behind a null policy
+written to be honest about absence.
+
+`active_ams_index` is per *nozzle* (`_nozzle_ams_index[active_nozzle]`), so one sensor answers
+for whichever nozzle is currently selected. It identifies a position and says nothing about
+which extruder is drawing through it, which is exactly the shape a ledger that charges
+positions wants.
+
+**The device registry names what the entity registry cannot.** `coordinator.get_ams_device`
+writes `name = f"{device_type}_{serial}_AMS_{index+1}"` — `index` itself for an AMS HT, i.e.
+128 and up — with `identifiers={(DOMAIN, ams_serial)}` and `via_device=(DOMAIN, printer_serial)`.
+`coordinator.get_virtual_tray_device` writes `identifiers={(DOMAIN, f"{serial}_ExternalSpool{suffix}")}`
+with suffix `""` or `"2"`, and `via_device=(DOMAIN, serial)`. The live
+`core.device_registry` confirms `via_device_id` on both machines' AMS devices and on both of
+the X2D's holders. That is an ordinal and an attribution stated outright, where the tray
+`unique_id` carries only the AMS unit's own serial — see
+[ADR-0009](adr/0009-the-device-registry-is-discovery-evidence.md).
+
+**The holder sensor.** `translation_key="external_spool"`, `unique_id =
+f"{device_type}_{serial}_ExternalSpool{suffix}_external_spool"` (`sensor.py:207`,
+`definitions.py:708-738`), attributes `empty`, `tag_uid`, `tray_uuid`, `name`, `type`,
+`color`, `tray_weight`, `active`, `state`. Live: the X2D's first holder read state `"?"` with
+`{active: false, empty: true, state: 8, filament_id: "", type: "?", name: "?",
+color: "#00000000", tray_weight: "0", remain: -1}`, and its second read `"Generic PETG"` with
+`{active: false, empty: true, state: 8, filament_id: "GFG99", type: "PETG",
+color: "#FFF144FF", nozzle_temp_min: "220", nozzle_temp_max: "270"}`. **An empty holder still
+carries the previous occupant's name**, which is why the reader drops the name for a holder
+reporting `empty: true` — the same rule `_read` applies to an emptied tray.
+
+**`printer_name`'s `unique_id` is `<serial>_name`.** `definitions.py:565-570` reads
+`key="name"`, and it carries an `exists_fn`, so the entity may not exist at all. A reader that
+assumed the suffix was the translation key would strip `_printer_name`, match nothing, and
+resolve no serial from a row that plainly carries one — silently, and only for the machines
+whose other rows happened not to resolve one either.
+
+**`mqtt_mode` reads `local` on the X2D, which is connected through the cloud.** That is
+upstream's own claim about its own transport (`model.info.mqtt_mode`) and it travels verbatim.
+Correcting it here would be this project inventing a fact it has no way to check; it is noted
+so the next reader of the Printer tab knows the field is upstream's opinion rather than a
+measurement ([14 §14.5](14-corrections-and-trash.md)).

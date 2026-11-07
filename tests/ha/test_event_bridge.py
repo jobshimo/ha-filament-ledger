@@ -40,6 +40,7 @@ from custom_components.filament_ledger.domain.service.anomaly_detector import (
 from custom_components.filament_ledger.domain.value.confidence import Confidence
 from custom_components.filament_ledger.domain.value.grams import Grams
 from custom_components.filament_ledger.domain.value.identifiers import (
+    HolderIndex,
     MovementId,
     PrintJobId,
     ReviewId,
@@ -54,7 +55,7 @@ from custom_components.filament_ledger.infrastructure.ha.event_bridge import (
 )
 
 from ..application.conftest import A_PRINTER, a_tray
-from .conftest import FakeHass, as_hass
+from .conftest import FakeHass, Harness, as_hass
 
 SPOOL = SpoolId("spool-1")
 
@@ -78,8 +79,24 @@ class TestTranslation:
             pytest.param(
                 SpoolMountedExternally(spool_id=SPOOL, printer=A_PRINTER),
                 "filament_ledger_spool_mounted",
-                {"spool_id": "spool-1", "printer": "00000000TESTSER", "external": True},
+                {
+                    "spool_id": "spool-1",
+                    "printer": "00000000TESTSER",
+                    "external": True,
+                    "holder": 1,
+                },
                 id="a-spool-is-mounted-on-the-direct-feed",
+            ),
+            pytest.param(
+                SpoolMountedExternally(spool_id=SPOOL, printer=A_PRINTER, holder=HolderIndex(2)),
+                "filament_ledger_spool_mounted",
+                {
+                    "spool_id": "spool-1",
+                    "printer": "00000000TESTSER",
+                    "external": True,
+                    "holder": 2,
+                },
+                id="a-spool-is-mounted-on-the-second-holder",
             ),
             pytest.param(
                 SpoolUnmounted(spool_id=SPOOL),
@@ -302,3 +319,39 @@ class TestTheLiveSubscriptionCoversAllOfThem:
         panel = Path("custom_components/filament_ledger/www/filament-ledger-panel.js")
 
         assert "filament_ledger_movement_recorded" not in panel.read_text(encoding="utf-8")
+
+
+async def test_low_stock_payload_resolves_registry_identity(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from custom_components.filament_ledger.application.adjust_spool import AdjustSpoolCommand
+    from custom_components.filament_ledger.domain.event import LowStockCrossed
+    from custom_components.filament_ledger.infrastructure.ha import event_bridge
+
+    from .conftest import a_spool, as_hass
+
+    spool_id = await a_spool(harness.ledger)
+    await harness.ledger.use_cases.adjust_spool.execute(
+        AdjustSpoolCommand(spool_id, Grams.of(-901), "Crossing")
+    )
+    [event] = harness.ledger.events.of(LowStockCrossed)
+
+    class Registry:
+        def async_get_entity_id(self, domain: str, platform: str, unique_id: str) -> str:
+            assert domain == "binary_sensor"
+            assert platform == "filament_ledger"
+            assert unique_id == f"filament_ledger_{spool_id}_low_stock"
+            return "binary_sensor.renamed_physical_spool"
+
+    from homeassistant.helpers import entity_registry as er
+
+    monkeypatch.setattr(er, "async_get", lambda hass: Registry())
+    await event_bridge.HomeAssistantEventBus(as_hass(harness.hass)).publish(event)
+    name, data = harness.hass.bus.fired[-1]
+    assert name == "filament_ledger_low_stock"
+    assert data is not None
+    assert data["low_stock_entity_id"] == "binary_sensor.renamed_physical_spool"
+    assert data["quantity_basis"] == "OPENING_BALANCE"
+    assert data["balance_g"] == 99
+    assert data["threshold_g"] == 100
+    assert data["occurrence_id"] == event.occurrence_id

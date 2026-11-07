@@ -50,6 +50,7 @@ from ..domain.value.identifiers import Feed, position_note
 from ..domain.value.location import Storage, feed_of, location_of
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.review import ReviewReason
+from .low_stock import LowStock
 from .review_queue import OpenPendingReview, OpenPendingReviewCommand
 
 LOGGER = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class RecordPrintConsumption:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, job: PrintJob) -> None:
         to_publish: list[DomainEvent] = []
@@ -72,7 +74,7 @@ class RecordPrintConsumption:
         # the idempotency flag land together or not at all. The idempotency read happens
         # inside the same unit, so two deliveries of one ending serialise — the first
         # marks the row recorded, the second finds it so and writes nothing.
-        async with self.uow:
+        async with self.low_stock.transaction(self.uow) if self.low_stock else self.uow:
             stored = await self.jobs.get(job.id)
             if stored is not None and stored.consumption_recorded:
                 LOGGER.debug(

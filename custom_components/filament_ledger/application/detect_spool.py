@@ -5,13 +5,10 @@ ledger with that observation. It refuses in one direction on purpose (docs/04-us
 UC-02): an ambiguous tag never picks a candidate, because choosing wrong means every
 subsequent print deducts from a spool sitting on a shelf.
 
-An unknown tag is refused more narrowly than it used to be. When the reading carries the
-full Bambu payload — a material string *and* a colour — and `auto_register_on_detect` is
-on, the spool registers itself and then mounts through the ordinary path: nothing there
-is a guess, because everything is what the RFID said — the opening weight is the reel's
-own `tray_weight`, falling back to the configured default for a tag that declines to
-give one. A reading missing either hint still only reports, because a spool the system
-cannot describe is a spool it must not invent.
+When a reading carries material and colour and auto-registration is enabled, an unknown
+spool is registered. Tagged spools resolve by identity. Untagged spools require auto-mount
+as well and register atomically into an unassigned slot, so replays cannot create duplicates.
+The opening weight is nominal or the configured default, never a measurement of what remains.
 
 **That opening weight is what the reel held new, and a reel is not always new.** Meeting
 a half-used spool for the first time therefore opens it overstated — exactly as the
@@ -24,11 +21,9 @@ prompt are the honest answer, and they already cover this spool from its first e
 consumes no filament. (Auto-registration delegates to `RegisterSpool`, whose opening
 balance is UC-01's own rule, not this use case's.)
 
-An occupied tray whose tag is unreadable changes nothing. The use cases in
-docs/04-use-cases.md authorise automatic action on a tag appearing (UC-02) or the tray
-emptying (UC-03) — an unreadable tag is neither. It identifies no spool to mount, and the
-spool the ledger has in that tray may well be the untagged one the user mounted by hand;
-unmounting it on silence would fight every manual mount of a third-party spool.
+An occupied slot's assignment survives unreadable RFID. Without identity, matching a
+stored reel by material and colour would merge distinct physical reels. An observed empty
+slot ends its assignment; the next occupied reading can register a new reel.
 """
 
 from __future__ import annotations
@@ -139,7 +134,8 @@ class DetectSpool:
             await self._tray_emptied(reading.tray)
             return
         if reading.tag is None:
-            return  # unreadable tag: nothing automatic is possible — see the module docstring
+            await self._register_unknown(reading)
+            return
         # Before anything reads the inventory: a row that predates v2.6 knows its chip but
         # not its reel, and every question below is asked of the reel first. Healing here
         # means the rest of this use case sees one consistent world instead of each branch
@@ -322,9 +318,9 @@ class DetectSpool:
     async def _register_unknown(self, reading: TrayReading) -> None:
         """UC-01 on the printer's say-so, when the reading describes the spool in full.
 
-        Registered into storage, never straight into the slot: the ordinary mount path
-        below owns displacement and the one-spool-per-tray index, and giving registration
-        a second way into a tray would give that rule a second implementation.
+        Tagged reels register in storage and use the identity-based mount path.
+        Untagged reels register into an empty slot under the registration transaction's
+        occupant guard; they cannot displace an assignment or be identified on a shelf.
 
         The idempotence hinge is the **reel** lookup, and that is the whole of this
         release's correction. A reel the ledger already owns is recognised wherever it
@@ -345,11 +341,16 @@ class DetectSpool:
         registers the same reel first. `RegisterSpool`'s duplicate-tag guard closes it, and
         losing that race is not a failure: the spool exists, which is all this method wants.
         """
-        if not self.auto_register or reading.tag is None:
+        if not self.auto_register or (reading.tag is None and not self.auto_mount):
             return
+        occupant = await self.spools.find_by_location(AmsSlot(reading.tray))
+        if occupant is not None and (reading.tag is None or occupant.tag_uid is None):
+            return  # A manual assignment remains authoritative until a known identity replaces it.
         if reading.material is None or reading.colour is None:
             return  # a spool the system cannot describe is a spool it must not invent
-        if reading.reel is not None:
+        if reading.tag is None:
+            candidates = []
+        elif reading.reel is not None:
             if await self.spools.find_by_reel(reading.reel):
                 # We own this reel. Where it is standing is the resolution's business, not
                 # registration's — and asking would reintroduce the very question that made
@@ -396,7 +397,10 @@ class DetectSpool:
                         else self.default_opening_weight
                     ),
                     core_weight=self.default_core_weight,
-                    vendor=BAMBU_VENDOR,
+                    vendor=BAMBU_VENDOR if reading.tag is not None else None,
+                    # No chip can identify an unmounted reel; keep registration and the
+                    # empty-slot guard in one transaction so replays cannot mint twins.
+                    location=AmsSlot(reading.tray) if reading.tag is None else None,
                     # The product name alone would be born twice for two reels of one
                     # product in two colours, so the colour's name rides along — in the
                     # instance's language, decided now, because a label is stored data.
@@ -413,6 +417,9 @@ class DetectSpool:
                     # The opening balance is the configured default nobody confirmed
                     # today, and the history's provenance label must say so.
                     movement_source=MovementSource.AUTOMATIC,
+                    opening_basis="DETECTED_NOMINAL"
+                    if reading.weight is not None
+                    else "CONFIGURED_DEFAULT",
                     # Reaching here with candidates means the chip is spoken for but the
                     # reel is genuinely new — two reels whose chip UIDs collide, or a
                     # legacy row that speaks for a different reel. Either way the duplicate

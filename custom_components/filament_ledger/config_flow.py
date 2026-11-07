@@ -19,6 +19,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.selector import NumberSelector, NumberSelectorMode
 
 from .const import (
     CONF_ANOMALY_THRESHOLD,
@@ -26,21 +27,43 @@ from .const import (
     CONF_AUTO_REGISTER_ON_DETECT,
     CONF_DEFAULT_CORE_WEIGHT,
     CONF_DEFAULT_OPENING_WEIGHT,
+    CONF_LOW_STOCK_THRESHOLD,
     DEFAULT_ANOMALY_THRESHOLD_PCT,
     DEFAULT_AUTO_MOUNT_ON_RFID,
     DEFAULT_AUTO_REGISTER_ON_DETECT,
     DEFAULT_CORE_WEIGHT_G,
+    DEFAULT_LOW_STOCK_THRESHOLD_G,
     DEFAULT_OPENING_WEIGHT_G,
     DOMAIN,
 )
 from .infrastructure.ha.runtime import LedgerConfigEntry
+from .infrastructure.ha.validators import low_stock_threshold
 
 TITLE = "Filament Ledger"
+
+
+class LowStockThresholdSelector(NumberSelector):
+    """Expose a serializable number field while retaining exact gram validation."""
+
+    def __call__(self, data: object) -> float:
+        return low_stock_threshold(data)
 
 
 def _schema(defaults: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
+            vol.Required(
+                CONF_LOW_STOCK_THRESHOLD,
+                default=defaults.get(CONF_LOW_STOCK_THRESHOLD, DEFAULT_LOW_STOCK_THRESHOLD_G),
+            ): LowStockThresholdSelector(
+                {
+                    "min": 0.001,
+                    "max": 10000,
+                    "step": 0.001,
+                    "mode": NumberSelectorMode.BOX,
+                    "unit_of_measurement": "g",
+                }
+            ),
             vol.Required(
                 CONF_DEFAULT_OPENING_WEIGHT,
                 default=defaults.get(CONF_DEFAULT_OPENING_WEIGHT, DEFAULT_OPENING_WEIGHT_G),

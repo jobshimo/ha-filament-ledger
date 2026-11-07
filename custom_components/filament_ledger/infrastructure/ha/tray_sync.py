@@ -128,8 +128,10 @@ async def slot_outcome(spools: SpoolRepository, reading: TrayReading) -> SlotSyn
     if reading.empty:
         return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.EMPTY, spool=None)
     if reading.tag is None:
-        # Occupied, tag unreadable: nothing automatic is possible (UC-02/UC-03), and
-        # naming whatever the ledger has in the tray would dress a guess as a match.
+        occupant = await spools.find_by_location(AmsSlot(reading.tray))
+        if occupant is not None:
+            return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.MOUNTED, spool=occupant)
+        # No assignment yet: the reading may lack the metadata automatic registration needs.
         return SlotSyncOutcome(reading=reading, status=SlotSyncStatus.NO_TAG, spool=None)
     candidates = await spools.find_by_tag(reading.tag)
     if not candidates:

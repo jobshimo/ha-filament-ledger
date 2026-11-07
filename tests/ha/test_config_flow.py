@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import pytest
 import voluptuous as vol
+import voluptuous_serialize
 from homeassistant.config_entries import SOURCE_USER, ConfigFlowContext
 from homeassistant.data_entry_flow import AbortFlow, FlowResultType
+from homeassistant.helpers import config_validation as cv
 
 from custom_components.filament_ledger.config_flow import (
     FilamentLedgerConfigFlow,
@@ -22,6 +24,7 @@ from custom_components.filament_ledger.const import (
     CONF_AUTO_REGISTER_ON_DETECT,
     CONF_DEFAULT_CORE_WEIGHT,
     CONF_DEFAULT_OPENING_WEIGHT,
+    CONF_LOW_STOCK_THRESHOLD,
     DOMAIN,
 )
 
@@ -55,6 +58,7 @@ class TestUserStep:
         schema = result["data_schema"]
         assert schema is not None
         assert schema({}) == {
+            "low_stock_threshold_g": 100.0,
             CONF_DEFAULT_OPENING_WEIGHT: 1000,
             CONF_DEFAULT_CORE_WEIGHT: 250,
             CONF_ANOMALY_THRESHOLD: 15,
@@ -103,6 +107,20 @@ class TestUserStep:
 
         assert refusal.value.reason == "already_configured"
 
+    @pytest.mark.parametrize("value", [0, -1, 10001, True, "nan", "inf", "invalid"])
+    async def test_low_stock_threshold_rejects_invalid_values(self, value: object) -> None:
+        result = await user_flow(FakeHass()).async_step_user(None)
+        schema = result["data_schema"]
+        assert schema is not None
+        with pytest.raises(vol.Invalid):
+            schema({CONF_LOW_STOCK_THRESHOLD: value})
+
+    async def test_low_stock_threshold_retains_milligram_validation(self) -> None:
+        result = await user_flow(FakeHass()).async_step_user(None)
+        schema = result["data_schema"]
+        assert schema is not None
+        assert schema({CONF_LOW_STOCK_THRESHOLD: "12.3456"})[CONF_LOW_STOCK_THRESHOLD] == 12.346
+
 
 class TestOptionsFlow:
     def options_flow(self, hass: FakeHass, entry: FakeConfigEntry) -> FilamentLedgerOptionsFlow:
@@ -130,6 +148,7 @@ class TestOptionsFlow:
         schema = result["data_schema"]
         assert schema is not None
         assert schema({}) == {
+            "low_stock_threshold_g": 100.0,
             CONF_DEFAULT_OPENING_WEIGHT: 800,
             CONF_DEFAULT_CORE_WEIGHT: 180,
             CONF_ANOMALY_THRESHOLD: 33,
@@ -145,3 +164,26 @@ class TestOptionsFlow:
 
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["data"] == revised
+
+
+@pytest.mark.parametrize("options", [False, True], ids=["installation", "options"])
+async def test_form_schema_can_be_serialized_for_the_frontend(options: bool) -> None:
+    hass = FakeHass()
+    if options:
+        flow = TestOptionsFlow().options_flow(hass, FakeConfigEntry())
+        result = await flow.async_step_init(None)
+    else:
+        result = await user_flow(hass).async_step_user(None)
+
+    fields = voluptuous_serialize.convert(
+        result["data_schema"], custom_serializer=cv.custom_serializer
+    )
+    assert isinstance(fields, list)
+    threshold = next(field for field in fields if field["name"] == CONF_LOW_STOCK_THRESHOLD)
+    assert threshold["selector"]["number"] == {
+        "min": 0.001,
+        "max": 10000,
+        "step": 0.001,
+        "mode": "box",
+        "unit_of_measurement": "g",
+    }

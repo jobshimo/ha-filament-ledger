@@ -27,6 +27,14 @@ MAX_AMS_SLOT = 4
 # ceiling invented here would refuse a real tray on a machine nobody has tested yet.
 MIN_AMS_INDEX = 1
 
+# A direct feed is numbered from one, and a printer has at most two. **The ceiling is stated
+# here where the AMS's is not, because upstream states it too**: `ha-bambulab` models exactly
+# two holders per machine — `external_spool[0]` and `external_spool[1]`, reported under the
+# active-tray indexes 255 and 254 — and a dual-nozzle printer (X2D/H2D/H2C) has both of them
+# physically bolted on. Three would name a position no machine in the range has.
+MIN_EXTERNAL_HOLDER = 1
+MAX_EXTERNAL_HOLDER = 2
+
 
 def new_spool_id() -> SpoolId:
     return SpoolId(str(uuid.uuid4()))
@@ -132,6 +140,46 @@ class AmsIndex:
 
 
 @dataclass(frozen=True, order=True, slots=True)
+class HolderIndex:
+    """Which of a printer's direct feeds — the spool holder beside the AMS — numbered 1..2.
+
+    A value object rather than a bare `int` for `SlotIndex`'s reason: it is a component of
+    `ExternalFeed` and `ExternalSpool`, it is part of a dictionary key, and holder 0 and
+    holder 5 are not things that exist. Bounded where `AmsIndex` is not, because the bound
+    is the machine's rather than this ledger's — see `MAX_EXTERNAL_HOLDER`.
+
+    Ordered, so that a printer's two holders sort in the order a reader points at them, and
+    so `ExternalFeed` can order itself out of its parts.
+
+    **One-based, unlike the index upstream reports it under.** `ha-bambulab` answers
+    `ams_index = 255` for the first holder and `254` for the second, off a zero-based
+    `external_spool` list; the ledger numbers what a user can count on the machine, the way
+    `AmsIndex` numbers what the printer prints on its own labels.
+    """
+
+    value: int
+
+    def __post_init__(self) -> None:
+        if not MIN_EXTERNAL_HOLDER <= self.value <= MAX_EXTERNAL_HOLDER:
+            msg = (
+                f"external holder must be {MIN_EXTERNAL_HOLDER}..{MAX_EXTERNAL_HOLDER}, "
+                f"got {self.value}"
+            )
+            raise InvalidValueError(msg)
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+# The holder a caller that names none means. **The default is the same statement migration
+# 0010 makes**: every external row that existed before the second holder was representable
+# belongs to its machine's first one, because the index it lived under allowed no second.
+# Only the storage boundary and the call sites that predate two holders lean on it; the
+# gateway, the wire and the repository always state the holder out loud.
+FIRST_HOLDER = HolderIndex(MIN_EXTERNAL_HOLDER)
+
+
+@dataclass(frozen=True, order=True, slots=True)
 class TrayRef:
     """Which tray, on which AMS, on which printer — what physically identifies a tray.
 
@@ -170,23 +218,38 @@ class ExternalFeed:
     from the holder then ended with no figure at all and opened a review asking the user
     what the machine had already said (docs/12-field-notes.md, 2026-09-06).
 
-    Named after its machine for the reason `ExternalSpool` is: each printer has exactly
-    one direct feed, and two machines make *the external spool* two positions.
+    Named after its machine for the reason `ExternalSpool` is: two machines make *the
+    external spool* two positions.
 
-    **Sorts after every tray of its own printer.** `TrayRef` orders itself and refuses a
-    stranger; this class answers the reflected comparison instead, so one `sorted()` over
-    a mixed mapping — the deduction loop, the review card, the persisted JSON — still sees
-    one canonical order: a printer's trays by AMS and slot, then its direct feed, then the
-    next printer.
+    **And named after its holder since v2.9, because one machine can make it two as well.**
+    A dual-nozzle printer carries two holders, upstream models exactly two
+    (`MAX_EXTERNAL_HOLDER`), and the second one reports its consumption under its own key —
+    `External Spool 2`, read verbatim off the live X2D's weight sensor on 2026-09-23. A feed
+    keyed by the machine alone would land that figure on the first holder's spool.
+
+    **Sorts after every tray of its own printer, first holder before second.** `TrayRef`
+    orders itself and refuses a stranger; this class answers the reflected comparison
+    instead, so one `sorted()` over a mixed mapping — the deduction loop, the review card,
+    the persisted JSON — still sees one canonical order: a printer's trays by AMS and slot,
+    then its holders in the order they are numbered, then the next printer.
     """
 
     printer: PrinterSerial
+    holder: HolderIndex = FIRST_HOLDER
 
     def __str__(self) -> str:
-        return f"external spool on printer {self.printer}"
+        """The single-holder sentence stays verbatim for holder 1.
+
+        Every log line, error message and test that predates the second holder reads
+        *external spool on printer X*, and a machine with one holder has no second position
+        to be told apart from — so only holder 2 earns a numeral.
+        """
+        if self.holder == FIRST_HOLDER:
+            return f"external spool on printer {self.printer}"
+        return f"external spool {self.holder} on printer {self.printer}"
 
     def _key(self) -> tuple[str, int, int, int]:
-        return (self.printer.value, 1, 0, 0)
+        return (self.printer.value, 1, self.holder.value, 0)
 
     @staticmethod
     def _key_of(other: object) -> tuple[str, int, int, int] | None:
@@ -221,13 +284,18 @@ Feed = TrayRef | ExternalFeed
 
 
 def position_note(feed: Feed) -> str:
-    """How a movement note names the position a print drew from: *Slot 3*, or *External
-    spool*. The single-machine sentence — no serial — for the reason UC-04 gives: the note
-    is what a user reads in the history, and a serial they never had to think about would
-    be noise rather than precision."""
+    """How a movement note names the position a print drew from: *Slot 3*, *External spool*,
+    or *External spool 2*. The single-machine sentence — no serial — for the reason UC-04
+    gives: the note is what a user reads in the history, and a serial they never had to
+    think about would be noise rather than precision.
+
+    The holder's numeral follows the same rule one level down: a machine with one holder has
+    nothing to distinguish, so only the second one is numbered."""
     if isinstance(feed, TrayRef):
         return f"Slot {feed.slot}"
-    return "External spool"
+    if feed.holder == FIRST_HOLDER:
+        return "External spool"
+    return f"External spool {feed.holder}"
 
 
 # What the printer reports for a tray holding a spool with no readable tag. Sixteen zeros

@@ -1,0 +1,241 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Filament Ledger",
+        "description": "Tahmin yerine çift taraflı kayıt tutarak elinizde gerçekten ne kadar filament kaldığını takip edin. Buradaki tüm ayarlar daha sonra değiştirilebilir.",
+        "data": {
+          "default_opening_weight": "Varsayılan başlangıç ağırlığı (g)",
+          "default_core_weight": "Varsayılan boş makara ağırlığı (g)",
+          "anomaly_threshold": "Bu orandan fazla tartım sapmasını işaretle (%)",
+          "auto_mount_on_rfid": "Algılanan filamentleri otomatik ata",
+          "auto_register_on_detect": "Bilinmeyen filamentleri otomatik kaydet (tüm markalar)",
+          "low_stock_threshold_g": "Azalan stok eşiği (g)"
+        },
+        "data_description": {
+          "default_opening_weight": "Yeni makaradaki filament miktarı. Bambu makaralar 1000 g'dır.",
+          "default_core_weight": "Filamentsiz makaranın ağırlığı. Mutfak terazisi tüm makarayı tarttığı için sistem bu değeri çıkarır. Bambu makaralar yaklaşık 250 g'dır.",
+          "anomaly_threshold": "Teraziyle kayıt arasındaki fark bu oranı aşarsa önceki işlemlerde sistematik bir sorun olabilir; kontrol etmek gerekir.",
+          "auto_mount_on_rfid": "Yazıcı bilinen bir etiketi okuduğunda makarayı o yuvada takılı olarak kaydet. Kayıtlı makaraları kısa süreli takıyor ve kayıtlı konumlarının korunmasını istiyorsanız kapatın.",
+          "auto_register_on_detect": "Malzeme ve rengi bildirilen filamentleri RFID olsun veya olmasın otomatik kaydet. Başlangıç miktarı nominal veya varsayılan ağırlıktır; ölçülen kalan miktar değildir. RFID’siz kayıt için otomatik atama da açık olmalıdır.",
+          "low_stock_threshold_g": "Azalan stok eşiği (g)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Filament Ledger zaten kurulu. Tek bir ortak envanter kullanılır."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Filament Ledger",
+        "data": {
+          "default_opening_weight": "Varsayılan başlangıç ağırlığı (g)",
+          "default_core_weight": "Varsayılan boş makara ağırlığı (g)",
+          "anomaly_threshold": "Bu orandan fazla tartım sapmasını işaretle (%)",
+          "auto_mount_on_rfid": "Algılanan filamentleri otomatik ata",
+          "auto_register_on_detect": "Bilinmeyen filamentleri otomatik kaydet (tüm markalar)",
+          "low_stock_threshold_g": "Azalan stok eşiği (g)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "low_stock": {
+        "name": "Stok az"
+      }
+    }
+  },
+  "services": {
+    "register_spool": {
+      "name": "Makara kaydet",
+      "description": "Envantere makara ekle. Başlangıç bakiyesi hareketi oluşturulur; her bakiyenin onu açıklayan bir kaydı vardır.",
+      "fields": {
+        "material": {
+          "name": "Malzeme",
+          "description": "Filament türü."
+        },
+        "material_other": {
+          "name": "Malzeme adı",
+          "description": "Yalnızca malzeme OTHER olduğunda."
+        },
+        "colour": {
+          "name": "Renk",
+          "description": "Başında # olsun veya olmasın, RRGGBB veya RRGGBBAA."
+        },
+        "opening_weight": {
+          "name": "Başlangıç ağırlığı",
+          "description": "Makara hariç net filament."
+        },
+        "core_weight": {
+          "name": "Boş makara ağırlığı",
+          "description": "Filamentsiz makara. Tartı sonucundan filament miktarını hesaplamak için kullanılır."
+        },
+        "vendor": {
+          "name": "Marka",
+          "description": "Üretici."
+        },
+        "label": {
+          "name": "Ad",
+          "description": "Bu makaraya verdiğiniz ad."
+        },
+        "tag_uid": {
+          "name": "RFID etiketi",
+          "description": "İsteğe bağlı. Bambu etiketi makarayı değil üretim partisini tanımlar."
+        },
+        "confirm_duplicate_tag": {
+          "name": "Ortak etikete izin ver",
+          "description": "Aynı partideki iki makara bir etiketi paylaşabilir. Buna açıkça onay verilmelidir."
+        }
+      }
+    },
+    "reconcile_spool": {
+      "name": "Makarayı tart",
+      "description": "Bakiyeyi fiziksel ölçüme göre düzelt. Fark hareket olarak kaydedilir; böylece sapma gizlenmez.",
+      "fields": {
+        "spool_id": {
+          "name": "Makara",
+          "description": "İşlem yapılacak makara."
+        },
+        "measured_g": {
+          "name": "Tartılan ağırlık",
+          "description": "Terazide görülen değer."
+        },
+        "includes_core": {
+          "name": "Makara ağırlığı dahil",
+          "description": "Filament dahil tüm makarayı tarttıysanız açın."
+        },
+        "note": {
+          "name": "Not",
+          "description": "Hatırlamak istediğiniz bilgiler."
+        }
+      }
+    },
+    "discard_filament": {
+      "name": "Filament atığı kaydet",
+      "description": "Atılan filamenti kaydet; makaranın tamamı veya bir kısmı olabilir.",
+      "fields": {
+        "spool_id": {
+          "name": "Makara",
+          "description": "İşlem yapılacak makara."
+        },
+        "mode": {
+          "name": "Mod",
+          "description": "Makaranın tamamı veya kısmi miktar."
+        },
+        "amount_g": {
+          "name": "Miktar",
+          "description": "Kısmi atık için zorunlu."
+        },
+        "reason": {
+          "name": "Gerekçe",
+          "description": "Zorunlu. İşlemin nedenini daha sonra hatırlayabilmek için yazın."
+        }
+      }
+    },
+    "adjust_spool": {
+      "name": "Makarayı düzelt",
+      "description": "Belirli işlemlerin kapsamadığı durumlar için serbest miktar düzeltmesi.",
+      "fields": {
+        "spool_id": {
+          "name": "Makara",
+          "description": "İşlem yapılacak makara."
+        },
+        "amount_g": {
+          "name": "Miktar",
+          "description": "Negatif değer çıkarır, pozitif değer ekler."
+        },
+        "reason": {
+          "name": "Gerekçe",
+          "description": "Zorunlu. Açıklamasız bir düzeltmeyi hatadan ayırt etmek mümkün değildir."
+        }
+      }
+    },
+    "mount_spool": {
+      "name": "Makarayı tak",
+      "description": "Makarayı AMS yuvasına veya yazıcının kendi tutucusuna tak. Makarayı taşımak filament tüketmediği için miktar hareketi oluşturmaz.",
+      "fields": {
+        "spool_id": {
+          "name": "Makara",
+          "description": "İşlem yapılacak makara."
+        },
+        "printer": {
+          "name": "Yazıcı",
+          "description": "Yazıcının seri numarası. Tek yazıcı takip ediliyorsa boş bırakın. Birden fazla yazıcı için belirtin; yuva numarası tek başına yazıcıyı tanımlamaz."
+        },
+        "ams": {
+          "name": "AMS birimi",
+          "description": "Yazıcının numaralandırmasına göre AMS birimi. İlk birim için boş bırakın."
+        },
+        "external": {
+          "name": "Harici besleme",
+          "description": "AMS yuvası yerine yazıcının kendi makara tutucusunu kullanmak için açın. Bu durumda yuva alanını boş bırakın."
+        },
+        "holder": {
+          "name": "Tutucu",
+          "description": "Makara tutucusu: 1 veya 2. Çift nozullu yazıcılarda iki tutucu vardır. Diğer yazıcılarda kullanılan ilk tutucu için boş bırakın."
+        },
+        "slot": {
+          "name": "Yuva",
+          "description": "AMS yuvası: 1–4. Yuva belirtin veya harici beslemeyi açın; ikisini de boş bırakmayın."
+        }
+      }
+    },
+    "unmount_spool": {
+      "name": "Makarayı çıkar",
+      "description": "Makarayı depoya geri al. Miktar hareketi oluşturmaz.",
+      "fields": {
+        "spool_id": {
+          "name": "Makara",
+          "description": "İşlem yapılacak makara."
+        }
+      }
+    },
+    "approve_review": {
+      "name": "İncelemeyi onayla",
+      "description": "Yarıda kalan baskının tüketimini onayla. Yalnızca onaydan sonra kaydedilir; girdiğiniz miktarlar tahminden önceliklidir.",
+      "fields": {
+        "review_id": {
+          "name": "İnceleme",
+          "description": "İşlem yapılacak bekleyen inceleme."
+        },
+        "amounts": {
+          "name": "Düzeltilen miktarlar",
+          "description": "Yuva numarasına göre gram miktarları; örneğin 1. yuva için 28,4 g. Belirttiğiniz yuvalarda tahminin yerine kullanılır."
+        },
+        "assign": {
+          "name": "Makara atamaları",
+          "description": "Yuva numarasına göre makara kimliği; örneğin 3. yuva için bir makara kimliği. Yuvadaki tüketimin tamamını tek makaraya atar ve makarasız kaydedilen yuvayı tamamlar."
+        },
+        "charges": {
+          "name": "Makaralara böl",
+          "description": "Birden fazla makaranın kullanıldığı yuva için, yuva numarasına göre makara kimliği ve gram listesi. Her yuvadaki miktarların toplamı o yuva için onaylanan miktara eşit olmalı. Aynı yuvada bunu veya tek makara atamasını kullanın; ikisini birlikte kullanmayın."
+        },
+        "note": {
+          "name": "Not",
+          "description": "Kararla ilgili hatırlamak istediğiniz bilgiler."
+        }
+      }
+    },
+    "dismiss_review": {
+      "name": "Tüketim kaydetmeden sonuçlandır",
+      "description": "İncelemeyi tüketim kaydetmeden sonuçlandır. Karar kaydedilir; silme işlemi değildir.",
+      "fields": {
+        "review_id": {
+          "name": "İnceleme",
+          "description": "İşlem yapılacak bekleyen inceleme."
+        },
+        "note": {
+          "name": "Not",
+          "description": "Neden tüketim kaydedilmediği; örneğin ilk katman hatası veya yanlış algılama."
+        }
+      }
+    },
+    "sync_trays": {
+      "name": "Yazıcıyla eşitle",
+      "description": "Tüm AMS yuvalarını yeniden oku ve kayıtları yazıcının güncel bilgileriyle eşitle. Bilinen etiketlerin makaraları takılır, bilinmeyen etiketler bildirilir; veri uydurulmaz. Aynı işlem başlangıçta otomatik çalışır."
+    }
+  }
+}

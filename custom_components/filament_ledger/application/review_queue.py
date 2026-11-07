@@ -47,6 +47,7 @@ from ..domain.value.location import location_of
 from ..domain.value.movement_type import MovementSource, MovementType
 from ..domain.value.review import EstimatorKind, ReviewReason, ReviewState
 from .errors import ReviewNotFoundError, SpoolNotFoundError
+from .low_stock import LowStock
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +236,7 @@ class ApproveReview:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, command: ApproveReviewCommand) -> None:
         to_publish: list[DomainEvent] = []
@@ -242,7 +244,7 @@ class ApproveReview:
         # the review turns terminal, or none of it does. A crash between the two would
         # leave deductions with no decision to explain them — or a decision that deducts
         # again on retry.
-        async with self.uow:
+        async with self.low_stock.transaction(self.uow) if self.low_stock else self.uow:
             review = await self.reviews.get(command.review_id)
             if review is None:
                 raise ReviewNotFoundError(command.review_id)

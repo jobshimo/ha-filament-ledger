@@ -10,6 +10,8 @@ from typing import Final
 DOMAIN: Final = "filament_ledger"
 
 # Configuration
+CONF_LOW_STOCK_THRESHOLD: Final = "low_stock_threshold_g"
+DEFAULT_LOW_STOCK_THRESHOLD_G: Final = 100
 CONF_DEFAULT_OPENING_WEIGHT: Final = "default_opening_weight"
 CONF_DEFAULT_CORE_WEIGHT: Final = "default_core_weight"
 CONF_ANOMALY_THRESHOLD: Final = "anomaly_threshold"
@@ -34,6 +36,12 @@ DEFAULT_AUTO_MOUNT_ON_RFID: Final = True
 DEFAULT_AUTO_REGISTER_ON_DETECT: Final = True
 
 DATABASE_FILENAME: Final = "filament_ledger.db"
+
+# Free text arriving from outside — the panel's websocket and the services — is bounded at
+# the schema. Not a business rule: a spool name has no meaningful maximum. It keeps any
+# authenticated caller from writing megabytes into rows every snapshot then serialises.
+MAX_NAME_LENGTH: Final = 200
+MAX_NOTE_LENGTH: Final = 2000
 
 # Panel
 PANEL_URL: Final = "filament-ledger"

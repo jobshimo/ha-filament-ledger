@@ -377,6 +377,7 @@ class TestTheTrashPayload:
             "spool_id": kept,
             "spool_name": "Kept",
             "spool_colour": "#000000",
+            "spool_colour_rgba": "#000000FF",
             "spool_deleted": False,
             "spool_discarded": False,
             "type": "MANUAL_ADJUSTMENT",

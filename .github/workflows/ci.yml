@@ -91,6 +91,22 @@ jobs:
       - name: Domain and architecture suites
         run: uv run pytest tests/domain tests/architecture -q
 
+  panel:
+    name: Panel tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node's own test runner and nothing else: no package.json, no install step, no
+      # dependency to pin or audit (docs/adr/0010-the-panel-has-tests.md).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Panel suites
+        run: node --test "tests/panel/**/*.test.mjs"
+
   guard-main-source:
     name: Main accepts staging only
     # The branch model is develop -> staging -> main. A ruleset makes this job a required

@@ -39,3 +39,9 @@ Thumbs.db
 
 # Agent worktrees and session state — never version-controlled.
 .claude/
+
+# Local secrets and transient output
+.env*
+*.log
+*.tmp
+*.swp

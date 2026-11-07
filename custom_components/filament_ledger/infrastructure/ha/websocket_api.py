@@ -9,6 +9,8 @@ that is the whole design — an API that could set one would make the ledger dec
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable
 from datetime import datetime
@@ -17,7 +19,7 @@ from typing import Any, Final
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.event import async_track_state_change_event
@@ -27,9 +29,13 @@ from ...application.adjust_spool import (
     DiscardFilamentCommand,
     DiscardMode,
 )
-from ...application.errors import ApplicationError
+from ...application.errors import (
+    ApplicationError,
+    AssignmentConflictError,
+    IdempotencyConflictError,
+)
 from ...application.move_spool import UNSET, TagEdit
-from ...application.query import StatisticsPeriod
+from ...application.query import StatisticsPeriod, describe_location
 from ...application.reassign_movement import ReassignMovementCommand
 from ...application.reconcile_spool import ReconcileSpoolCommand
 from ...application.register_spool import RegisterSpoolCommand
@@ -40,24 +46,32 @@ from ...const import (
     CONF_AUTO_MOUNT_ON_RFID,
     CONF_DEFAULT_CORE_WEIGHT,
     CONF_DEFAULT_OPENING_WEIGHT,
+    CONF_LOW_STOCK_THRESHOLD,
     DEFAULT_ANOMALY_THRESHOLD_PCT,
     DEFAULT_AUTO_MOUNT_ON_RFID,
     DEFAULT_CORE_WEIGHT_G,
+    DEFAULT_LOW_STOCK_THRESHOLD_G,
     DEFAULT_OPENING_WEIGHT_G,
     DOMAIN,
+    MAX_NAME_LENGTH,
+    MAX_NOTE_LENGTH,
 )
-from ...domain.error import DomainError, InvalidValueError
+from ...domain.error import DomainError, InvalidValueError, QuantityInputError
 from ...domain.model.pending_review import ReviewCharge
 from ...domain.port.repositories import MovementFilter
 from ...domain.value.colour import Colour
 from ...domain.value.grams import Grams
 from ...domain.value.identifiers import (
+    FIRST_HOLDER,
     MAX_AMS_SLOT,
+    MAX_EXTERNAL_HOLDER,
     MIN_AMS_INDEX,
     MIN_AMS_SLOT,
+    MIN_EXTERNAL_HOLDER,
     AmsIndex,
     ExternalFeed,
     Feed,
+    HolderIndex,
     MovementId,
     PrinterSerial,
     ReviewId,
@@ -67,8 +81,10 @@ from ...domain.value.identifiers import (
     TagUid,
     TrayRef,
 )
+from ...domain.value.location import AmsSlot, ExternalSpool, Location, Storage
 from ...domain.value.material import Material, MaterialKind
-from .bambu_gateway import TRACKED_AMS
+from .bambu_discovery import FIRST_AMS
+from .bambu_gateway import BambuLabGateway
 from .event_bridge import LEDGER_EVENTS
 from .printer_state import PrinterSnapshot
 from .runtime import LedgerConfigEntry, LedgerRuntime, loaded_entries, runtimes
@@ -84,6 +100,11 @@ from .serialisers import (
     whole_grams,
 )
 from .tray_sync import TraySyncResult
+from .validators import low_stock_threshold
+
+#: Free text is bounded at the schema (see `MAX_NAME_LENGTH`): a name, and a note or reason.
+_NAME = vol.All(str, vol.Length(max=MAX_NAME_LENGTH))
+_NOTE = vol.All(str, vol.Length(max=MAX_NOTE_LENGTH))
 
 #: A tray as it crosses the wire — the three parts of `TrayRef`, bounded here as well as
 #: in the domain for the reason every adapter input is: the value objects raise on garbage,
@@ -99,9 +120,13 @@ from .tray_sync import TraySyncResult
 #:
 #: **`feed` names the kind of position** (docs/05 §5.4, v2.8): `ams` — or absent, which is
 #: every payload written before the direct feed had a key — carries the tray's three parts;
-#: `external` names the printer's own spool holder and carries the machine alone, with the
-#: tray half absent or null. The panel sends nulls because it renders both kinds off one
-#: shape; `_feed` is where the two are told apart.
+#: `external` names the printer's own spool holder and carries the machine and which holder,
+#: with the tray half absent or null. The panel sends nulls because it renders both kinds off
+#: one shape; `_feed` is where the two are told apart.
+#:
+#: **`holder` is optional and absent means the first** (v2.9), on the same terms `ams` and
+#: `printer` are: every payload written before a machine could have two holders meant the
+#: one it had, and bounded here so a typo is a message rather than a stack trace.
 _TRAY = vol.Schema(
     {
         vol.Optional("printer"): vol.Any(str, None),
@@ -109,6 +134,13 @@ _TRAY = vol.Schema(
         vol.Optional("ams"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX))),
         vol.Optional("slot"): vol.Any(
             None, vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT))
+        ),
+        vol.Optional("holder"): vol.Any(
+            None,
+            vol.All(
+                vol.Coerce(int),
+                vol.Range(min=MIN_EXTERNAL_HOLDER, max=MAX_EXTERNAL_HOLDER),
+            ),
         ),
     }
 )
@@ -188,7 +220,7 @@ def _feed(runtime: LedgerRuntime, payload: dict[str, Any]) -> Feed:
     """
     printer = _printer(runtime, payload)
     if payload.get("feed") == "external":
-        return ExternalFeed(printer)
+        return ExternalFeed(printer, _holder(payload))
     slot = payload.get("slot")
     if slot is None:
         msg = "a tray needs a slot; the external spool is named by feed = external"
@@ -196,9 +228,19 @@ def _feed(runtime: LedgerRuntime, payload: dict[str, Any]) -> Feed:
     ams = payload.get("ams")
     return TrayRef(
         printer=printer,
-        ams=AmsIndex(int(ams if ams is not None else TRACKED_AMS.value)),
+        ams=AmsIndex(int(ams if ams is not None else FIRST_AMS.value)),
         slot=SlotIndex(int(slot)),
     )
+
+
+def _holder(payload: dict[str, Any]) -> HolderIndex:
+    """Which direct feed a payload names, or the first when it names none.
+
+    Absent reads as the first for the reason an absent `ams` reads as AMS 1: every caller
+    written before a machine could have two holders meant the one it had.
+    """
+    holder = payload.get("holder")
+    return HolderIndex(int(holder)) if holder is not None else FIRST_HOLDER
 
 
 def _by_tray[T](
@@ -244,6 +286,8 @@ def async_register_commands(hass: HomeAssistant) -> None:
         handle_detail,
         handle_stock,
         handle_create,
+        handle_preview_registration,
+        handle_open,
         handle_update,
         handle_reconcile,
         handle_discard,
@@ -359,6 +403,31 @@ def guarded(func: Any) -> Any:  # noqa: ANN401 — decorator over websocket hand
     ) -> None:
         try:
             await func(hass, connection, msg)
+        except QuantityInputError as error:
+            connection.send_message(
+                {
+                    "id": msg["id"],
+                    "type": "result",
+                    "success": False,
+                    "error": {"code": "invalid_input", "message": str(error), "field": error.field},
+                }
+            )
+        except IdempotencyConflictError as error:
+            connection.send_error(msg["id"], "idempotency_conflict", str(error))
+        except AssignmentConflictError as error:
+            connection.send_message(
+                {
+                    "id": msg["id"],
+                    "type": "result",
+                    "success": False,
+                    "error": {
+                        "code": "assignment_conflict",
+                        "message": str(error),
+                        "actual_source": describe_location(error.actual_source),
+                        "actual_destination_spool_id": error.actual_destination_spool_id,
+                    },
+                }
+            )
         except (DomainError, ApplicationError) as error:
             connection.send_error(msg["id"], type(error).__name__, str(error))
 
@@ -366,14 +435,33 @@ def guarded(func: Any) -> Any:  # noqa: ANN401 — decorator over websocket hand
     return wrapper
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/spools/list"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/spools/list",
+        vol.Optional("view"): vol.In(["all", "stock"]),
+        vol.Optional("search"): _NAME,
+        vol.Optional("material"): vol.In([kind.value for kind in MaterialKind]),
+        vol.Optional("location"): vol.In(["STORAGE", "AMS_SLOT", "EXTERNAL_SPOOL"]),
+        vol.Optional("low_stock_only"): bool,
+        vol.Optional("sort"): vol.In(["default", "remaining", "name"]),
+    }
+)
 @websocket_api.async_response
 @guarded
 async def handle_list(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     runtime = _runtime(hass)
-    summaries = await runtime.use_cases.queries.overview()
+    criteria = {
+        key: msg[key]
+        for key in ("search", "material", "location", "low_stock_only", "sort", "view")
+        if key in msg
+    }
+    summaries = (
+        await runtime.use_cases.queries.inventory(**criteria)
+        if criteria
+        else await runtime.use_cases.queries.overview()
+    )
     connection.send_result(msg["id"], [spool_summary(s) for s in summaries])
 
 
@@ -415,25 +503,91 @@ async def handle_stock(
     )
 
 
+def _quantity_present(msg: dict[str, Any]) -> dict[str, Any]:
+    if "opening_weight_g" not in msg and "gross_weight_g" not in msg:
+        raise vol.Invalid("Name a net or gross opening quantity")
+    return msg
+
+
+_QUANTITY_FIELDS: dict[Any, Any] = {
+    vol.Optional("opening_basis"): vol.In(["DECLARED_NET", "MEASURED_NET", "MEASURED_GROSS"]),
+    vol.Optional("opening_weight_g"): vol.Coerce(float),
+    vol.Optional("gross_weight_g"): vol.Coerce(float),
+    vol.Optional("core_weight_g"): vol.Coerce(float),
+}
+
+
+def _registration_quantity(
+    runtime: LedgerRuntime, msg: dict[str, Any]
+) -> tuple[Grams, str, Grams | None, Grams]:
+    basis = msg.get("opening_basis", "DECLARED_NET")
+
+    def read(field: str) -> Grams | None:
+        if field not in msg:
+            return None
+        try:
+            return Grams.of(msg[field])
+        except InvalidValueError as exc:
+            raise QuantityInputError(field, str(exc)) from exc
+
+    gross = read("gross_weight_g")
+    tare = read("core_weight_g")
+    net = read("opening_weight_g")
+    quantity = runtime.use_cases.preview_registration.execute(
+        basis, net, gross, tare if basis == "MEASURED_GROSS" else None
+    )
+    return (
+        quantity,
+        basis,
+        gross,
+        tare if tare is not None else Grams.of(runtime.default_core_weight_g),
+    )
+
+
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): f"{DOMAIN}/spools/create",
-        # Same reason as the slot bound below: `MaterialKind` raises a plain `ValueError`
-        # for an unknown name, so the adapter validates before the domain is reached.
-        vol.Required("material"): vol.In([kind.value for kind in MaterialKind]),
-        vol.Required("colour"): str,
-        vol.Required("opening_weight_g"): vol.Coerce(float),
-        vol.Optional("core_weight_g"): vol.Coerce(float),
-        vol.Optional("material_other"): str,
-        vol.Optional("vendor"): vol.Any(str, None),
-        vol.Optional("label"): vol.Any(str, None),
-        vol.Optional("tag_uid"): vol.Any(str, None),
-        # Who attached the tag. The register form omits it and gets MANUAL; only the
-        # register-from-sync path says DETECTED, because the serial it forwards came off
-        # the tray reading rather than off the keyboard (docs/14 §14.2).
-        vol.Optional("tag_source"): vol.In([source.value for source in TagSource]),
-        vol.Optional("confirm_duplicate_tag"): bool,
+        vol.Required("type"): f"{DOMAIN}/spools/preview_registration",
+        **_QUANTITY_FIELDS,
     }
+)
+@websocket_api.async_response
+@guarded
+async def handle_preview_registration(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    quantity, basis, gross, tare = _registration_quantity(_runtime(hass), msg)
+    connection.send_result(
+        msg["id"],
+        {
+            "opening_weight_g": float(quantity.as_decimal),
+            "opening_basis": basis,
+            "gross_weight_g": float(gross.as_decimal) if gross is not None else None,
+            "core_weight_g": float(tare.as_decimal) if basis == "MEASURED_GROSS" else None,
+        },
+    )
+
+
+@websocket_api.websocket_command(
+    vol.All(
+        vol.Schema(
+            {
+                vol.Required("type"): f"{DOMAIN}/spools/create",
+                vol.Required("material"): vol.In([kind.value for kind in MaterialKind]),
+                vol.Optional("colour"): str,
+                vol.Optional("colour_known", default=True): bool,
+                **_QUANTITY_FIELDS,
+                vol.Optional("material_other"): _NAME,
+                vol.Optional("vendor"): vol.Any(_NAME, None),
+                vol.Optional("label"): vol.Any(_NAME, None),
+                vol.Optional("tag_uid"): vol.Any(str, None),
+                vol.Optional("tag_source"): vol.In([source.value for source in TagSource]),
+                vol.Optional("confirm_duplicate_tag"): bool,
+                vol.Optional("request_id"): vol.All(str, vol.Length(min=36, max=36)),
+                vol.Optional("opening_condition"): vol.In(["new", "partly_used"]),
+            }
+        ),
+        _quantity_present,
+    )
 )
 @websocket_api.async_response
 @guarded
@@ -441,24 +595,70 @@ async def handle_create(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     runtime = _runtime(hass)
-    tag = msg.get("tag_uid")
+    if msg.get("tag_source", TagSource.MANUAL) != TagSource.MANUAL:
+        raise InvalidValueError("Only printer detection can claim detected tag provenance")
+    quantity, basis, gross, tare = _registration_quantity(runtime, msg)
+    known = msg.get("colour_known", True)
+    if known and "colour" not in msg:
+        raise InvalidValueError("Known colour requires a colour value")
+    colour = Colour.parse(msg["colour"]) if known else Colour.parse("000000")
+    tag = TagUid(msg["tag_uid"]) if msg.get("tag_uid") else None
+    # Hash validated intent before applying runtime defaults; omitted fields stay omitted.
+    intent = {key: value for key, value in msg.items() if key not in ("id", "type", "request_id")}
+    if "colour" in intent:
+        if known:
+            intent["colour"] = colour.hex8
+        else:
+            del intent["colour"]
+    if "tag_uid" in intent:
+        intent["tag_uid"] = tag.value if tag else None
+    for field in ("opening_weight_g", "gross_weight_g", "core_weight_g"):
+        if field in intent:
+            intent[field] = Grams.of(msg[field]).milligrams
+    fingerprint = hashlib.sha256(
+        json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    request_id = msg.get("request_id")
     spool_id = await runtime.use_cases.register_spool.execute(
         RegisterSpoolCommand(
             material=_material(msg),
-            colour=Colour.parse(msg["colour"]),
-            opening_weight=Grams.of(msg["opening_weight_g"]),
-            # The configured default is applied here, in one place, above the domain — which
-            # refuses to default it at all. See docs/02-domain-model.md §2.8.
-            core_weight=Grams.of(msg.get("core_weight_g", runtime.default_core_weight_g)),
+            colour=colour,
+            opening_weight=quantity,
+            core_weight=tare,
             vendor=msg.get("vendor") or None,
             label=msg.get("label") or None,
-            tag_uid=TagUid(tag) if tag else None,
-            tag_source=TagSource(msg.get("tag_source", TagSource.MANUAL)),
+            tag_uid=tag,
             confirm_duplicate_tag=bool(msg.get("confirm_duplicate_tag", False)),
+            opening_basis=basis,
+            gross_weight=gross,
+            opening_condition=msg.get("opening_condition", "new"),
+            colour_known=known,
+            request_id=request_id,
+            actor_id=connection.user.id if request_id is not None else None,
+            payload_fingerprint=fingerprint if request_id is not None else None,
         )
     )
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"spool_id": spool_id})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/spools/open",
+        vol.Required("spool_id"): str,
+    }
+)
+@websocket_api.async_response
+@guarded
+async def handle_open(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    runtime = _runtime(hass)
+    if runtime.use_cases.open_spool is None:
+        raise ApplicationError("Opening metadata is unavailable")
+    await runtime.use_cases.open_spool.execute(SpoolId(msg["spool_id"]))
+    await runtime.async_refresh()
+    connection.send_result(msg["id"], {"ok": True})
 
 
 @websocket_api.websocket_command(
@@ -468,11 +668,13 @@ async def handle_create(
         # Metadata only — **never the balance**. The schema is the surface of
         # `EditSpoolDetails`, which replaces fields and cannot clear them: absent and
         # null both mean "leave unchanged".
-        vol.Optional("label"): vol.Any(str, None),
-        vol.Optional("vendor"): vol.Any(str, None),
+        vol.Optional("low_stock_threshold_g"): vol.Any(low_stock_threshold, None),
+        vol.Optional("colour_known"): bool,
+        vol.Optional("label"): vol.Any(_NAME, None),
+        vol.Optional("vendor"): vol.Any(_NAME, None),
         vol.Optional("colour"): str,
         vol.Optional("material"): vol.In([kind.value for kind in MaterialKind]),
-        vol.Optional("material_other"): str,
+        vol.Optional("material_other"): _NAME,
         vol.Optional("core_weight_g"): vol.Coerce(float),
         # **The tag deviates from the rule above, deliberately.** Every other field here
         # reads null as "leave unchanged"; the tag is the only clearable one, so it needs
@@ -503,6 +705,14 @@ async def handle_update(
         core_weight=(
             Grams.of(msg["core_weight_g"]) if msg.get("core_weight_g") is not None else None
         ),
+        colour_known=msg.get("colour_known"),
+        low_stock_threshold=(
+            Grams.of(msg["low_stock_threshold_g"])
+            if msg["low_stock_threshold_g"] is not None
+            else None
+        )
+        if "low_stock_threshold_g" in msg
+        else UNSET,
         tag=_tag_edit(msg),
         confirm_duplicate_tag=bool(msg.get("confirm_duplicate_tag", False)),
     )
@@ -516,7 +726,7 @@ async def handle_update(
         vol.Required("spool_id"): str,
         vol.Required("measured_g"): vol.Coerce(float),
         vol.Optional("includes_core"): bool,
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -548,7 +758,7 @@ async def handle_reconcile(
         vol.Required("type"): f"{DOMAIN}/spools/discard",
         vol.Required("spool_id"): str,
         vol.Required("mode"): vol.In([m.value for m in DiscardMode]),
-        vol.Required("reason"): str,
+        vol.Required("reason"): _NOTE,
         vol.Optional("amount_g"): vol.Coerce(float),
     }
 )
@@ -576,7 +786,7 @@ async def handle_discard(
         vol.Required("type"): f"{DOMAIN}/spools/adjust",
         vol.Required("spool_id"): str,
         vol.Required("amount_g"): vol.Coerce(float),
-        vol.Required("reason"): str,
+        vol.Required("reason"): _NOTE,
     }
 )
 @websocket_api.async_response
@@ -607,11 +817,33 @@ async def handle_adjust(
                 # while there is one. `external: true` names the printer's direct feed
                 # instead of a tray, and then the slot is not sent at all: the holder
                 # beside the AMS has none. One or the other, never neither.
+                #
+                # `holder` says which direct feed on a machine that has two, and absent
+                # means the first — the same terms `ams` has had since v2.0.
                 vol.Optional("printer"): vol.Any(str, None),
+                vol.Optional("expected_source"): vol.Any(
+                    {vol.Required("kind"): "STORAGE"},
+                    {
+                        vol.Required("kind"): "AMS_SLOT",
+                        vol.Required("printer"): str,
+                        vol.Required("ams"): vol.All(int, vol.Range(min=1)),
+                        vol.Required("slot"): vol.All(int, vol.Range(min=1, max=4)),
+                    },
+                    {
+                        vol.Required("kind"): "EXTERNAL_SPOOL",
+                        vol.Required("printer"): str,
+                        vol.Required("holder"): vol.All(int, vol.Range(min=1, max=2)),
+                    },
+                ),
+                vol.Optional("expected_destination_spool_id"): vol.Any(str, None),
                 vol.Optional("external"): bool,
                 vol.Optional("ams"): vol.All(vol.Coerce(int), vol.Range(min=MIN_AMS_INDEX)),
                 vol.Optional("slot"): vol.All(
                     vol.Coerce(int), vol.Range(min=MIN_AMS_SLOT, max=MAX_AMS_SLOT)
+                ),
+                vol.Optional("holder"): vol.All(
+                    vol.Coerce(int),
+                    vol.Range(min=MIN_EXTERNAL_HOLDER, max=MAX_EXTERNAL_HOLDER),
                 ),
             }
         ),
@@ -625,14 +857,39 @@ async def handle_mount(
 ) -> None:
     runtime = _runtime(hass)
     spool_id = SpoolId(msg["spool_id"])
+    expected: dict[str, Any] = {}
+    if "expected_source" in msg:
+        source = msg["expected_source"]
+        location: Location = Storage()
+        if source["kind"] == "AMS_SLOT":
+            location = AmsSlot(
+                TrayRef(
+                    PrinterSerial(source["printer"]),
+                    AmsIndex(source["ams"]),
+                    SlotIndex(source["slot"]),
+                )
+            )
+        elif source["kind"] == "EXTERNAL_SPOOL":
+            location = ExternalSpool(
+                PrinterSerial(source["printer"]), HolderIndex(source["holder"])
+            )
+        expected["expected_source"] = location
+    if "expected_destination_spool_id" in msg:
+        expected["expected_destination_spool_id"] = (
+            SpoolId(msg["expected_destination_spool_id"])
+            if msg["expected_destination_spool_id"] is not None
+            else None
+        )
     if msg.get("external"):
-        await runtime.use_cases.mount_spool_externally.execute(spool_id, _printer(runtime, msg))
+        await runtime.use_cases.mount_spool_externally.execute(
+            spool_id, _printer(runtime, msg), _holder(msg), **expected
+        )
     else:
         feed = _feed(runtime, msg)
         if not isinstance(feed, TrayRef):  # pragma: no cover - the schema has no feed key here
             msg_text = "a tray mount names a slot"
             raise InvalidValueError(msg_text)
-        await runtime.use_cases.mount_spool.execute(spool_id, feed)
+        await runtime.use_cases.mount_spool.execute(spool_id, feed, **expected)
     await runtime.async_refresh()
     connection.send_result(msg["id"], {"ok": True})
 
@@ -678,7 +935,7 @@ async def handle_reviews_list(
         ],
         vol.Optional("assign"): [_position({vol.Required("spool_id"): str})],
         vol.Optional("charges"): [_position({vol.Required("charges"): [_CHARGE]})],
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -719,7 +976,7 @@ async def handle_reviews_approve(
     {
         vol.Required("type"): f"{DOMAIN}/reviews/dismiss",
         vol.Required("review_id"): str,
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -812,7 +1069,7 @@ async def handle_movements(
         # Optional, unlike UC-10's mandatory reason, and the difference is principled: a
         # reassignment explains itself structurally — the link names the entry it corrects
         # and the pair names both spools (docs/14 §14.3).
-        vol.Optional("note"): vol.Any(str, None),
+        vol.Optional("note"): vol.Any(_NOTE, None),
     }
 )
 @websocket_api.async_response
@@ -844,7 +1101,7 @@ async def handle_movements_reassign(
     {
         vol.Required("type"): f"{DOMAIN}/movements/void",
         vol.Required("movement_id"): str,
-        vol.Optional("reason"): vol.Any(str, None),
+        vol.Optional("reason"): vol.Any(_NOTE, None),
         # **Must be explicitly true** for the no-return branch. The server refuses a
         # restitution void on a retired spool rather than silently downgrading it: a
         # silent downgrade is a gram count that changed meaning without the user
@@ -1029,6 +1286,9 @@ async def handle_settings_get(
     connection.send_result(
         msg["id"],
         {
+            CONF_LOW_STOCK_THRESHOLD: low_stock_threshold(
+                settings.get(CONF_LOW_STOCK_THRESHOLD, DEFAULT_LOW_STOCK_THRESHOLD_G)
+            ),
             CONF_DEFAULT_OPENING_WEIGHT: int(
                 settings.get(CONF_DEFAULT_OPENING_WEIGHT, DEFAULT_OPENING_WEIGHT_G)
             ),
@@ -1058,6 +1318,7 @@ async def handle_settings_get(
         # validates: a typo must be a message, not a stack trace. Every field is optional
         # because the tab may send any subset; the merge below is what keeps the ones it
         # did not send.
+        vol.Optional(CONF_LOW_STOCK_THRESHOLD): low_stock_threshold,
         vol.Optional(CONF_DEFAULT_OPENING_WEIGHT): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=10000)
         ),
@@ -1190,11 +1451,39 @@ async def handle_subscribe(
         hass.async_create_task(printer.async_call())
 
     unsubscribes = [hass.bus.async_listen(name, _ledger_changed) for name in sorted(LEDGER_EVENTS)]
-    if entity_ids:
-        unsubscribes.append(async_track_state_change_event(hass, entity_ids, _printer_changed))
+    watching: CALLBACK_TYPE | None = (
+        async_track_state_change_event(hass, entity_ids, _printer_changed) if entity_ids else None
+    )
+
+    @callback
+    def _discovery_changed() -> None:
+        """A machine appeared or went away, so watch the entities that exist now.
+
+        **The tracker takes its entity list at registration**, so a subscription opened
+        while the gateway was dormant would go on watching nothing for as long as the panel
+        stayed open — which is exactly the window late binding exists to close. Re-arming
+        here and pushing once is what makes a printer that finishes setting up after the
+        panel was opened appear in it without a reload.
+        """
+        nonlocal watching
+        if watching is not None:
+            watching()
+            watching = None
+        current = sorted(_printer_entity_ids(hass))
+        if current:
+            watching = async_track_state_change_event(hass, current, _printer_changed)
+        hass.async_create_task(printer.async_call())
+
+    gateway = _printer_gateway(hass)
+    if gateway is not None:
+        unsubscribes.append(gateway.subscribe_discovery(_discovery_changed))
 
     @callback
     def _unsubscribe() -> None:
+        nonlocal watching
+        if watching is not None:
+            watching()
+            watching = None
         for unsubscribe in unsubscribes:
             unsubscribe()
 
@@ -1210,7 +1499,14 @@ def _printer_entity_ids(hass: HomeAssistant) -> frozenset[str]:
 
     Empty when no printer was discovered, which makes the subscription correctly silent
     rather than absent: the panel still receives ledger pushes, and the Printer tab still
-    renders its honest dormant state.
+    renders its honest dormant state — until discovery says otherwise, which is what
+    `subscribe_discovery` is for.
     """
+    gateway = _printer_gateway(hass)
+    return gateway.watched_entity_ids if gateway is not None else frozenset()
+
+
+def _printer_gateway(hass: HomeAssistant) -> BambuLabGateway | None:
+    """The one gateway startup wired, or `None` on a runtime with no printer at all."""
     printer = _runtime(hass).printer
-    return printer.gateway.watched_entity_ids if printer is not None else frozenset()
+    return printer.gateway if printer is not None else None

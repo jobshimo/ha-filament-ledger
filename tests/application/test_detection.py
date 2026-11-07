@@ -8,6 +8,7 @@ runs on.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import cast
 
@@ -372,6 +373,98 @@ class TestAutoRegister:
         [mounted] = ledger.events.of(SpoolMounted)
         assert mounted == SpoolMounted(spool_id=spool.id, tray=a_tray(2))
         assert ledger.events.of(UnknownSpoolDetected) == []
+
+    async def test_chipless_spools_register_once_per_occupied_slot(self, ledger: Ledger) -> None:
+        detector = self.detection(ledger)
+        readings = [
+            TrayReading(
+                tray=a_tray(slot),
+                tag=None,
+                empty=False,
+                name="ELAS PLA PRO",
+                material="PLA",
+                colour=Colour.parse("FF0000"),
+            )
+            for slot in (1, 2, 3, 4)
+        ]
+        await asyncio.gather(*(detector.execute(reading) for reading in readings * 3))
+        overview = await ledger.use_cases.queries.overview()
+        assert len(overview) == 4
+        assert {s.spool.location for s in overview} == {AmsSlot(r.tray) for r in readings}
+        assert len(ledger.events.of(SpoolRegistered)) == 4
+        assert len(ledger.events.of(SpoolMounted)) == 4
+        for summary in overview:
+            assert summary.spool.vendor is None
+            assert summary.spool.tag_uid is None
+            assert summary.balance == Grams.of(800)
+            assert summary.confidence.needs_weighing
+            [line] = (await ledger.use_cases.queries.detail(summary.spool.id)).lines
+            assert line.movement.source is MovementSource.AUTOMATIC
+            assert line.movement.opening_basis == "CONFIGURED_DEFAULT"
+
+    @pytest.mark.parametrize("option", ["auto_register", "auto_mount"])
+    async def test_chipless_auto_registration_respects_disabled_options(
+        self, ledger: Ledger, option: str
+    ) -> None:
+        detector = self.detection(
+            ledger, auto_register=option != "auto_register", auto_mount=option != "auto_mount"
+        )
+        await detector.execute(
+            TrayReading(
+                tray=a_tray(1), tag=None, empty=False, material="PLA", colour=Colour.parse("FF0000")
+            )
+        )
+        assert await ledger.use_cases.queries.overview() == []
+
+    async def test_chipless_reading_preserves_a_manual_assignment(self, ledger: Ledger) -> None:
+        spool_id = await a_spool(ledger)
+        await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+        await self.detection(ledger).execute(
+            TrayReading(
+                tray=a_tray(1),
+                tag=None,
+                empty=False,
+                name="ELAS PLA PRO",
+                material="PLA",
+                colour=Colour.parse("FF0000"),
+            )
+        )
+        [summary] = await ledger.use_cases.queries.overview()
+        assert summary.spool.id == spool_id
+
+    async def test_repeated_automatic_registration_guards_the_slot_inside_the_transaction(
+        self, ledger: Ledger
+    ) -> None:
+        command = RegisterSpoolCommand(
+            material=Material.of(MaterialKind.PLA),
+            colour=Colour.parse("FF0000"),
+            opening_weight=Grams.of(800),
+            core_weight=Grams.of(200),
+            location=AmsSlot(a_tray(1)),
+            movement_source=MovementSource.AUTOMATIC,
+            opening_basis="CONFIGURED_DEFAULT",
+        )
+        ids = await asyncio.gather(
+            *(ledger.use_cases.register_spool.execute(command) for _ in range(4))
+        )
+        assert len(set(ids)) == 1
+        [summary] = await ledger.use_cases.queries.overview()
+        assert len((await ledger.use_cases.queries.detail(summary.spool.id)).lines) == 1
+        assert len(ledger.events.of(SpoolRegistered)) == 1
+
+    async def test_empty_then_another_chipless_spool_creates_a_new_physical_reel(
+        self, ledger: Ledger
+    ) -> None:
+        detector = self.detection(ledger)
+        reading = TrayReading(
+            tray=a_tray(1), tag=None, empty=False, material="PLA", colour=Colour.parse("FF0000")
+        )
+        await detector.execute(reading)
+        await detector.execute(an_empty_tray(1))
+        await detector.execute(reading)
+        overview = await ledger.use_cases.queries.overview()
+        assert len(overview) == 2
+        assert sum(s.spool.location == AmsSlot(a_tray(1)) for s in overview) == 1
 
     async def test_the_reels_own_weight_opens_the_balance(self, ledger: Ledger) -> None:
         """A 250 g reel is born at 250 g: the tag carried the figure, so the configured
@@ -989,3 +1082,16 @@ class TestTheOldestRowSurvivesWhicheverSideWasReadFirst:
         survivors = [s.spool.id for s in await ledger.use_cases.queries.overview()]
         assert survivors == [older]
         assert (await ledger.use_cases.queries.detail(newer)).summary.spool.is_deleted
+
+
+async def test_unknown_reading_does_not_auto_register_over_manual_untagged_assignment(
+    ledger: Ledger,
+) -> None:
+    from dataclasses import replace
+
+    spool_id = await a_spool(ledger)
+    await ledger.use_cases.mount_spool.execute(spool_id, a_tray(1))
+    detector = replace(ledger.use_cases.detect_spool, auto_register=True)
+    await detector.execute(a_full_reading(1))
+    assert len(await ledger.use_cases.queries.overview()) == 1
+    assert (await located(ledger, spool_id)).location == AmsSlot(a_tray(1))

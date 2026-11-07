@@ -36,7 +36,7 @@
      hide the panel's own surface — the one thing a specimen exists to show. */
   .stage { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
     resize: horizontal; min-width: 300px; max-width: 100%; }
-  .stage.narrow { width: 390px; }
+  .stage.narrow { width: 360px; }
   .broke { padding: 14px 16px; font-size: 13px; color: #b3261e; background: #fdecea;
     border-radius: 10px; font-family: ui-monospace, monospace; white-space: pre-wrap; }
   footer.page { padding: 26px 20px 60px; color: var(--dim); font-size: 12.5px; max-width: 70ch; margin: 0 auto; }
@@ -52,6 +52,9 @@
   <div class="controls">
     <button id="lang-en" aria-pressed="true">EN</button>
     <button id="lang-es" aria-pressed="false">ES</button>
+    <button id="lang-tr" aria-pressed="false">TR</button>
+    <button id="theme-light" aria-pressed="true">Light</button>
+    <button id="theme-dark" aria-pressed="false">Dark</button>
     <button id="width-toggle" aria-pressed="false">Phone width</button>
   </div>
 </header>
@@ -62,7 +65,7 @@
 </main>
 
 <footer class="page">
-  <p>This page imports <code>STYLES</code> from <code>filament-ledger-panel.js</code> and adopts that
+  <p>This page imports <code>STYLES</code> from <code>panel/styles.js</code> and adopts that
   exact stylesheet into each specimen's shadow root, then asks a real, unmounted
   <code>&lt;filament-ledger-panel&gt;</code> instance to render each view from fixtures. There is no second
   copy of the markup and no second copy of the CSS, so this catalogue cannot drift away from the panel.</p>
@@ -71,7 +74,10 @@
 </footer>
 
 <script type="module">
-import { STYLES } from "./filament-ledger-panel.js";
+// Imported for its side effect: it defines <filament-ledger-panel>, which every specimen below
+// creates. Explicit, because the sheet no longer comes from that module.
+import "./filament-ledger-panel.js";
+import { STYLES } from "./panel/styles.js";
 import { translator } from "./i18n.js";
 
 // ---------------------------------------------------------------------------------------
@@ -277,7 +283,7 @@ function rig(state = {}) {
   panel._lang = lang;
   panel._t = translator(lang);
   panel._loading = false;
-  panel._hass = { user: { name: "Martín", is_admin: true } };
+  panel._hass = { user: { name: "Martín", is_admin: true }, services: {notify: {phone: {}}}, states: {} };
   panel._spools = SPOOLS;
   panel._stock = STOCK;
   panel._reviews = REVIEWS;
@@ -290,7 +296,15 @@ function rig(state = {}) {
   return panel;
 }
 
+const COLOURS = ["#000000FF", "#FFFFFFFF", "#808080FF", "#FFFFE0FF", "#FF0000FF", "#F4F6F8FF", "#05070AFF", "#11223340", null];
 const SPECIMENS = [
+  { id: "colour-matrix", title: "Colour matrix and long identities",
+    why: "Illustrative fixtures: real black/white, pale and saturated hues, both background colours, RGBA and Unknown. Quantities and statuses use theme ink.",
+    render: () => rig({_spools: COLOURS.map((colour, index) => spool({id: `colour-${index}`, colour_known: colour !== null, colour_rgba: colour, colour: colour ?? "#000000", name: index % 2 ? "Same name" : "A deliberately long filament identity that wraps without hiding its recorded quantity", is_low_stock: index === 2, location: {kind: "STORAGE"}}))}).inventoryView() },
+  { id: "notification-review", title: "Notification review and activation",
+    why: "Illustrative native-rule creation state. TEST acceptance and actual destination receipt are separate.",
+    render: () => rig({_notificationDraft: {id: "illustrative-rule", alias: "Low-stock workshop notification", phase: "review", scope: "all", spools: [], destination: "service:notify.phone"}, _notificationTestAccepted: true}).notificationSettings() },
+
   { id: "header", title: "Header and tab strip",
     why: "The only surface on every view. Eight tabs, the account line, and the count badge that is the one thing allowed to demand attention.",
     render: () => rig().header() },
@@ -395,6 +409,13 @@ const SPECIMENS = [
 const specimensEl = document.getElementById("specimens");
 const tocEl = document.getElementById("toc");
 let narrow = false;
+let appearance = "light";
+
+for (const mode of ["light", "dark"]) document.getElementById(`theme-${mode}`).addEventListener("click", () => {
+  appearance = mode;
+  document.querySelectorAll(".stage").forEach(stage => stage.setAttribute("data-theme", mode));
+  for (const value of ["light", "dark"]) document.getElementById(`theme-${value}`).setAttribute("aria-pressed", String(mode === value));
+});
 
 function paint() {
   specimensEl.textContent = "";
@@ -417,6 +438,7 @@ function paint() {
 
     const stage = document.createElement("div");
     stage.className = narrow ? "stage narrow" : "stage";
+    stage.setAttribute("data-theme", appearance);
     let html;
     try {
       html = spec.render();
@@ -446,12 +468,14 @@ function setLang(next) {
   lang = next;
   document.getElementById("lang-en").setAttribute("aria-pressed", String(next === "en"));
   document.getElementById("lang-es").setAttribute("aria-pressed", String(next === "es"));
+  document.getElementById("lang-tr").setAttribute("aria-pressed", String(next === "tr"));
   document.documentElement.lang = next;
   paint();
 }
 
 document.getElementById("lang-en").addEventListener("click", () => setLang("en"));
 document.getElementById("lang-es").addEventListener("click", () => setLang("es"));
+document.getElementById("lang-tr").addEventListener("click", () => setLang("tr"));
 document.getElementById("width-toggle").addEventListener("click", (event) => {
   narrow = !narrow;
   event.currentTarget.setAttribute("aria-pressed", String(narrow));

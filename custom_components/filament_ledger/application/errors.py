@@ -7,6 +7,7 @@ for does not exist, or cannot be found. The domain's errors are about rules.
 from __future__ import annotations
 
 from ..domain.value.identifiers import MovementId, ReviewId, SpoolId
+from ..domain.value.location import Location
 
 
 class ApplicationError(Exception):
@@ -35,3 +36,18 @@ class ReviewNotFoundError(ApplicationError):
     def __init__(self, review_id: ReviewId) -> None:
         super().__init__(f"no review with id {review_id}")
         self.review_id = review_id
+
+
+class AssignmentConflictError(ApplicationError):
+    def __init__(
+        self, actual_source: Location, actual_destination_spool_id: SpoolId | None
+    ) -> None:
+        super().__init__(
+            "The spool or destination changed. Review the current assignment before trying again."
+        )
+        self.actual_source = actual_source
+        self.actual_destination_spool_id = actual_destination_spool_id
+
+
+class IdempotencyConflictError(ApplicationError):
+    """An authenticated retry key already committed different registration intent."""

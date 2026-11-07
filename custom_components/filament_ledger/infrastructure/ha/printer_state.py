@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 
 from ...application.query import ObservedPrintTime, Queries
 from ...domain.port.repositories import SpoolRepository
-from ...domain.value.identifiers import AmsIndex, PrinterSerial
-from .bambu_gateway import TRACKED_AMS, BambuLabGateway, JobStatus
+from ...domain.value.identifiers import AmsIndex, Feed, HolderIndex, PrinterSerial
+from .bambu_gateway import BambuLabGateway, JobStatus
 from .tray_sync import SlotSyncOutcome, slot_outcome
 
 
@@ -46,11 +46,33 @@ class PrinterTracking:
     `unnamed` replaces v1.4's `ignored`, and the replacement is the feature: every machine
     with a readable serial is now followed, so the only thing left to report is a machine
     whose serial could not be read — see `BambuLabGateway.unnamed_printers`.
+
+    **`ams` is gone since v2.9**, and its absence is the feature this time. It carried the
+    one ordinal this ledger followed, ledger-wide, because there was only ever one; a
+    machine now states its own units in `MachineSnapshot.ams_units`, and a single number
+    beside the printer list could only have contradicted them.
     """
 
     printers: tuple[PrinterSerial, ...] = ()
-    ams: AmsIndex = TRACKED_AMS
     unnamed: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class HolderSnapshot:
+    """One direct feed, as the printer describes it right now.
+
+    `empty` is three-way for the reason every reading here is: *no spool* and *the sensor
+    did not say* are different facts, and a card that rendered them identically would tell
+    a user their reel had gone because a sensor blinked.
+
+    `name_hint` is whatever the printer was told is on the holder. A hint, never an
+    identity — most machines have no reader on the holder — so it captions a card and
+    resolves nothing.
+    """
+
+    holder: HolderIndex
+    empty: bool | None = None
+    name_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +86,10 @@ class MachineSnapshot:
 
     printer: PrinterSerial
     job: JobStatus
+    # What the machine calls itself, for display beside the serial. Null when neither the
+    # printer's own name sensor nor the device registry said, and then the panel shows the
+    # serial alone — which is what it has always shown (docs/14 §14.5).
+    printer_name: str | None = None
     # The three sensors docs/14 §14.5 names beyond the job set. They waited here through
     # v1.4 and v2.5 for their upstream `translation_key`s to be *read* rather than guessed,
     # and they were read on 2026-08-11 — two of the three guesses right, `connection_mode`
@@ -72,7 +98,17 @@ class MachineSnapshot:
     # exactly what it always did: the printer did not say.
     online: bool | None = None
     connection_mode: str | None = None
-    active_tray: int | None = None
+    # Where this machine is drawing from right now — a tray or one of its holders — or null
+    # when it did not say. It replaced `active_tray: int` in v2.9, which had been a dash on
+    # every machine since it was added: the sensor's state is a filament name and the
+    # position lives in its attributes (`BambuLabGateway.active_feed`).
+    active_feed: Feed | None = None
+    # Every AMS unit this machine has, by the printer's own numbering, and every direct
+    # feed an entity describes. The panel renders a block per unit and a card per holder,
+    # flooring the holders at one — a machine has a holder whether or not upstream
+    # published a sensor for it.
+    ams_units: tuple[AmsIndex, ...] = ()
+    holders: list[HolderSnapshot] = field(default_factory=list)
     trays: list[SlotSyncOutcome] = field(default_factory=list)
 
 
@@ -141,12 +177,33 @@ class ReadPrinterState:
                 MachineSnapshot(
                     printer=printer,
                     job=self.gateway.current_job_status(printer),
+                    printer_name=self.gateway.printer_name(printer),
                     online=self.gateway.online(printer),
                     connection_mode=self.gateway.connection_mode(printer),
-                    active_tray=self.gateway.active_tray(printer),
+                    active_feed=self.gateway.active_feed(printer),
+                    ams_units=self.gateway.ams_units(printer),
+                    holders=self._holders(printer),
                     trays=trays.get(printer, []),
                 )
                 for printer in self.gateway.printers
             ],
             observed_print_time=await self.queries.observed_print_time(),
         )
+
+    def _holders(self, printer: PrinterSerial) -> list[HolderSnapshot]:
+        """One entry per direct feed the gateway discovered, in numbered order.
+
+        Empty when upstream published no holder sensor for this machine, and the panel
+        floors its own union at the first holder rather than this reader inventing one: a
+        holder nobody reported is still a holder a user can mount onto, but it is not a
+        holder the printer *said* anything about, and this is the reader that only repeats
+        what was said.
+        """
+        return [
+            HolderSnapshot(
+                holder=holder,
+                empty=self.gateway.holder_empty(printer, holder),
+                name_hint=self.gateway.holder_name(printer, holder),
+            )
+            for holder in self.gateway.holders(printer)
+        ]

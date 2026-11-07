@@ -154,6 +154,11 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
     database = await Database.open(path / "ledger.db", executor)
     await database.migrate()
 
+    from custom_components.filament_ledger.application.open_spool import OpenSpool
+    from custom_components.filament_ledger.infrastructure.persistence.registration_request_repository import (
+        SqliteRegistrationRequestRepository,
+    )
+
     spools = SqliteSpoolRepository(database)
     movements = SqliteMovementRepository(database)
     voids = SqliteMovementVoidRepository(database)
@@ -162,25 +167,41 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
     clock = FakeClock()
     events = RecordingEventBus()
 
+    from custom_components.filament_ledger.application.low_stock import LowStock
+
+    queries = Queries(
+        spools=spools, movements=movements, reviews=reviews, jobs=jobs, voids=voids, clock=clock
+    )
+    low_stock = LowStock(spools, movements, queries, clock, events)
+
     # The production estimator, not a fake: it is pure arithmetic over the job the
     # test itself constructs, so faking it would only test the fake.
     open_pending_review = OpenPendingReview(
         jobs, reviews, spools, LinearProgressEstimator(), clock, events, database
     )
     record_print_consumption = RecordPrintConsumption(
-        jobs, spools, movements, open_pending_review, clock, events, database
+        jobs, spools, movements, open_pending_review, clock, events, database, low_stock=low_stock
     )
 
     # Built once and shared, exactly as the composition root shares it: the interactive
     # register path and `DetectSpool`'s auto-registration run the same instance.
-    register_spool = RegisterSpool(spools, movements, clock, events, database)
+    register_spool = RegisterSpool(
+        spools, movements, clock, events, database, SqliteRegistrationRequestRepository(database)
+    )
 
     return Ledger(
         use_cases=UseCases(
+            open_spool=OpenSpool(spools, clock, database),
             register_spool=register_spool,
-            reconcile_spool=ReconcileSpool(spools, movements, clock, events, database),
-            discard_filament=DiscardFilament(spools, movements, clock, events, database),
-            adjust_spool=AdjustSpool(spools, movements, clock, events, database),
+            reconcile_spool=ReconcileSpool(
+                spools, movements, clock, events, database, low_stock=low_stock
+            ),
+            discard_filament=DiscardFilament(
+                spools, movements, clock, events, database, low_stock=low_stock
+            ),
+            adjust_spool=AdjustSpool(
+                spools, movements, clock, events, database, low_stock=low_stock
+            ),
             mount_spool=MountSpool(spools, clock, events, database),
             mount_spool_externally=MountSpoolExternally(spools, events, database),
             unmount_spool=UnmountSpool(spools, events, database),
@@ -202,7 +223,7 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
                 default_core_weight=Grams.of(250),
                 auto_register=False,
             ),
-            edit_spool_details=EditSpoolDetails(spools, database),
+            edit_spool_details=EditSpoolDetails(spools, database, low_stock=low_stock),
             track_print_job=TrackPrintJob(
                 jobs=jobs,
                 open_pending_review=open_pending_review,
@@ -212,23 +233,22 @@ async def build_ledger(path: Path, executor: Executor) -> Ledger:
             ),
             record_print_consumption=record_print_consumption,
             open_pending_review=open_pending_review,
-            approve_review=ApproveReview(reviews, spools, movements, jobs, clock, events, database),
-            dismiss_review=DismissReview(reviews, jobs, clock, events, database),
-            reassign_movement=ReassignMovement(spools, movements, voids, clock, events, database),
-            void_movement=VoidMovement(spools, movements, voids, clock, events, database),
-            restore_movement=RestoreMovement(spools, movements, voids, clock, events, database),
-            delete_spool=DeleteSpool(spools, clock, events, database),
-            restore_spool=RestoreSpool(spools, events, database),
-            queries=Queries(
-                spools=spools,
-                movements=movements,
-                reviews=reviews,
-                jobs=jobs,
-                voids=voids,
-                # The same clock every use case writes timestamps with, so a period
-                # boundary in a test is measured against the ledger the test built.
-                clock=clock,
+            approve_review=ApproveReview(
+                reviews, spools, movements, jobs, clock, events, database, low_stock=low_stock
             ),
+            dismiss_review=DismissReview(reviews, jobs, clock, events, database),
+            reassign_movement=ReassignMovement(
+                spools, movements, voids, clock, events, database, low_stock=low_stock
+            ),
+            void_movement=VoidMovement(
+                spools, movements, voids, clock, events, database, low_stock=low_stock
+            ),
+            restore_movement=RestoreMovement(
+                spools, movements, voids, clock, events, database, low_stock=low_stock
+            ),
+            delete_spool=DeleteSpool(spools, clock, events, database),
+            restore_spool=RestoreSpool(spools, events, database, low_stock=low_stock),
+            queries=queries,
         ),
         clock=clock,
         events=events,

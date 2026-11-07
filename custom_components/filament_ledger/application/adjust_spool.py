@@ -21,6 +21,7 @@ from ..domain.value.grams import Grams
 from ..domain.value.identifiers import SpoolId
 from ..domain.value.movement_type import MovementSource, MovementType
 from .errors import SpoolNotFoundError
+from .low_stock import LowStock
 
 
 class DiscardMode(StrEnum):
@@ -51,6 +52,7 @@ class DiscardFilament:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, command: DiscardFilamentCommand) -> Grams:
         if not command.reason.strip():
@@ -60,7 +62,9 @@ class DiscardFilament:
         # One unit of work around the read-compute-write sequence: the balance the
         # discard is computed from is the balance the ledger holds when the movement
         # lands, and the movement and the discard flag commit together or not at all.
-        async with self.uow:
+        async with (
+            self.low_stock.transaction(self.uow, [command.spool_id]) if self.low_stock else self.uow
+        ):
             spool = await self.spools.get(command.spool_id)
             if spool is None:
                 raise SpoolNotFoundError(command.spool_id)
@@ -132,6 +136,7 @@ class AdjustSpool:
     events: EventPublisher
     uow: UnitOfWork
     anomalies: AnomalyDetector = field(default_factory=AnomalyDetector)
+    low_stock: LowStock | None = None
 
     async def execute(self, command: AdjustSpoolCommand) -> Grams:
         if not command.reason.strip():
@@ -144,7 +149,9 @@ class AdjustSpool:
         # The unit of work keeps the history read and the append indivisible, so the
         # `new_balance` this adjustment reports is computed from the ledger it actually
         # extended — not from a read another task has since made stale.
-        async with self.uow:
+        async with (
+            self.low_stock.transaction(self.uow, [command.spool_id]) if self.low_stock else self.uow
+        ):
             spool = await self.spools.get(command.spool_id)
             if spool is None:
                 raise SpoolNotFoundError(command.spool_id)

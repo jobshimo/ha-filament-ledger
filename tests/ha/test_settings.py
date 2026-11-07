@@ -113,6 +113,7 @@ class TestGet:
         harness.entry.options = {CONF_ANOMALY_THRESHOLD: 25}
 
         assert await ws.result_dict(GET) == {
+            "low_stock_threshold_g": 100.0,
             CONF_DEFAULT_OPENING_WEIGHT: 1000,
             CONF_DEFAULT_CORE_WEIGHT: 250,
             CONF_ANOMALY_THRESHOLD: 25,
@@ -128,6 +129,7 @@ class TestGet:
         harness.entry.options = {}
 
         assert await ws.result_dict(GET) == {
+            "low_stock_threshold_g": 100.0,
             CONF_DEFAULT_OPENING_WEIGHT: 1000,
             CONF_DEFAULT_CORE_WEIGHT: 250,
             CONF_ANOMALY_THRESHOLD: 15,
@@ -140,6 +142,7 @@ class TestGet:
         """No user on the connection at all, and the read still answers. A non-admin
         seeing the values read-only is the design (docs/14 §14.6.4)."""
         assert set(await ws.result_dict(GET)) == {
+            "low_stock_threshold_g",
             CONF_DEFAULT_OPENING_WEIGHT,
             CONF_DEFAULT_CORE_WEIGHT,
             CONF_ANOMALY_THRESHOLD,

@@ -540,6 +540,65 @@ leaves the panel names its tray in full. The panel never sends a bare slot, whic
 adapter's refusal of one ([05 §5.4](05-ha-integration.md)) is a statement about automations
 rather than about this view.
 
+**The heading names the machine and shows its serial beside it (v2.9)** — never instead of
+it. A printer that reports a name answers to it, and a household with two machines reads
+*Workshop A1* far faster than a fifteen-character serial; but the serial is what every row,
+tray reference and mount is keyed by, so a heading showing only a friendly name would leave
+a reader with two sections and no way to tell which machine either of them is.
+
+### More than one AMS unit, and both holders (v2.9)
+
+A section is now **a block per AMS unit, then a card per direct feed**:
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Workshop X2D   20P5BJ661800330                                      │
+│                                                                      │
+│  AMS 1                                                               │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                │
+│  │  SLOT 1  │ │  SLOT 2  │ │  SLOT 3  │ │  SLOT 4  │                │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                │
+│                                                                      │
+│  AMS 2                                                               │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                │
+│  │  SLOT 1  │ │  SLOT 2  │ │  SLOT 3  │ │  SLOT 4  │                │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘                │
+│                                                                      │
+│  ┌────────────────────────┐ ┌────────────────────────┐              │
+│  │ EXTERNAL SPOOL (LEFT)  │ │ EXTERNAL SPOOL (RIGHT) │              │
+│  └────────────────────────┘ └────────────────────────┘              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**The unit heading appears only once a machine has more than one**, exactly as the machine
+heading appears only once there is more than one machine: with a single AMS the number says
+nothing the reader did not already know, and a household with one unit sees the tab it has
+always seen.
+
+**Which positions are drawn is a union, not a report.** For units: what the printer says it
+has, plus every ordinal the ledger holds a spool on, plus AMS 1 as the floor. For holders:
+what the printer says it has, plus every holder the ledger holds a spool on, plus the first
+as the floor. The floors are this view's judgement rather than the backend's — a machine has
+an AMS 1 and a holder whether or not upstream published a sensor for either, and the backend
+deliberately reports *nothing said* rather than inventing one ([05 §5.8](05-ha-integration.md)).
+The ledger half of each union is the same rule the machine list follows: a unit the current
+glance does not mention may still hold a reel the ledger recorded, and a view that listed
+only what discovery currently reports would hide it.
+
+**Two holders are told apart as left and right, not as one and two.** The reader is standing
+at the machine looking at two holders; upstream's own indexes (255 and 254) would mean
+nothing to them. With one holder the card reads *External spool*, exactly as it always has —
+a machine with one has no second position to be told apart from, which is the same rule the
+movement note and the location label follow.
+
+**An empty holder card can say the printer disagrees.** Where the machine reports a reel on a
+holder the ledger has no row for, the card reads *The printer reports a spool here* instead of
+*Empty*, and the **[ Mount ]** button beside it is how the owner says which spool it is. That
+is the holder's form of the chipless-tray card above, and for its reason: consumption charges
+by position, not by tag, so a figure will land there whether or not the ledger knows what is
+on it. A holder the printer said *nothing* about reads as the ledger's own *Empty*, never as
+an occupied one.
+
 ---
 
 ## 6.5 View 4 — Spool detail & history
@@ -1131,3 +1190,32 @@ decoration: under `prefers-reduced-motion` the decorative animation stops and tr
 collapse to near zero. Because the panel no longer inherits a theme, a user cannot fix our
 contrast from their side, which makes the palette's contrast our obligation rather than
 theirs.
+
+---
+
+## Modern filament workflows amendment (2026-11-06)
+
+Both phone and desktop are primary. Identity, remaining grams, confidence/basis, location and next action outrank decoration. Inventory offers server-backed name/brand search, material/location/low-stock filters, smallest-remainder sort, count and reset; filtered results never replace the full AMS/picker data. Preserve drafts/focus/filter/scroll across live updates and reject stale responses.
+
+Registration groups identity and new/partly-used quantity basis. Gross mode alone requires explicit tare; show a matching read-only server preview before Save. From any position offer existing/new filament and keep the full destination throughout create-then-guarded-mount recovery. Unknown occupancy is not empty. Quantity confidence and shortage have distinct labels.
+
+Phone navigation keeps Inventory, AMS, Review and History directly reachable, with labelled More for secondary views. Retain all existing destinations and badges. Settings offers device-local Automatic/Light/Dark appearance plus permission-appropriate low-stock/notification controls. All surfaces/overlays use both themes and bounded true-colour samples independent of text/status.
+
+**Implementation evidence (2026-11-06).** The implemented panel keeps Inventory, AMS, Review and History directly reachable at narrow widths; More names the current secondary view. Inventory criteria are held separately from complete AMS/picker inventory. Filters start collapsed, server results patch without replacing the focused filter, registration drafts retain their request ID and destination, and partial assignment retries reuse the saved physical spool.
+
+
+## Interface refinement (2026-11-06)
+
+Inventory refinement keeps one quantity gauge per card, a keyboard-reachable spool name, a larger bounded colour sample and a separate location line. Registration uses two related field groups side by side on desktop and one column on phones; field names, server preview and guarded save remain unchanged.
+
+**Refinement verification.** Local illustrative preview checked at 360, 900 and 1280 px with Light/Dark inventory, desktop/phone registration and light AMS. No inventory card overflow was measured; phone inventory buttons meet 44 px. All 54 panel tests pass. This does not verify live Home Assistant, physical touch/screen readers or notification delivery.
+
+Colour entry uses one shared editor in registration and editing: named basic colours, native RGB picker and optional RGB/RGBA code. Unknown is an option within the colour selection or an empty code, without a separate known/unknown control. RGB picker changes preserve an existing alpha byte.
+
+Colour editor verification: named selection, Unknown/blank, custom RGBA and native picker opening checked in the local preview; phone colour controls measured 306 px with no overflow. All 58 panel tests pass, including alpha preservation and clearing an edited colour without invalid metadata.
+
+## Turkish localization (2026-11-06)
+
+Support Turkish throughout the panel and Home Assistant setup, options, entity and service descriptions. Automatic follows a Turkish Home Assistant profile (including tr-TR); users can select Türkçe per device. Preserve ledger values, identifiers, templates and escaped placeholders.
+
+Turkish verification: all 513 panel keys and Home Assistant translation leaves match the English structure. Placeholder checks include panel substitutions and automation template variables. Turkish selection persists across reloads; 360 px navigation/cards and phone/desktop registration were checked in the local illustrative preview with no measured horizontal overflow. Live HA setup and service screens are covered by translation structure tests, not a deployed UI check.

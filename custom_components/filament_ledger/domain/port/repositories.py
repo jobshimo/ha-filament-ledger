@@ -13,7 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
+from ..error import InvalidValueError
 from ..model.movement import Movement
 from ..model.movement_void import MovementVoid
 from ..model.pending_review import PendingReview
@@ -51,6 +53,8 @@ class SpoolFilter:
     deleted_only: bool = False
     mounted_only: bool = False
     search: str | None = None
+    material: str | None = None
+    location_kind: str | None = None
 
 
 class SpoolRepository(Protocol):
@@ -314,3 +318,33 @@ class ReviewRepository(Protocol):
         ...
 
     async def save(self, review: PendingReview) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrationReceipt:
+    actor_id: str
+    request_id: str
+    payload_fingerprint: str
+    spool_id: SpoolId
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        try:
+            parsed = UUID(self.request_id)
+            int(self.payload_fingerprint, 16)
+        except (ValueError, AttributeError) as exc:
+            raise InvalidValueError("Invalid registration receipt identity") from exc
+        if (
+            str(parsed) != self.request_id
+            or not self.actor_id
+            or len(self.actor_id) > 200
+            or len(self.payload_fingerprint) != 64
+            or self.created_at.tzinfo is None
+        ):
+            raise InvalidValueError("Invalid registration receipt")
+
+
+class RegistrationRequestRepository(Protocol):
+    async def get(self, actor_id: str, request_id: str) -> RegistrationReceipt | None: ...
+
+    async def save(self, receipt: RegistrationReceipt) -> None: ...

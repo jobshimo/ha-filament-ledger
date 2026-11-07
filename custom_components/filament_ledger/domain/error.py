@@ -202,3 +202,9 @@ class EstimationUnavailableError(DomainError):
     The specification names it `EstimationUnavailable`; the `Error` suffix follows this
     module's convention (see the module docstring).
     """
+
+
+class QuantityInputError(InvalidValueError):
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field

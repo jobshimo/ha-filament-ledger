@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Filament Ledger — illustrative preview</title>
+<link rel="icon" href="data:,">
+<style>
+body {margin:0;background:#f4f6f8;font-family:system-ui,sans-serif}
+.fixture {padding:8px 16px;background:#e4eee9;color:#173a2a;font-size:13px;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.fixture button {min-height:44px;padding:8px 12px}
+#frame {height:calc(100dvh - 62px);width:100%;max-width:1280px;margin:auto;border-inline:1px solid #738494}
+#frame.phone {width:360px;max-width:100%}
+filament-ledger-panel {height:100%!important}
+</style>
+<div class="fixture"><strong>Illustrative preview · no real inventory or notifications</strong>
+<button id="width">360 px / desktop</button><button id="language">EN / ES / TR</button><a href="styleguide.html">All states and colour matrix</a></div>
+<div id="frame"><filament-ledger-panel></filament-ledger-panel></div>
+<script type="module">
+import './filament-ledger-panel.js';
+const panel=document.querySelector('filament-ledger-panel');
+const colours=['#000000FF','#FFFFFFFF','#808080FF','#FFFFE0FF','#FF0000FF','#11223340',null];
+const spools=colours.map((colour,i)=>({id:`sample-${i}`,name:i===3?'A long custom brand filament name for the workshop':'Workshop '+['Black','White','Grey','Pale yellow','Red','Transparent','Unknown'][i],label:null,vendor:i%2?'Custom brand':'Bambu Lab',material:i%2?'PETG':'PLA',material_kind:i%2?'PETG':'PLA',colour:colour??'#000000',colour_rgba:colour,colour_known:colour!==null,foreground:'#FFFFFF',balance_g:i===2?47:640-i*20,balance_exact_g:i===2?47:640-i*20,opening_weight_g:1000,core_weight_g:250,percentage:i===2?5:64-i*2,state:'ACTIVE',confidence:i===2?'LOW':'HIGH',needs_weighing:i===2,is_low_stock:i===2,effective_low_stock_threshold_g:100,low_stock_threshold_inherited:true,low_stock_threshold_g:null,opening_basis:i%2?'MEASURED_NET':'DECLARED_NET',opened_at:'2026-11-01T12:00:00Z',confidence_basis:null,movement_count:2,last_movement_at:null,has_anomaly:false,registered_at:'2026-11-01T12:00:00Z',tag_uid:null,tag_source:null,reel_uid:null,location:i<2?{kind:'AMS_SLOT',printer:'ILLUSTRATIVE',ams:1,slot:i+1,label:'AMS'}:{kind:'STORAGE',label:'Storage'}}));
+const history=[{id:'opening',movement_id:'opening',spool_id:spools[0].id,spool_name:spools[0].name,spool_colour:spools[0].colour,type:'OPENING_BALANCE',amount_g:1000,balance_after_g:1000,source:'USER_CONFIRMED',occurred_at:'2026-11-01T12:00:00Z',direction:'INCREASE',voided:false},{id:'print',movement_id:'print',spool_id:spools[0].id,spool_name:spools[0].name,spool_colour:spools[0].colour,type:'PRINT_CONSUMPTION',amount_g:-360,balance_after_g:640,source:'AUTOMATIC',occurred_at:'2026-11-02T12:00:00Z',direction:'DECREASE',voided:false}];
+let language='en';
+const hass={user:{id:'illustrative-preview',name:'Workshop',is_admin:true},locale:{language},states:{},services:{notify:{phone:{name:'Illustrative phone',fields:{message:{required:true}}}}},connection:{subscribeMessage:async callback=>{queueMicrotask(async()=>callback({spools,stock:await hass.callWS({type:"filament_ledger/stock"}),reviews:[],movements:history,trash:{spools:[],movements:[]}}));return ()=>{}}},callWS:async msg=>{
+ const key=msg.type.replace('filament_ledger/','');
+ if(key==='spools/list') return spools.filter(s=>(!msg.search||`${s.name} ${s.vendor}`.toLowerCase().includes(msg.search.toLowerCase()))&&(!msg.material||s.material_kind===msg.material)&&(!msg.location||s.location.kind===msg.location)&&(!msg.low_stock_only||s.is_low_stock)).sort((a,b)=>msg.sort==='remaining'?a.balance_g-b.balance_g:0);
+ if(key==='spools/get')return {...spools.find(s=>s.id===msg.spool_id),history};
+ if(key==='stock')return {total_g:3407,spool_count:7,needs_weighing:1,defaults:{opening_weight_g:1000,core_weight_g:250},per_material:{PLA:1800,PETG:1607}};
+ if(key==='reviews/list'||key==='spools/finished')return [];
+ if(key==='movements')return history;
+ if(key==='trash')return {spools:[],movements:[]};
+ if(key==='printer/state')return {dormant:true};
+ if(key==='settings/get')return {default_opening_weight:1000,default_core_weight:250,anomaly_threshold:15,auto_mount_on_rfid:true,low_stock_threshold_g:100};
+ if(key==='statistics')return {empty:true,period:'30d',consumed_g:0,wasted_g:0,prints:{finished:0,cancelled:0,failed:0,total:0},reviews:{approved:0,dismissed:0,total:0},by_colour:[],by_material:[],top_prints:[]};
+ if(key==='spools/preview_registration'&&msg.opening_basis==='DECLARED_NET'&&msg.opening_weight_g===1000)return {opening_weight_g:1000,opening_basis:'DECLARED_NET',gross_weight_g:null,core_weight_g:null};
+ if(key==='spools/preview_registration'&&msg.opening_basis==='MEASURED_GROSS'&&msg.gross_weight_g===670&&msg.core_weight_g===250)return {opening_weight_g:420,opening_basis:'MEASURED_GROSS',gross_weight_g:670,core_weight_g:250};
+ throw new Error('Read-only illustrative preview. No live data is changed. Quantity samples: net 1000 g or gross 670 g / tare 250 g.');
+},callApi:async()=>{throw new Error('Native automation persistence is not connected in this illustrative preview.');}};
+panel.hass=hass;
+document.querySelector('#width').onclick=()=>document.querySelector('#frame').classList.toggle('phone');
+document.querySelector('#language').onclick=()=>{language=({en:'es',es:'tr',tr:'en'})[language];hass.locale.language=language;panel.hass={...hass};panel._applyLanguage();panel.render();};
+</script>
+</html>

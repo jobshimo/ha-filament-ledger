@@ -1,0 +1,99 @@
+{
+  "path": "filament_ledger/low_stock_v1.yaml",
+  "input": {
+    "spools": [
+      "binary_sensor.filament_contract_sentinel"
+    ],
+    "actions": [
+      {
+        "action": "persistent_notification.create",
+        "data": {
+          "message": "FILAMENT_CONTRACT_SENTINEL"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "name": "Filament Ledger — low stock v1",
+    "description": "Run actions for a recorded low-stock crossing. Empty spool selection means all eligible spools. Startup, threshold edits and continuing shortage do not trigger it. Recorded quantities can be estimates; inspect confidence or weigh the spool.",
+    "domain": "automation",
+    "homeassistant": {
+      "min_version": "2026.7.4"
+    },
+    "input": {
+      "spools": {
+        "name": "Physical filament spools",
+        "description": "Empty means all eligible spools. Missing selected entities never broaden the scope.",
+        "default": [],
+        "selector": {
+          "entity": {
+            "filter": [
+              {
+                "integration": "filament_ledger",
+                "domain": [
+                  "binary_sensor"
+                ]
+              }
+            ],
+            "multiple": true,
+            "reorder": false
+          }
+        }
+      },
+      "actions": {
+        "name": "Actions",
+        "description": "Native Home Assistant actions, run once for each published crossing.",
+        "default": [
+          {
+            "action": "notify.notify",
+            "data": {
+              "message": "{{ spool_name }}: {{ remaining_g }} g recorded remaining (threshold {{ threshold_g }} g). Confidence: {{ confidence }}. Weigh the spool if the recorded quantity is uncertain.",
+              "title": "Filament stock"
+            }
+          }
+        ],
+        "selector": {
+          "action": {}
+        }
+      }
+    }
+  },
+  "substituted_config": {
+    "triggers": [
+      {
+        "trigger": "event",
+        "event_type": "filament_ledger_low_stock"
+      }
+    ],
+    "variables": {
+      "selected_spools": [
+        "binary_sensor.filament_contract_sentinel"
+      ],
+      "spool_name": "{{ trigger.event.data.get('name', '') }}",
+      "spool_id": "{{ trigger.event.data.get('spool_id', '') }}",
+      "remaining_g": "{{ trigger.event.data.get('balance_g') }}",
+      "threshold_g": "{{ trigger.event.data.get('threshold_g') }}",
+      "confidence": "{{ trigger.event.data.get('confidence', '') }}",
+      "quantity_basis": "{{ trigger.event.data.get('quantity_basis', '') }}",
+      "location": "{{ trigger.event.data.get('location', {}) }}",
+      "occurrence_id": "{{ trigger.event.data.get('occurrence_id', '') }}"
+    },
+    "conditions": [
+      {
+        "condition": "template",
+        "value_template": "{{ spool_id | length > 0 and occurrence_id | length > 0\n   and remaining_g is number and threshold_g is number\n   and threshold_g > 0 and remaining_g < threshold_g\n   and (selected_spools | length == 0\n        or trigger.event.data.get('low_stock_entity_id') in selected_spools) }}"
+      }
+    ],
+    "actions": [
+      {
+        "action": "persistent_notification.create",
+        "data": {
+          "message": "FILAMENT_CONTRACT_SENTINEL"
+        }
+      }
+    ],
+    "mode": "queued",
+    "max": 100,
+    "max_exceeded": "warning"
+  }
+}

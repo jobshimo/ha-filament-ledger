@@ -1,6 +1,7 @@
 """Derives how much a balance can be trusted.
 
-    LOW     if `since` contains any ESTIMATED_CONSUMPTION,
+    LOW     if the anchor is an unmeasured automatic opening balance,
+            or `since` contains any ESTIMATED_CONSUMPTION,
             or total consumed in `since` >= 41% of opening weight
     MEDIUM  else if total consumed in `since` >= 20% of opening weight
     HIGH    otherwise
@@ -71,6 +72,12 @@ class ConfidenceEvaluator:
     thresholds: ConfidenceThresholds = field(default_factory=ConfidenceThresholds)
 
     def evaluate(self, *, movements: Sequence[Movement], opening_weight: Grams) -> Confidence:
+        anchor = anchor_movement(movements)
+        if anchor is not None and anchor.opening_basis in {
+            "CONFIGURED_DEFAULT",
+            "DETECTED_NOMINAL",
+        }:
+            return Confidence.LOW
         recent = movements_since_anchor(movements)
 
         if any(movement.is_estimate for movement in recent):
