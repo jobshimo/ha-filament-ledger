@@ -13,8 +13,8 @@ export function notificationDestinations(hass) {
   const destinations = [];
   for (const [name, service] of Object.entries(services)) {
     if (name === "send_message") continue;
-    const unsupported = Object.entries(service.fields ?? {}).some(([key, f]) => f.required && !["message"].includes(key));
-    destinations.push({id: `service:notify.${name}`, service: `notify.${name}`, label: service.name || name, available: !unsupported});
+    const unsupported = Object.entries(service.fields ?? {}).some(([key, f]) => f.required && !["message", "title"].includes(key));
+    destinations.push({id: `service:notify.${name}`, service: `notify.${name}`, label: name === "notify" ? "notify.notify" : service.name || name, available: !unsupported});
   }
   if (services.send_message) for (const [id, state] of Object.entries(hass.states ?? {})) {
     if (id.startsWith("notify.")) destinations.push({id: `entity:${id}`, service: "notify.send_message", entity: id,
@@ -45,7 +45,17 @@ export class Notifications {
       catch (error) { if (error.code !== "already_exists") throw error; }
       listed = await this._nativeWS("blueprint/list", {domain: "automation"});
     }
-    if (canonical(listed[BLUEPRINT_PATH]?.metadata) !== canonical(contract.metadata)) throw new Error(this._t("notifications.blueprintConflict"));
+    if (canonical(listed[BLUEPRINT_PATH]?.metadata) !== canonical(contract.metadata)) {
+      const previousMetadata = structuredClone(contract.metadata);
+      delete previousMetadata.input.actions.default;
+      const previous = await this._nativeWS("blueprint/substitute", {domain: "automation", path: BLUEPRINT_PATH, input: contract.input});
+      if (canonical(listed[BLUEPRINT_PATH]?.metadata) !== canonical(previousMetadata)
+        || canonical(previous.substituted_config) !== canonical(contract.substituted_config)) throw new Error(this._t("notifications.blueprintConflict"));
+      // Only the unchanged shipped v1 is upgraded; custom blueprint edits stay authoritative.
+      await this._nativeWS("blueprint/save", {domain: "automation", path: BLUEPRINT_PATH, yaml, allow_override: true});
+      listed = await this._nativeWS("blueprint/list", {domain: "automation"});
+      if (canonical(listed[BLUEPRINT_PATH]?.metadata) !== canonical(contract.metadata)) throw new Error(this._t("notifications.blueprintConflict"));
+    }
     const substituted = await this._nativeWS("blueprint/substitute", {domain: "automation", path: BLUEPRINT_PATH, input: contract.input});
     if (canonical(substituted.substituted_config) !== canonical(contract.substituted_config)) throw new Error(this._t("notifications.blueprintConflict"));
   }
@@ -61,7 +71,8 @@ export class Notifications {
       if (!custom) {
         let saved;
         try { saved = JSON.parse(window.sessionStorage.getItem(this._notificationKey())); } catch { /* memory only */ }
-        this._notificationDraft = saved?.id ? saved : {id: this._newRequestId(), alias: this._t("notifications.defaultName"), scope: "all", spools: [], destination: "", phase: "edit"};
+        const defaultDestination = notificationDestinations(this._hass).find(d => d.id === "service:notify.notify" && d.available)?.id ?? "";
+        this._notificationDraft = saved?.id ? saved : {id: this._newRequestId(), alias: this._t("notifications.defaultName"), scope: "all", spools: [], destination: defaultDestination, phase: "edit"};
         if (this._notificationPresetSpoolId && !saved?.id) {
           this._notificationDraft.scope = "selected";
           const entity = this._notificationSpools.find(e => e.unique_id === `filament_ledger_${this._notificationPresetSpoolId}_low_stock`);
@@ -83,7 +94,8 @@ export class Notifications {
     if (!destination) throw new Error(this._t("notifications.destinationMissing"));
     if (draft.scope === "selected" && (!draft.spools.length || draft.spools.some(id => !this._notificationSpools?.some(e => e.entity_id === id) || [undefined, "unavailable", "unknown"].includes(this._hass.states[id]?.state)))) throw new Error(this._t("notifications.scopeMissing"));
     return {action: destination.service, ...(destination.entity ? {target: {entity_id: destination.entity}} : {}),
-      data: {message: this._t(test ? "notifications.testMessage" : "notifications.message")}};
+      data: {message: this._t(test ? "notifications.testMessage" : "notifications.message"),
+        title: this._t("notifications.messageTitle")}};
   }
 
   _notificationConfig() {
@@ -227,7 +239,7 @@ export class Notifications {
     return `<section class="notification-settings"><h3>${t("notifications.title")}</h3><p>${t("notifications.intro")}</p>
       ${!draft ? `<button data-action="notification-setup" ${disabled}>${t("notifications.setup")}</button>` : ""}
       <button data-action="notification-custom" ${disabled}>${t("notifications.custom")}</button>
-      ${this._notificationReady ? `<a href="/config/automation/dashboard?blueprint=${encodeURIComponent(BLUEPRINT_PATH)}">${t("notifications.customEditor")}</a>` : ""}
+      ${this._notificationReady ? `<a href="/config/blueprint">${t("notifications.customEditor")}</a>` : ""}
       ${!draft && this._notificationError ? `<p role="alert">${esc(this._notificationError)}</p>` : ""}
       ${body}<ul class="notification-rules">${this._notificationRulesMarkup()}</ul></section>`;
   }

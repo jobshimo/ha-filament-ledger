@@ -47,6 +47,14 @@ async def test_complete_native_metadata_and_substitution_contract(tmp_path: Path
     selector = blueprint.inputs["spools"]["selector"]["entity"]
     assert selector["multiple"] is True
     assert selector["filter"] == [{"integration": "filament_ledger", "domain": ["binary_sensor"]}]
+    defaults = BlueprintInputs(
+        blueprint, {"use_blueprint": {"path": contract["path"], "input": {}}}
+    ).async_substitute()
+    [action] = defaults["actions"]
+    assert action["action"] == "notify.notify"
+    assert action["data"]["title"] == "Filament stock"
+    assert "{{ spool_name }}" in action["data"]["message"]
+    assert defaults["variables"]["selected_spools"] == []
 
 
 @pytest.mark.parametrize(

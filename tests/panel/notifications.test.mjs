@@ -56,7 +56,60 @@ it("TEST calls only the selected notification action and never emits a productio
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0].slice(0,2), ["notify","phone"]);
   assert.match(calls[0][2].message, /\[TEST\]/);
+  assert.equal(calls[0][2].title, "Filament stock");
   assert.equal(panel._notificationTestAccepted, true);
+});
+
+it("defaults new setup to notify.notify and generates the working message and title payload", async () => {
+  const panel = notificationPanel();
+  panel._hass.services.notify.notify = {name:"Send a notification",fields:{message:{required:true},title:{required:true}}};
+  panel._nativeWS = async () => [];
+  panel._loadNotifications = async () => {};
+  await panel._setupNotification();
+  assert.equal(panel._notificationDraft.destination, "service:notify.notify");
+  const [action] = panel._notificationConfig().use_blueprint.input.actions;
+  assert.deepEqual(action, {action:"notify.notify",data:{
+    message:panel._t("notifications.message"),title:"Filament stock"}});
+  assert.equal(notificationDestinations(panel._hass).find(d=>d.service==="notify.notify").label,"notify.notify");
+  panel._notificationReady = true;
+  assert.match(panel.notificationSettings(), /href="\/config\/blueprint"/);
+});
+
+it("leaves destination selection explicit when notify.notify is unavailable", async () => {
+  const panel = notificationPanel();
+  panel._nativeWS = async () => [];
+  panel._loadNotifications = async () => {};
+  await panel._setupNotification();
+  assert.equal(panel._notificationDraft.destination, "");
+});
+
+it("upgrades only the pristine previous blueprint and verifies the new default after saving", async () => {
+  const {readFile} = await import("node:fs/promises");
+  const contract = JSON.parse(await readFile(new URL("../../custom_components/filament_ledger/www/blueprints/low_stock_v1.contract.json",import.meta.url),"utf8"));
+  const oldMetadata = structuredClone(contract.metadata);
+  delete oldMetadata.input.actions.default;
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ok:true,text:async()=>"fixture yaml",json:async()=>contract});
+  try {
+    for (const changed of [false,true]) {
+      const panel = notificationPanel(); delete panel._ensureBlueprint;
+      let installed=oldMetadata;const calls=[];
+      panel._nativeWS=async(type,payload)=>{
+        calls.push(type);
+        if(type==="blueprint/list") return {[BLUEPRINT_PATH]:{metadata:installed}};
+        if(type==="blueprint/save") { assert.equal(payload.allow_override,true);installed=contract.metadata;return {}; }
+        return {substituted_config:changed ? {...contract.substituted_config,conditions:[]} : contract.substituted_config};
+      };
+      if(changed) {
+        await assert.rejects(()=>panel._ensureBlueprint(),/preserved/);
+        assert.ok(!calls.includes("blueprint/save"));
+      } else {
+        await panel._ensureBlueprint();
+        assert.equal(calls.filter(c=>c==="blueprint/save").length,1);
+        assert.equal(calls.filter(c=>c==="blueprint/substitute").length,2);
+      }
+    }
+  } finally {globalThis.fetch=savedFetch;}
 });
 
 it("verifies the whole installed blueprint and preserves a changed condition", async () => {

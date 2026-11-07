@@ -43,6 +43,15 @@
       "actions": {
         "name": "Actions",
         "description": "Native Home Assistant actions, run once for each published crossing.",
+        "default": [
+          {
+            "action": "notify.notify",
+            "data": {
+              "message": "{{ spool_name }}: {{ remaining_g }} g recorded remaining (threshold {{ threshold_g }} g). Confidence: {{ confidence }}. Weigh the spool if the recorded quantity is uncertain.",
+              "title": "Filament stock"
+            }
+          }
+        ],
         "selector": {
           "action": {}
         }
