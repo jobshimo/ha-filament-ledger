@@ -4,8 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { fill, holderWord, UNIDENTIFIED_PRINTER } from "./format.js";
-import { colourValue, colourSample } from "./colour.js";
-import { spoolRing } from "./spool-ring.js";
+import { colourValue, colourSample, colourName } from "./colour.js";
 
 export class AmsViews {
   // -- AMS ---------------------------------------------------------------------------
@@ -248,21 +247,17 @@ export class AmsViews {
    */
   positionCard(heading, spool) {
     const t = this._t;
-    return `<div class="card tray ${spool.state === "DEPLETED" ? "depleted" : ""}">
+    return `<div class="card tray ${spool.state === "DEPLETED" ? "depleted" : ""}" style="--filament-colour:${esc(colourValue(spool))}">
       <div class="tray-head">
         <div class="n">${heading}</div>
         ${this.spoolMenu(spool)}
       </div>
-      <div class="tray-art">
-        ${spoolRing("slot", spool.percentage, colourValue(spool))}
-        <div class="ring-mid">
-          <span class="ring-hub" style="background:${esc(colourValue(spool))}"></span>
-        </div>
-      </div>
+      <div class="tray-art disc-art" style="--disc:104px">${colourSample(spool, t)}</div>
       <div class="name">${esc(spool.name)}</div>
-      <div class="big">${spool.balance_g}<small> g</small></div>
+      <div class="spool-colour"><b>${esc(colourName(spool, t))}</b> · ${esc(spool.material)}</div>
+      <div class="big">${spool.balance_g}<small> g${spool.opening_weight_g ? ` / ${spool.opening_weight_g} g` : ""}</small></div>
       <div class="barline">
-        <div class="track"><i style="width:${spool.percentage}%;background:var(--fl-accent)"></i></div>
+        <div class="track"><i style="width:${spool.percentage}%;background:var(--filament-colour)"></i></div>
         <span class="pct">${spool.percentage}%</span>
       </div>
       <div class="foot">${this.confidenceChip(spool.confidence)}</div>

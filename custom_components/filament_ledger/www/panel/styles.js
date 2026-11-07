@@ -312,8 +312,8 @@ button.link:hover { color: var(--fl-accent-bright); }
 .spool { display: flex; overflow: hidden; cursor: pointer; position: relative; border-color: var(--fl-line-soft);
   transition: transform var(--fl-dur-base) var(--fl-ease), border-color var(--fl-dur-base) var(--fl-ease),
     box-shadow var(--fl-dur-base) var(--fl-ease); }
-.spool { background-image: linear-gradient(180deg, color-mix(in srgb, var(--filament-colour) 16%, transparent), transparent 90px); }
-.spool::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--filament-colour); }
+.spool, .tray, .detail { background-image: linear-gradient(180deg, color-mix(in srgb, var(--filament-colour) 16%, transparent), transparent 90px); }
+.spool::before, .tray::before, .detail::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--filament-colour); }
 .spool:hover { border-color: var(--fl-accent); background-color: var(--fl-surface-raised); transform: translateY(-2px); }
 .spool.anomaly { border-left: 1px solid var(--fl-warn); }
 /* The swatch is the primary identifier (06 §6.8), so it glows with its own colour rather
@@ -324,8 +324,8 @@ button.link:hover { color: var(--fl-accent-bright); }
    An arc of the filament's own colour, at three sizes. Geometry lives in RING_SIZES;
    this is only how it is painted. Not the Ring/Profile/3D switcher — 16 §16.6 keeps that
    out as a new capability; this is how a spool is drawn from data the ledger already has. */
-.tray-art { position: relative; width: 130px; height: 130px; margin: 8px auto 4px; }
-.detail-art { position: relative; width: 178px; height: 178px; flex: none; }
+.tray-art { display: grid; place-items: center; height: 124px; margin: 8px auto 4px; }
+.detail-art { display: grid; place-items: center; width: 178px; height: 178px; flex: none; }
 /* The winding, behind the arc: a hatch of fine spokes turning slowly. It is what stops a
    100%-full coil from reading as a flat disc of colour. */
 .hatch { position: absolute; inset: 6px; border-radius: 50%;
@@ -377,7 +377,8 @@ button.link:hover { color: var(--fl-accent-bright); }
 /* The name and the rail's collapsed control share one row, so the control is part of the
    card's grid rather than floating over its corner — see the rail's own block below. */
 .spool-head { display: flex; align-items: center; gap: 12px; }
-.spool-head .colour-sample { width: 56px; height: 56px; border-radius: 50%; border-width: 2px;
+.spool-head .colour-sample { --disc: 56px; }
+.spool-head .colour-sample, .disc-art .colour-sample { width: var(--disc); height: var(--disc); border-radius: 50%; border-width: 2px;
   box-shadow: 0 0 0 3px var(--fl-surface), 0 6px 22px -4px var(--filament-colour);
   background-image: radial-gradient(circle at 50% 50%, var(--fl-surface) 0 17%, transparent 18%),
     radial-gradient(circle at 32% 28%, rgba(255,255,255,.28), transparent 55%); }
@@ -403,7 +404,7 @@ button.link:hover { color: var(--fl-accent-bright); }
   font-weight: 600; border: 1px solid var(--fl-line-strong); border-radius: 999px; padding: 2px 10px;
   color: var(--fl-ink-dim); }
 .barline { display: flex; align-items: center; gap: 9px; }
-.track { flex: 1; height: 6px; border-radius: 3px; background: var(--fl-surface-sunken);
+.track { flex: 1; height: 10px; border-radius: 5px; background: var(--fl-surface-sunken);
   border: 1px solid var(--fl-line-soft); overflow: hidden; }
 .track i { display: block; height: 100%; transform-origin: left;
   animation: fl-bar var(--fl-dur-slow) var(--fl-ease) both; }
@@ -429,7 +430,7 @@ button.link:hover { color: var(--fl-accent-bright); }
   border-radius: 0 var(--fl-radius-m) var(--fl-radius-m) 0; font-size: 13.5px; color: var(--fl-ink-dim); }
 
 .trays { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
-.tray { padding: 16px; display: flex; flex-direction: column; gap: 5px; }
+.tray { position: relative; overflow: hidden; padding: 16px; display: flex; flex-direction: column; gap: 5px; }
 .tray-head { display: flex; align-items: center; gap: 8px; }
 .tray-head .n { flex: 1; min-width: 0; }
 .tray .n { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
@@ -443,7 +444,7 @@ button.link:hover { color: var(--fl-accent-bright); }
   gap: 10px; margin: 6px 0 4px; }
 .mount-choice { display: flex; align-items: center; gap: 12px; text-align: left;
   padding: 10px 12px; }
-.mount-choice .mc-art { position: relative; flex: none; width: 56px; height: 56px; }
+.mount-choice .mc-art { display: grid; place-items: center; flex: none; width: 56px; height: 56px; }
 .mount-choice .mc-art svg.ring { width: 100%; height: 100%; display: block; }
 .mount-choice .mc-art .ring-mid { position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center; }
@@ -468,8 +469,17 @@ button.link:hover { color: var(--fl-accent-bright); }
 .tray-actions { display: flex; gap: 6px; margin-top: 8px; }
 .tray-actions button { padding: 6px 10px; font-size: 12.5px; flex: 1; }
 
-.detail { display: flex; gap: 16px; padding: 18px; flex-wrap: wrap; }
+.detail { position: relative; overflow: hidden; display: flex; gap: 16px; padding: 18px; flex-wrap: wrap; }
 .detail .meta { flex: 1 1 220px; min-width: 0; }
+.spool-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 6px; }
+.spool-tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: 999px; font-size: 12.5px;
+  border: 1px solid var(--fl-line-soft); color: var(--fl-ink); background: var(--fl-surface-sunken); }
+.spool-tag.colour { font-weight: 600; color: var(--fl-ink-bright); }
+.spool-tag .colour-sample { width: 16px; height: 16px; border-radius: 50%; }
+.spool-tag.code { font-family: var(--fl-font-mono); color: var(--fl-ink-dim); }
+.spool-tag.code:empty { display: none; }
+.detail .big { font-size: 40px; }
+.tray .big { font-size: 28px; }
 .detail h2 { margin: 0 0 4px; font-size: 19px; font-weight: 500; }
 .facts { font-size: 12.5px; color: var(--fl-ink-dim); }
 

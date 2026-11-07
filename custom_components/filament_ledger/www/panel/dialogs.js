@@ -4,8 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { fill, grams, signed, typedGrams } from "./format.js";
-import { colourValue, colourSample, colourEditor } from "./colour.js";
-import { spoolRing } from "./spool-ring.js";
+import { colourValue, colourSample, colourEditor, colourName } from "./colour.js";
 
 const MATERIALS = ["PLA", "PETG", "ABS", "ASA", "TPU", "PC", "PA", "PVA", "SUPPORT", "OTHER"];
 
@@ -529,13 +528,10 @@ export class DialogViews {
 
   /** The card's inside — ring, name, material, balance — shared by every spool choice. */
   spoolChoiceBody(spool) {
-    return `<span class="mc-art">
-        ${spoolRing("slot", spool.percentage, colourValue(spool))}
-        <span class="ring-mid"><span class="ring-hub" style="background:${esc(colourValue(spool))}"></span></span>
-      </span>
+    return `<span class="mc-art disc-art" style="--disc:48px">${colourSample(spool, this._t)}</span>
       <span class="mc-body">
         <span class="mc-name">${esc(spool.name)}</span>
-        <span class="mc-sub">${colourSample(spool, this._t)} ${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</span>
+        <span class="mc-sub">${esc(colourName(spool, this._t))} · ${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""}</span>
         <span class="mc-grams">${spool.balance_g}<small> g</small> · ${spool.percentage}%</span>
       </span>`;
   }

@@ -4,8 +4,7 @@
 
 import { esc } from "../i18n.js";
 import { signed } from "./format.js";
-import { colourValue, colourSample } from "./colour.js";
-import { spoolRing } from "./spool-ring.js";
+import { colourValue, colourSample, colourName } from "./colour.js";
 
 export class SpoolDetailViews {
   // -- spool detail ------------------------------------------------------------------
@@ -51,29 +50,26 @@ export class SpoolDetailViews {
     return this.shell(
       `<button class="link" data-action="back">${t("detail.back")}</button>`,
       `<section class="stack">
-        <div class="card detail">
+        <div class="card detail" style="--filament-colour:${esc(colourValue(spool))}">
           <!-- Seen face-on: the winding, the core hole, and the figure in the middle. The
                card shows the same spool small; this is the same object, larger, not a
                different drawing of it. -->
-          <div class="detail-art" style="--coil:${esc(colourValue(spool))}">
-            <span class="coil-base" aria-hidden="true"></span>
-            <span class="coil-wind" aria-hidden="true"></span>
-            <span class="coil-depth" aria-hidden="true"></span>
-            ${spoolRing("hero", spool.percentage, colourValue(spool))}
-            <div class="ring-mid">
-              <span class="ring-pct hero">${spool.percentage}<small>%</small></span>
-            </div>
-          </div>
+          <div class="detail-art disc-art" style="--disc:136px">${colourSample(spool, this._t)}</div>
           <div class="meta">
             <h2>${esc(spool.name)}</h2>
             <div class="big">${spool.balance_g}<small> ${t("detail.ofOpening", {
               opening: spool.opening_weight_g,
             })}</small></div>
             <div class="barline">
-              <div class="track"><i style="width:${spool.percentage}%;background:var(--fl-accent)"></i></div>
+              <div class="track"><i style="width:${spool.percentage}%;background:${esc(colourValue(spool))}"></i></div>
               <span class="pct">${spool.percentage}%</span>
             </div>
-            <div class="facts">${colourSample(spool, this._t)} ${esc(spool.material)}${spool.vendor ? ` · ${esc(spool.vendor)}` : ""} · ${spool.colour_known === false ? t("colour.unknown") : esc(spool.colour_rgba ?? spool.colour)}</div>
+            <div class="spool-tags">
+              <span class="spool-tag colour">${colourSample(spool, this._t)} ${esc(colourName(spool, this._t))}</span>
+              <span class="spool-tag">${esc(spool.material)}</span>
+              ${spool.vendor ? `<span class="spool-tag">${esc(spool.vendor)}</span>` : ""}
+              <span class="spool-tag code">${spool.colour_known === false ? "" : esc(spool.colour_rgba ?? spool.colour)}</span>
+            </div>
             <div class="facts">${this.locationLabel(spool.location)} · ${this.stateLabel(spool.state)}${
               spool.tag_uid ? ` · ${t("dlg.tag")} ${esc(spool.tag_uid)}` : ""
             }</div>
