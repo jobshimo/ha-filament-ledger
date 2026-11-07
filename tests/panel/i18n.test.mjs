@@ -20,7 +20,7 @@ it("uses Turkish profiles, persists a manual choice, and returns to the profile 
     writeLanguageOverride("tr");
     assert.equal(storage.get(LANGUAGE_STORAGE_KEY), "tr");
     assert.equal(resolveLanguage({locale: {language: "en"}}), "tr");
-    const panel = panelWith({_hass: {locale: {language: "en"}}});
+    const panel = panelWith({isConnected: true, _hass: {locale: {language: "en"}}});
     panel._applyLanguage();
     assert.equal(panel.lang, "tr");
     assert.equal(panel._t("tab.inventory"), "Envanter");

@@ -299,7 +299,7 @@ class FilamentLedgerPanel extends HTMLElement {
   _applyLanguage() {
     this._lang = resolveLanguage(this._hass);
     this._t = translator(this._lang);
-    this.lang = this._lang;
+    if (this.isConnected) this.lang = this._lang;
   }
 
   /**
@@ -471,6 +471,7 @@ class FilamentLedgerPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    this.lang = this._lang;
     this._initAppearance();
     // The ambient layer is a sibling of #root, not part of it. The panel repaints by
     // replacing #root's innerHTML on every navigation (ADR-0006), and a drifting particle
