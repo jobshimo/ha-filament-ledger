@@ -824,9 +824,9 @@ const EN = {
   "settings.anomalyThresholdHelp":
     "When the scale disagrees with the ledger by more than this, something upstream is " +
     "systematically wrong and worth a look.",
-  "settings.autoMount": "Mount spools automatically on RFID detection",
+  "settings.autoMount": "Assign detected spools automatically",
   "settings.autoMountHelp":
-    "When the printer reads a known tag, record that spool as mounted in that slot.",
+    "Assign known RFID spools and automatically registered chipless spools to their slots.",
   "settings.save": "Save settings",
   "settings.reloadWarning": "Saving reloads Filament Ledger — a second or two.",
   "settings.saved": "Saved. Filament Ledger is reloading with these values.",
@@ -1566,10 +1566,9 @@ const ES = {
   "settings.anomalyThresholdHelp":
     "Cuando la balanza discrepa del registro por más de esto, algo falla de forma " +
     "sistemática más arriba y conviene revisarlo.",
-  "settings.autoMount": "Montar bobinas automáticamente al detectar el RFID",
+  "settings.autoMount": "Asignar bobinas detectadas automáticamente",
   "settings.autoMountHelp":
-    "Cuando la impresora lee una etiqueta conocida, registrar esa bobina como montada en " +
-    "esa bandeja.",
+    "Asignar bobinas RFID conocidas y bobinas sin RFID registradas automáticamente a sus bandejas.",
   "settings.save": "Guardar ajustes",
   "settings.reloadWarning": "Guardar recarga Filament Ledger: un segundo o dos.",
   "settings.saved": "Guardado. Filament Ledger se está recargando con estos valores.",
@@ -2089,8 +2088,8 @@ const TR = {
   "settings.coreWeightHelp": "Filamentsiz makaranın ağırlığı. Mutfak terazisi tüm makarayı tarttığı için sistem bu değeri çıkarır.",
   "settings.anomalyThreshold": "Bu orandan fazla tartım sapmasını işaretle (%)",
   "settings.anomalyThresholdHelp": "Teraziyle kayıt arasındaki fark bu oranı aşarsa önceki işlemlerde sistematik bir sorun olabilir; kontrol etmek gerekir.",
-  "settings.autoMount": "RFID algılandığında makaraları otomatik tak",
-  "settings.autoMountHelp": "Yazıcı bilinen bir etiketi okuduğunda makarayı o yuvada takılı olarak kaydet.",
+  "settings.autoMount": "Algılanan filamentleri otomatik ata",
+  "settings.autoMountHelp": "Bilinen RFID’li filamentleri ve otomatik kaydedilen RFID’siz filamentleri ilgili yuvalarına ata.",
   "settings.save": "Ayarları kaydet",
   "settings.reloadWarning": "Kaydetmek Filament Ledger'ı yeniden yükler; bir iki saniye sürer.",
   "settings.saved": "Kaydedildi. Filament Ledger bu değerlerle yeniden yükleniyor.",

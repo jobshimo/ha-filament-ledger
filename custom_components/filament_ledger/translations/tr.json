@@ -8,8 +8,8 @@
           "default_opening_weight": "Varsayılan başlangıç ağırlığı (g)",
           "default_core_weight": "Varsayılan boş makara ağırlığı (g)",
           "anomaly_threshold": "Bu orandan fazla tartım sapmasını işaretle (%)",
-          "auto_mount_on_rfid": "RFID algılandığında makaraları otomatik tak",
-          "auto_register_on_detect": "Bilinmeyen Bambu makaraları otomatik kaydet",
+          "auto_mount_on_rfid": "Algılanan filamentleri otomatik ata",
+          "auto_register_on_detect": "Bilinmeyen filamentleri otomatik kaydet (tüm markalar)",
           "low_stock_threshold_g": "Azalan stok eşiği (g)"
         },
         "data_description": {
@@ -17,7 +17,7 @@
           "default_core_weight": "Filamentsiz makaranın ağırlığı. Mutfak terazisi tüm makarayı tarttığı için sistem bu değeri çıkarır. Bambu makaralar yaklaşık 250 g'dır.",
           "anomaly_threshold": "Teraziyle kayıt arasındaki fark bu oranı aşarsa önceki işlemlerde sistematik bir sorun olabilir; kontrol etmek gerekir.",
           "auto_mount_on_rfid": "Yazıcı bilinen bir etiketi okuduğunda makarayı o yuvada takılı olarak kaydet. Kayıtlı makaraları kısa süreli takıyor ve kayıtlı konumlarının korunmasını istiyorsanız kapatın.",
-          "auto_register_on_detect": "Bilinmeyen etiket malzeme ve renk bilgisiyle geldiğinde makarayı otomatik kaydet. Başlangıç ağırlığı etiketten alınır; bilgi yoksa yukarıdaki varsayılan kullanılır. Her makarayı kendi tarttığınız miktarla elle kaydetmek için kapatın.",
+          "auto_register_on_detect": "Malzeme ve rengi bildirilen filamentleri RFID olsun veya olmasın otomatik kaydet. Başlangıç miktarı nominal veya varsayılan ağırlıktır; ölçülen kalan miktar değildir. RFID’siz kayıt için otomatik atama da açık olmalıdır.",
           "low_stock_threshold_g": "Azalan stok eşiği (g)"
         }
       }
@@ -34,8 +34,8 @@
           "default_opening_weight": "Varsayılan başlangıç ağırlığı (g)",
           "default_core_weight": "Varsayılan boş makara ağırlığı (g)",
           "anomaly_threshold": "Bu orandan fazla tartım sapmasını işaretle (%)",
-          "auto_mount_on_rfid": "RFID algılandığında makaraları otomatik tak",
-          "auto_register_on_detect": "Bilinmeyen Bambu makaraları otomatik kaydet",
+          "auto_mount_on_rfid": "Algılanan filamentleri otomatik ata",
+          "auto_register_on_detect": "Bilinmeyen filamentleri otomatik kaydet (tüm markalar)",
           "low_stock_threshold_g": "Azalan stok eşiği (g)"
         }
       }

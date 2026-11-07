@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from uuid import UUID
 
 from ..domain.error import DuplicateTagNotConfirmedError, InvalidValueError
-from ..domain.event import EventPublisher, SpoolRegistered
+from ..domain.event import EventPublisher, SpoolMounted, SpoolRegistered
 from ..domain.model.movement import record
 from ..domain.model.spool import Spool, register
 from ..domain.port.clock import Clock
@@ -25,7 +25,7 @@ from ..domain.service.registration_quantity import registration_quantity
 from ..domain.value.colour import Colour
 from ..domain.value.grams import Grams
 from ..domain.value.identifiers import ReelUid, SpoolId, TagSource, TagUid
-from ..domain.value.location import Location, Storage
+from ..domain.value.location import AmsSlot, Location, Storage
 from ..domain.value.material import Material
 from ..domain.value.movement_type import MovementSource, MovementType
 from .errors import IdempotencyConflictError
@@ -93,7 +93,17 @@ class RegisterSpool:
                 raise InvalidValueError("Request ID must be a UUID") from exc
             if len(str(command.request_id)) != 36 or len(str(command.payload_fingerprint)) != 64:
                 raise InvalidValueError("Invalid registration receipt")
+        automatic_slot = (
+            command.location
+            if command.movement_source is MovementSource.AUTOMATIC
+            and isinstance(command.location, AmsSlot)
+            else None
+        )
         async with self.uow:
+            if automatic_slot is not None:
+                occupant = await self.spools.find_by_location(automatic_slot)
+                if occupant is not None:
+                    return occupant.id
             if (
                 command.request_id is not None
                 and command.actor_id is not None
@@ -178,6 +188,8 @@ class RegisterSpool:
         await self.events.publish(
             SpoolRegistered(spool_id=spool.id, display_name=spool.display_name)
         )
+        if automatic_slot is not None:
+            await self.events.publish(SpoolMounted(spool_id=spool.id, tray=automatic_slot.tray))
         return spool.id
 
     async def _guard_duplicate_tag(self, command: RegisterSpoolCommand) -> None:
