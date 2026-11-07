@@ -161,7 +161,7 @@ export class InventoryViews {
         // parameter — which would double-encode a name carrying an ampersand.
         return `<div class="sync-row">${slot}${swatch}<span class="muted">${
           hints ? fill(t("sync.noTagHints"), "hints", hints) : t("sync.noTag")
-        }</span></div>`;
+        }</span>${this.trayRegistrationButton(outcome, "sync-register")}</div>`;
       case "ambiguous_tag":
         return `<div class="sync-row">${slot}${swatch}<span class="muted">${t("sync.ambiguous", {
           tag: outcome.tag_uid,
@@ -174,7 +174,7 @@ export class InventoryViews {
               : t("sync.unknownTag", { tag: outcome.tag_uid })
           }</span>
           <span class="muted">${t("sync.notInInventory")}</span>
-          <button data-action="sync-register" data-slot="${esc(outcome.slot)}">${t("sync.register")}</button>
+          ${this.trayRegistrationButton(outcome, "sync-register")}
         </div>`;
       default:
         return `<div class="sync-row">${slot}<span class="muted">${esc(outcome.status)}</span></div>`;

@@ -281,6 +281,7 @@ export class PrinterViews {
           (s) =>
             s.location.kind === "AMS_SLOT" &&
             s.location.printer === tray.printer &&
+            (s.location.ams ?? 1) === (tray.ams ?? 1) &&
             s.location.slot === tray.slot,
         );
         const swatch = tray.colour_hint
@@ -297,6 +298,7 @@ export class PrinterViews {
               ? fill(t("printer.trayLedger"), "spool", esc(mounted.name))
               : t("printer.trayLedgerEmpty")
           }</div>
+          ${this.trayRegistrationButton(tray)}
         </div>`;
       })
       .join("");

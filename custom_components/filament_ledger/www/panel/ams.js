@@ -181,7 +181,9 @@ export class AmsViews {
           t("ams.slot", { slot }),
           t(label),
           `<button data-action="mount-slot" data-slot="${slot}" data-ams="${esc(ams)}"
-                  data-printer="${machine}">${t("act.mount")}</button>`,
+                  data-printer="${machine}">${t("act.mount")}</button>
+             ${this.trayRegistrationButton(this._machineSnapshot(printer)?.trays?.find(
+               tray => (tray.ams ?? 1) === ams && tray.slot === slot))}`,
         );
       }
       return this.positionCard(t("ams.slot", { slot }), spool);

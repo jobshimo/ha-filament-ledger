@@ -1,5 +1,16 @@
 // Registration owns a draft until the server's result is known. Preview is read-only.
+import { esc } from "../i18n.js";
+
 export class RegistrationActions {
+  trayRegistrationButton(tray, action = "register-tray") {
+    if (!tray || !["no_tag", "unknown_tag"].includes(tray.status)) return "";
+    const mounted = this._spools.some(({location: l}) => l.kind === "AMS_SLOT"
+      && l.printer === tray.printer && (l.ams ?? 1) === (tray.ams ?? 1) && l.slot === tray.slot);
+    if (mounted) return "";
+    return `<button data-action="${action}" data-printer="${esc(tray.printer)}"
+      data-ams="${esc(tray.ams ?? 1)}" data-slot="${esc(tray.slot)}">${this._t("sync.register")}</button>`;
+  }
+
   _registrationKey() {
     return `filament-ledger:registration:${this._hass?.user?.id ?? "local"}`;
   }
@@ -15,7 +26,8 @@ export class RegistrationActions {
     const draft = saved?.request_id ? saved : {
       request_id: this._newRequestId(), material: known ? material : "OTHER",
       material_other: known ? "" : material, colour: hint.colour_hint_rgba ?? hint.colour_hint ?? "#000000",
-      colour_known: "true", opening_condition: "new", opening_basis: "DECLARED_NET",
+      colour_known: String(!this._dialog.prefill || Boolean(hint.colour_hint_rgba ?? hint.colour_hint)),
+      opening_condition: "new", opening_basis: "DECLARED_NET",
       opening_weight_g: String(hint.weight_hint_g ?? defaults.opening_weight_g),
       gross_weight_g: "", core_weight_g: String(defaults.core_weight_g),
       vendor: "", label: hint.name_hint ?? "", tag_uid: hint.tag_uid ?? "",

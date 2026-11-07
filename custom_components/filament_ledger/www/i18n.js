@@ -327,8 +327,8 @@ const EN = {
   "sync.empty": "empty",
   "sync.mounted": "mounted",
   "sync.detected": "detected — left in place, auto-mount is off",
-  "sync.noTag": "occupied, tag unreadable — nothing automatic is possible",
-  "sync.noTagHints": "occupied, tag unreadable — nothing automatic is possible ([[hints]])",
+  "sync.noTag": "No RFID tag — register a spool of any brand",
+  "sync.noTagHints": "No RFID tag — register a spool of any brand ([[hints]])",
   "sync.ambiguous":
     "two spools share tag [[tag]] — mount the right one by hand, the system will not pick",
   "sync.unknownTag": "unknown tag [[tag]]",
@@ -809,8 +809,8 @@ const EN = {
   "printer.trayLedgerEmpty": "ledger: nothing mounted",
   "printer.noTrays": "The printer reported no usable trays right now.",
   "printer.readOnly":
-    "Read-only, and refreshed only when you ask. Opening this tab and pressing Refresh " +
-    "change nothing in the ledger — the Sync button on Inventory is the one that does.",
+    "Opening this tab and pressing Refresh change nothing in the ledger. Use Register to import " +
+    "a loaded spool of any brand, with or without RFID, then confirm its details and weight.",
 
   // -- settings tab (docs/14 §14.6.4) ------------------------------------------------
   "settings.heading": "Defaults",
@@ -1090,8 +1090,8 @@ const ES = {
   "sync.empty": "vacía",
   "sync.mounted": "montada",
   "sync.detected": "detectada — se deja como está, el montaje automático está desactivado",
-  "sync.noTag": "ocupada, etiqueta ilegible — nada automático es posible",
-  "sync.noTagHints": "ocupada, etiqueta ilegible — nada automático es posible ([[hints]])",
+  "sync.noTag": "Sin RFID: registre una bobina de cualquier marca",
+  "sync.noTagHints": "Sin RFID: registre una bobina de cualquier marca ([[hints]])",
   "sync.ambiguous":
     "dos bobinas comparten la etiqueta [[tag]] — monte la correcta a mano, el sistema no " +
     "elegirá",
@@ -1550,9 +1550,8 @@ const ES = {
   "printer.trayLedgerEmpty": "registro: nada montado",
   "printer.noTrays": "La impresora no informó de ninguna bandeja utilizable ahora mismo.",
   "printer.readOnly":
-    "Solo lectura, y se actualiza únicamente cuando usted lo pide. Abrir esta pestaña y " +
-    "pulsar Actualizar no cambian nada del registro: el botón Sincronizar del Inventario " +
-    "es el que sí lo hace.",
+    "Abrir esta pestaña y pulsar Actualizar no cambian el registro. Use Registrar para importar " +
+    "una bobina de cualquier marca, con o sin RFID, y confirme sus datos y peso.",
 
   // -- pestaña ajustes ---------------------------------------------------------------
   "settings.heading": "Valores predeterminados",
@@ -1803,8 +1802,8 @@ const TR = {
   "sync.empty": "boş",
   "sync.mounted": "takılı",
   "sync.detected": "algılandı — otomatik takma kapalı olduğu için konumu değiştirilmedi",
-  "sync.noTag": "dolu, etiket okunamıyor — otomatik işlem yapılamaz",
-  "sync.noTagHints": "dolu, etiket okunamıyor — otomatik işlem yapılamaz ([[hints]])",
+  "sync.noTag": "RFID yok — her markadan filament kaydedilebilir",
+  "sync.noTagHints": "RFID yok — her markadan filament kaydedilebilir ([[hints]])",
   "sync.ambiguous": "iki makara [[tag]] etiketini paylaşıyor — doğru makarayı elle takın; sistem sizin yerinize seçmez",
   "sync.unknownTag": "bilinmeyen etiket [[tag]]",
   "sync.unknownTagHints": "bilinmeyen etiket [[tag]] · [[hints]]",
@@ -2082,7 +2081,7 @@ const TR = {
   "printer.trayLedger": "kayıt: [[spool]]",
   "printer.trayLedgerEmpty": "kayıt: takılı makara yok",
   "printer.noTrays": "Yazıcı şu anda kullanılabilir yuva bilgisi bildirmedi.",
-  "printer.readOnly": "Salt okunur; yalnızca istediğinizde yenilenir. Bu sekmeyi açmak veya Yenile'ye basmak kayıtları değiştirmez. Değişiklik yapan, Envanter'deki Eşitle düğmesidir.",
+  "printer.readOnly": "Bu sekmeyi açmak veya Yenile'ye basmak kayıtları değiştirmez. RFID olsun veya olmasın, her markadan yüklü filamenti Kaydet ile içeri aktarabilir; bilgilerini ve ağırlığını onaylayabilirsiniz.",
   "settings.heading": "Varsayılanlar",
   "settings.openingWeight": "Varsayılan başlangıç ağırlığı (g)",
   "settings.openingWeightHelp": "Yeni makaradaki filament miktarı. Bambu makaralar 1000 g'dır.",

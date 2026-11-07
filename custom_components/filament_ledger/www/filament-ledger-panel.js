@@ -738,7 +738,7 @@ class FilamentLedgerPanel extends HTMLElement {
     const target = event.target.closest("[data-action]");
     if (!target) return;
     const { action, id, slot } = target.dataset;
-    if (["dialog", "mount-slot", "mount-external", "sync-register", "spool-actions"].includes(action)) {
+    if (["dialog", "mount-slot", "mount-external", "sync-register", "register-tray", "spool-actions"].includes(action)) {
       this._dialogOpener = {...target.dataset};
     }
 
@@ -838,10 +838,15 @@ class FilamentLedgerPanel extends HTMLElement {
         this._sync = null;
         this.render();
         break;
-      case "sync-register": {
+      case "sync-register":
+      case "register-tray": {
         // The existing create dialog, pre-filled with everything the tray reported —
         // the user confirms the one number the RFID cannot know (docs/06 §6.4).
-        const outcome = (this._sync?.slots ?? []).find((o) => String(o.slot) === slot);
+        const readings = action === "sync-register" ? this._sync?.slots ?? []
+          : this._machineSnapshot(target.dataset.printer)?.trays ?? [];
+        const outcome = readings.find((o) => o.printer === target.dataset.printer
+          && (o.ams ?? 1) === Number(target.dataset.ams) && o.slot === Number(slot));
+        if (!outcome) break;
         this._dialog = { kind: "new-spool", prefill: outcome ?? null, positionEntry: true,
           printer: outcome?.printer, ams: outcome?.ams, slot: outcome?.slot };
         this._captureDestination();
